@@ -1,0 +1,581 @@
+{% extends "base.html" %}
+
+{% block title %}视频管理 - 视频水印Benchmark{% endblock %}
+
+{% block content %}
+<style>
+  .search-bar { display:flex; gap:0.5rem; margin-bottom:1rem; }
+  .search-bar input { flex:1; padding:0.6rem 1rem; border:1px solid #ddd; border-radius:4px; font-size:1rem; }
+  .search-bar button { white-space:nowrap; }
+
+  .vid-id-input { width:80px; padding:0.3rem 0.5rem; border:1px solid #ddd; border-radius:4px; font-size:0.9rem; text-align:center; }
+  .vid-id-input.saved { border-color:#27ae60; }
+  .vid-id-input.unsaved { border-color:#f39c12; }
+
+  .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
+  .btn-secondary { background:#7f8c8d; }
+  .btn-secondary:hover { background:#636e72; }
+  .btn-info { background:#16a085; }
+  .btn-info:hover { background:#1abc9c; }
+
+  /* 标注面板 */
+  .annotate-panel { display:none; background:#f8f9fa; border:1px solid #e0e0e0; border-radius:6px; padding:1rem; margin-top:0.5rem; }
+  .annotate-panel.open { display:block; }
+  .annotate-panel h4 { margin-bottom:0.8rem; color:#2c3e50; font-size:0.95rem; }
+  .event-table { width:100%; font-size:0.88rem; margin-bottom:0.8rem; }
+  .event-table th { background:#ecf0f1; font-size:0.85rem; }
+  .add-event-form { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.8rem; }
+  .add-event-form select, .add-event-form input { padding:0.35rem 0.6rem; border:1px solid #ddd; border-radius:4px; font-size:0.88rem; }
+  .add-event-form input[type=number] { width:90px; }
+  .json-actions { display:flex; gap:0.5rem; }
+
+  /* JSON 查看 */
+  .json-viewer { display:none; background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:4px; font-family:monospace; font-size:0.82rem; white-space:pre; overflow:auto; max-height:300px; margin-top:0.5rem; }
+  .json-viewer.open { display:block; }
+
+  /* 重命名内联输入 */
+  .rename-form { display:none; gap:0.4rem; align-items:center; }
+  .rename-form.open { display:flex; }
+  .rename-input { padding:0.3rem 0.5rem; border:1px solid #3498db; border-radius:4px; font-size:0.9rem; width:200px; }
+
+  .filename-cell { display:flex; align-items:center; gap:0.4rem; }
+  .filename-text { font-weight:500; }
+
+  .actions-cell { white-space:nowrap; display:flex; gap:0.3rem; flex-wrap:wrap; }
+
+  #empty-msg { text-align:center; color:#999; padding:2rem; display:none; }
+
+  /* 复选框列 */
+  .cb-col { width:36px; text-align:center; }
+  input[type=checkbox] { width:16px; height:16px; cursor:pointer; }
+
+  /* 批量操作栏 */
+  #batch-bar {
+    display:none; align-items:center; gap:0.75rem; flex-wrap:wrap;
+    background:#eaf4ff; border:1px solid #b3d4f5; border-radius:6px;
+    padding:0.6rem 1rem; margin-bottom:0.8rem;
+  }
+  #batch-bar.visible { display:flex; }
+  #batch-bar span { font-size:0.9rem; color:#2c3e50; }
+
+  /* 下载下拉 */
+  .dl-group { position:relative; display:inline-flex; }
+  .dl-group .btn-sm { border-radius:4px 0 0 4px; }
+  .dl-arrow { padding:0.3rem 0.5rem; font-size:0.85rem; background:#16a085; color:white; border:none; border-left:1px solid rgba(255,255,255,.3); border-radius:0 4px 4px 0; cursor:pointer; }
+  .dl-arrow:hover { background:#1abc9c; }
+  .dl-menu { display:none; position:absolute; top:100%; left:0; min-width:130px; background:white; border:1px solid #ddd; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,.12); z-index:200; }
+  .dl-menu.open { display:block; }
+  .dl-menu button { display:block; width:100%; padding:0.5rem 0.8rem; background:none; border:none; text-align:left; cursor:pointer; font-size:0.85rem; }
+  .dl-menu button:hover { background:#f0f0f0; }
+</style>
+
+<div class="card">
+  <h2>上传视频</h2>
+  <div class="upload-area" id="video-upload-area">
+    <p>拖拽视频文件到这里，或 <strong>点击选择文件</strong></p>
+    <input type="file" id="video-file-input" accept=".mp4,.avi,.mov,.mkv" class="hidden" multiple>
+  </div>
+  <div id="upload-message"></div>
+</div>
+
+<div class="card">
+  <h2>视频列表</h2>
+
+  <div class="search-bar">
+    <input type="text" id="search-input" placeholder="搜索文件名、视频ID或事件类型…">
+    <button class="btn btn-secondary btn-sm" onclick="clearSearch()">清空</button>
+  </div>
+
+  <!-- 批量操作栏 -->
+  <div id="batch-bar">
+    <span id="batch-count">已选 0 个</span>
+    <button class="btn btn-sm btn-info" onclick="batchDownload('original')">批量下载原视频</button>
+    <button class="btn btn-sm btn-warning" onclick="batchDownload('watermarked')">批量下载水印版</button>
+    <button class="btn btn-sm btn-secondary" onclick="clearSelection()">取消选择</button>
+  </div>
+
+  <div id="video-list">
+    <table id="video-table">
+      <thead>
+        <tr>
+          <th class="cb-col"><input type="checkbox" id="check-all" title="全选" onchange="toggleAll(this)"></th>
+          <th>文件名</th>
+          <th>视频ID</th>
+          <th>大小</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="video-tbody"></tbody>
+    </table>
+    <div id="empty-msg">暂无视频</div>
+    <p id="loading-msg">加载中…</p>
+  </div>
+</div>
+
+<!-- 重命名 Modal -->
+<div id="rename-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:8px;padding:1.5rem;width:380px;box-shadow:0 8px 24px rgba(0,0,0,.2);">
+    <h3 style="margin-bottom:1rem;">重命名视频</h3>
+    <input type="text" id="rename-input" style="width:100%;padding:0.6rem;border:1px solid #ddd;border-radius:4px;font-size:1rem;margin-bottom:1rem;">
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="closeRenameModal()">取消</button>
+      <button class="btn" onclick="confirmRename()">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- JSON 查看 Modal -->
+<div id="json-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:8px;padding:1.5rem;width:560px;max-height:80vh;overflow:auto;box-shadow:0 8px 24px rgba(0,0,0,.2);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h3>Ground Truth JSON</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeJsonModal()">关闭</button>
+    </div>
+    <pre id="json-modal-content" style="background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:4px;font-size:0.82rem;overflow:auto;white-space:pre;"></pre>
+  </div>
+</div>
+
+<script>
+const EVENT_TYPES = ['rat','smoke','use_phone','call_phone','chef','trash','mask','flame'];
+
+let allVideos = [];
+let renameTargetId = null;
+let searchTimer = null;
+
+// ── 初始化 ──────────────────────────────────────────────────────────────────
+async function loadVideos(q = '') {
+  const url = q ? `/videos/api/search?q=${encodeURIComponent(q)}` : '/videos/api';
+  const res = await fetch(url);
+  allVideos = await res.json();
+  renderTable(allVideos);
+}
+
+function renderTable(videos) {
+  const tbody = document.getElementById('video-tbody');
+  const emptyMsg = document.getElementById('empty-msg');
+  const loadingMsg = document.getElementById('loading-msg');
+  loadingMsg.style.display = 'none';
+
+  tbody.innerHTML = '';
+  // 重置全选和批量栏
+  const checkAll = document.getElementById('check-all');
+  if (checkAll) { checkAll.checked = false; checkAll.indeterminate = false; }
+  document.getElementById('batch-bar').classList.remove('visible');
+
+  if (!videos.length) {
+    emptyMsg.style.display = 'block';
+    return;
+  }
+  emptyMsg.style.display = 'none';
+
+  for (const v of videos) {
+    const hasWatermark = v.watermarked_videos && v.watermarked_videos.length > 0;
+    const sizeStr = v.file_size ? (v.file_size / 1024 / 1024).toFixed(1) + ' MB' : '-';
+
+    const tr = document.createElement('tr');
+    tr.id = `row-${v.id}`;
+    tr.innerHTML = `
+      <td class="cb-col">
+        <input type="checkbox" class="row-cb" data-id="${v.id}" onchange="onCheckChange()">
+      </td>
+      <td>
+        <div class="filename-cell">
+          <span class="filename-text" id="fname-${v.id}">${escHtml(v.filename)}</span>
+        </div>
+        ${hasWatermark ? `<div style="font-size:0.78rem;color:#27ae60;margin-top:2px;">✔ 已打水印</div>` : ''}
+      </td>
+      <td>
+        <input class="vid-id-input" id="vidid-${v.id}"
+          value="${escHtml(v.video_id || '')}"
+          placeholder="10位数字"
+          maxlength="10"
+          pattern="\\d{10}"
+          title="必须为恰好10位数字"
+          onblur="saveVideoId(${v.id})"
+          onkeydown="if(event.key==='Enter')saveVideoId(${v.id})">
+      </td>
+      <td>${sizeStr}</td>
+      <td>
+        <div class="actions-cell">
+          <button class="btn btn-sm btn-secondary" onclick="openRenameModal(${v.id}, '${escJs(v.filename)}')">重命名</button>
+          <div class="dl-group" id="dlgroup-${v.id}">
+            <button class="btn btn-sm btn-info" onclick="downloadVideo(${v.id}, 'original')">下载原版</button>
+            <button class="dl-arrow" onclick="toggleDlMenu(${v.id})" title="更多下载选项">▾</button>
+            <div class="dl-menu" id="dlmenu-${v.id}">
+              <button onclick="downloadVideo(${v.id},'original');toggleDlMenu(${v.id})">下载原视频</button>
+              <button onclick="downloadVideo(${v.id},'watermarked');toggleDlMenu(${v.id})"${hasWatermark ? '' : ' style="color:#aaa"'}>下载水印版${hasWatermark ? '' : '（未生成）'}</button>
+            </div>
+          </div>
+          <button class="btn btn-sm btn-warning" onclick="applyWatermark(${v.id}, this)">${hasWatermark ? '重新打水印' : '打水印'}</button>
+          <button class="btn btn-sm" onclick="toggleAnnotate(${v.id})">标注事件</button>
+        </div>
+        <div class="annotate-panel" id="annotate-${v.id}">
+          <h4>事件标注</h4>
+          <table class="event-table">
+            <thead><tr><th>事件类型</th><th>开始(秒)</th><th>结束(秒)</th><th></th></tr></thead>
+            <tbody id="events-tbody-${v.id}"></tbody>
+          </table>
+          <div class="add-event-form">
+            <select id="etype-${v.id}">
+              ${EVENT_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
+            </select>
+            <input type="number" id="estart-${v.id}" placeholder="开始(秒)" min="0" step="0.1">
+            <input type="number" id="eend-${v.id}" placeholder="结束(秒)" min="0" step="0.1">
+            <button class="btn btn-sm btn-success" onclick="addEvent(${v.id})">添加</button>
+          </div>
+          <div class="json-actions">
+            <button class="btn btn-sm" onclick="generateJson(${v.id})">生成 JSON</button>
+            <button class="btn btn-sm btn-secondary" onclick="viewJson(${v.id})">查看 JSON</button>
+          </div>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// ── 搜索 ─────────────────────────────────────────────────────────────────────
+document.getElementById('search-input').addEventListener('input', function() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => loadVideos(this.value.trim()), 300);
+});
+
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  loadVideos();
+}
+
+// ── 视频ID ───────────────────────────────────────────────────────────────────
+async function saveVideoId(id) {
+  const input = document.getElementById(`vidid-${id}`);
+  const value = input.value.trim();
+  if (!value) { input.classList.remove('saved'); input.classList.add('unsaved'); return; }
+  if (!/^\d{10}$/.test(value)) {
+    input.classList.remove('saved');
+    input.classList.add('unsaved');
+    input.title = '必须为恰好10位数字';
+    return;
+  }
+
+  const res = await fetch(`/videos/api/${id}/video-id`, {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({video_id: value})
+  });
+  if (res.ok) {
+    input.classList.remove('unsaved');
+    input.classList.add('saved');
+    // 更新本地数据
+    const v = allVideos.find(v => v.id === id);
+    if (v) v.video_id = value;
+  } else {
+    const err = await res.json();
+    showMsg('upload-message', '错误: ' + (err.error || '保存失败'), 'error');
+  }
+}
+
+// ── 重命名 ───────────────────────────────────────────────────────────────────
+function openRenameModal(id, currentName) {
+  renameTargetId = id;
+  document.getElementById('rename-input').value = currentName;
+  document.getElementById('rename-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('rename-input').select(), 50);
+}
+
+function closeRenameModal() {
+  document.getElementById('rename-modal').style.display = 'none';
+  renameTargetId = null;
+}
+
+async function confirmRename() {
+  const newName = document.getElementById('rename-input').value.trim();
+  if (!newName) return;
+
+  const res = await fetch(`/videos/api/${renameTargetId}/rename`, {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({filename: newName})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    closeRenameModal();
+    loadVideos(document.getElementById('search-input').value.trim());
+  } else {
+    alert('重命名失败: ' + (data.error || '未知错误'));
+  }
+}
+
+document.getElementById('rename-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') confirmRename();
+  if (e.key === 'Escape') closeRenameModal();
+});
+
+// ── 下载 ─────────────────────────────────────────────────────────────────────
+function downloadVideo(id, type = 'original') {
+  window.location.href = `/videos/api/${id}/download?type=${type}`;
+}
+
+function toggleDlMenu(id) {
+  const menu = document.getElementById(`dlmenu-${id}`);
+  // 关闭其他打开的菜单
+  document.querySelectorAll('.dl-menu.open').forEach(m => { if (m !== menu) m.classList.remove('open'); });
+  menu.classList.toggle('open');
+}
+
+// 点击页面其他地方关闭下载菜单
+document.addEventListener('click', e => {
+  if (!e.target.closest('.dl-group')) {
+    document.querySelectorAll('.dl-menu.open').forEach(m => m.classList.remove('open'));
+  }
+});
+
+// ── 复选框 & 批量下载 ─────────────────────────────────────────────────────────
+function getSelectedIds() {
+  return [...document.querySelectorAll('.row-cb:checked')].map(cb => parseInt(cb.dataset.id));
+}
+
+function onCheckChange() {
+  const ids = getSelectedIds();
+  const total = document.querySelectorAll('.row-cb').length;
+  const bar = document.getElementById('batch-bar');
+  const checkAll = document.getElementById('check-all');
+
+  document.getElementById('batch-count').textContent = `已选 ${ids.length} 个`;
+  bar.classList.toggle('visible', ids.length > 0);
+  checkAll.indeterminate = ids.length > 0 && ids.length < total;
+  checkAll.checked = ids.length === total && total > 0;
+}
+
+function toggleAll(cb) {
+  document.querySelectorAll('.row-cb').forEach(c => { c.checked = cb.checked; });
+  onCheckChange();
+}
+
+function clearSelection() {
+  document.querySelectorAll('.row-cb').forEach(c => { c.checked = false; });
+  document.getElementById('check-all').checked = false;
+  onCheckChange();
+}
+
+async function batchDownload(type) {
+  const ids = getSelectedIds();
+  if (!ids.length) return;
+
+  const typeLabel = type === 'watermarked' ? '水印版' : '原视频';
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '打包中…';
+
+  try {
+    const res = await fetch('/videos/api/download/batch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids, type})
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert('下载失败: ' + (err.error || '未知错误'));
+      return;
+    }
+
+    // 触发浏览器下载
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `videos_${typeLabel}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = type === 'watermarked' ? '批量下载水印版' : '批量下载原视频';
+  }
+}
+
+// ── 打水印 ───────────────────────────────────────────────────────────────────
+async function applyWatermark(id, btn) {
+  const vid = document.getElementById(`vidid-${id}`).value.trim();
+  if (!vid) {
+    alert('请先设置视频ID后再添加水印');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+
+  const res = await fetch(`/videos/api/${id}/watermark`, {method:'POST'});
+  const data = await res.json();
+  btn.disabled = false;
+  if (res.ok) {
+    btn.textContent = '重新打水印';
+    showMsg('upload-message', '水印添加成功！', 'success');
+    loadVideos(document.getElementById('search-input').value.trim());
+  } else {
+    btn.textContent = '打水印';
+    showMsg('upload-message', '错误: ' + (data.error || '失败'), 'error');
+  }
+}
+
+// ── 标注面板 ─────────────────────────────────────────────────────────────────
+async function toggleAnnotate(id) {
+  const panel = document.getElementById(`annotate-${id}`);
+  if (panel.classList.contains('open')) {
+    panel.classList.remove('open');
+    return;
+  }
+  panel.classList.add('open');
+  await loadEvents(id);
+}
+
+async function loadEvents(id) {
+  const res = await fetch(`/videos/api/${id}/events`);
+  const events = await res.json();
+  renderEvents(id, events);
+}
+
+function renderEvents(id, events) {
+  const tbody = document.getElementById(`events-tbody-${id}`);
+  tbody.innerHTML = '';
+  if (!events.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#999;text-align:center;">暂无事件</td></tr>';
+    return;
+  }
+  for (const e of events) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escHtml(e.event_type)}</td>
+      <td>${e.start_seconds}</td>
+      <td>${e.end_seconds}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="deleteEvent(${id}, ${e.id}, this)">删除</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+async function addEvent(id) {
+  const etype = document.getElementById(`etype-${id}`).value;
+  const start = parseFloat(document.getElementById(`estart-${id}`).value);
+  const end = parseFloat(document.getElementById(`eend-${id}`).value);
+
+  if (isNaN(start) || isNaN(end)) { alert('请填写开始和结束时间'); return; }
+  if (start >= end) { alert('开始时间必须小于结束时间'); return; }
+
+  const res = await fetch(`/videos/api/${id}/events`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({event_type: etype, start_seconds: start, end_seconds: end})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    document.getElementById(`estart-${id}`).value = '';
+    document.getElementById(`eend-${id}`).value = '';
+    await loadEvents(id);
+  } else {
+    alert('添加失败: ' + (data.error || '未知'));
+  }
+}
+
+async function deleteEvent(videoId, eventId, btn) {
+  btn.disabled = true;
+  const res = await fetch(`/videos/api/${videoId}/events/${eventId}`, {method:'DELETE'});
+  if (res.ok) {
+    await loadEvents(videoId);
+  } else {
+    btn.disabled = false;
+    alert('删除失败');
+  }
+}
+
+// ── Ground Truth JSON ─────────────────────────────────────────────────────────
+async function generateJson(id) {
+  const vid = document.getElementById(`vidid-${id}`).value.trim();
+  if (!vid) { alert('请先设置视频ID'); return; }
+
+  const res = await fetch(`/videos/api/${id}/ground-truth/generate`, {method:'POST'});
+  const data = await res.json();
+  if (res.ok) {
+    showMsg('upload-message', `JSON 已生成: ${data.path}`, 'success');
+  } else {
+    alert('生成失败: ' + (data.error || '未知'));
+  }
+}
+
+async function viewJson(id) {
+  const res = await fetch(`/videos/api/${id}/ground-truth`);
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || '获取失败'); return; }
+
+  document.getElementById('json-modal-content').textContent = JSON.stringify(data, null, 2);
+  document.getElementById('json-modal').style.display = 'flex';
+}
+
+function closeJsonModal() {
+  document.getElementById('json-modal').style.display = 'none';
+}
+
+// ── 上传 ─────────────────────────────────────────────────────────────────────
+const uploadArea = document.getElementById('video-upload-area');
+const fileInput = document.getElementById('video-file-input');
+
+uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadArea.classList.remove('dragover');
+  uploadFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    await uploadSingle(file);
+  }
+  loadVideos(document.getElementById('search-input').value.trim());
+}
+
+async function uploadSingle(file) {
+  const form = new FormData();
+  form.append('video', file);
+  showMsg('upload-message', `正在上传 ${file.name}…`, 'info');
+
+  const res = await fetch('/videos/api/upload', {method:'POST', body: form});
+  const data = await res.json();
+  if (res.ok) {
+    showMsg('upload-message', `✔ ${file.name} 上传成功`, 'success');
+  } else {
+    showMsg('upload-message', `✘ ${file.name}: ${data.error || '上传失败'}`, 'error');
+  }
+}
+
+// ── 工具函数 ──────────────────────────────────────────────────────────────────
+function showMsg(containerId, text, type) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = `<div class="message message-${type === 'error' ? 'error' : 'success'}" style="${type==='info'?'background:#d1ecf1;color:#0c5460;':''}">${text}</div>`;
+  if (type !== 'error') setTimeout(() => { el.innerHTML = ''; }, 4000);
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escJs(s) {
+  return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+}
+
+// 关闭 modal（点击背景）
+document.getElementById('rename-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeRenameModal();
+});
+document.getElementById('json-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeJsonModal();
+});
+
+// 初始加载
+loadVideos();
+</script>
+{% endblock %}

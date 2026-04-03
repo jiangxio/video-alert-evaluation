@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}首页 - 视频数据预处理与告警评估平台{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>欢迎使用视频数据预处理与告警评估平台</h2>
+    <p>这个平台可以帮助您：</p>
+    <ul style="margin: 1rem 0 1rem 2rem;">
+        <li>上传和管理视频文件</li>
+        <li>为视频标注事件，自动生成 ground truth</li>
+        <li>给视频添加可识别水印（视频ID + 时间戳）</li>
+        <li>创建告警图片数据集，支持 ZIP 批量导入</li>
+        <li>通过 OCR 识别告警图片中的水印信息</li>
+        <li>评估告警与 ground truth 的匹配</li>
+    </ul>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem;">
+    <div class="card">
+        <h3>视频管理</h3>
+        <p>上传视频、添加水印、标注事件、生成 ground truth。</p>
+        <p style="margin-top: 1rem;">
+            <a href="/videos/" class="btn">前往视频管理</a>
+        </p>
+    </div>
+    <div class="card">
+        <h3>告警数据集</h3>
+        <p>创建数据集、导入告警图片、执行 OCR、查看结果。</p>
+        <p style="margin-top: 1rem;">
+            <a href="/alerts/" class="btn btn-success">前往告警数据集</a>
+        </p>
+    </div>
+</div>
+{% endblock %}

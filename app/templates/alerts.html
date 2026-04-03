@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+
+{% block title %}告警数据集 - 视频水印Benchmark{% endblock %}
+
+{% block content %}
+<style>
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; }
+  .page-header h2 { margin:0; }
+
+  .dataset-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:1.2rem; }
+  .dataset-card {
+    background:white; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.1);
+    padding:1.2rem; display:flex; flex-direction:column; gap:0.5rem;
+  }
+  .dataset-card h3 { margin:0; font-size:1.05rem; color:#2c3e50; }
+  .dataset-meta { font-size:0.82rem; color:#888; }
+  .dataset-notes { font-size:0.88rem; color:#555; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dataset-count { font-size:0.88rem; color:#3498db; font-weight:600; }
+  .dataset-actions { display:flex; gap:0.5rem; margin-top:0.4rem; }
+
+  .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
+
+  #empty-state { text-align:center; color:#aaa; padding:3rem; }
+
+  /* 新建弹窗 */
+  .modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:1000; align-items:center; justify-content:center; }
+  .modal-bg.open { display:flex; }
+  .modal-box { background:white; border-radius:8px; padding:1.5rem; width:440px; box-shadow:0 8px 24px rgba(0,0,0,.2); }
+  .modal-box h3 { margin:0 0 1rem; }
+  .form-group { margin-bottom:0.9rem; }
+  .form-group label { display:block; font-size:0.88rem; color:#555; margin-bottom:0.3rem; }
+  .form-group input[type=text], .form-group textarea {
+    width:100%; padding:0.55rem 0.7rem; border:1px solid #ddd; border-radius:4px; font-size:0.95rem;
+  }
+  .form-group textarea { resize:vertical; min-height:70px; }
+  .modal-footer { display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem; }
+
+  /* ZIP 上传区 */
+  .zip-drop {
+    border:2px dashed #bdc3c7; border-radius:6px; padding:0.9rem; text-align:center;
+    cursor:pointer; transition:border-color .15s, background .15s;
+  }
+  .zip-drop:hover, .zip-drop.dragover { border-color:#3498db; background:#ecf7ff; }
+  .zip-drop p { margin:0; font-size:0.88rem; color:#888; }
+  .zip-selected { font-size:0.85rem; color:#27ae60; margin-top:0.4rem; display:none; }
+
+  /* 导入进度 */
+  .import-progress { display:none; margin-top:0.8rem; }
+  .import-progress .bar-wrap { background:#eee; border-radius:20px; height:8px; overflow:hidden; }
+  .import-progress .bar-fill { height:100%; background:#3498db; border-radius:20px; transition:width .3s; }
+  .import-status { font-size:0.85rem; color:#555; margin-top:0.4rem; }
+</style>
+
+<div class="card">
+  <div class="page-header">
+    <h2>告警数据集</h2>
+    <button class="btn" onclick="openCreateModal()">+ 新建数据集</button>
+  </div>
+
+  <div id="dataset-container">
+    <p id="loading-msg">加载中…</p>
+    <div class="dataset-grid" id="dataset-grid"></div>
+    <div id="empty-state" style="display:none;">
+      <p>暂无数据集</p>
+      <p style="font-size:0.88rem;">点击右上角"新建数据集"开始</p>
+    </div>
+  </div>
+</div>
+
+<!-- 新建数据集 Modal -->
+<div class="modal-bg" id="create-modal">
+  <div class="modal-box">
+    <h3>新建数据集</h3>
+    <div class="form-group">
+      <label>名称 <span style="color:#e74c3c">*</span></label>
+      <input type="text" id="new-name" placeholder="输入数据集名称">
+    </div>
+    <div class="form-group">
+      <label>备注</label>
+      <textarea id="new-notes" placeholder="可选备注信息"></textarea>
+    </div>
+    <div class="form-group">
+      <label>上传数据集文件 <span style="color:#888;font-weight:normal;">（可选，.zip）</span></label>
+      <div class="zip-drop" id="zip-drop" onclick="document.getElementById('zip-input').click()">
+        <p>拖拽 ZIP 文件到这里，或点击选择</p>
+        <input type="file" id="zip-input" accept=".zip" class="hidden" onchange="onZipSelected(this)">
+      </div>
+      <div class="zip-selected" id="zip-selected"></div>
+    </div>
+    <div class="import-progress" id="import-progress">
+      <div class="bar-wrap"><div class="bar-fill" id="import-bar" style="width:100%;animation:pulse 1s infinite alternate;"></div></div>
+      <div class="import-status" id="import-status">导入中，请稍候…</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="btn-cancel" onclick="closeCreateModal()">取消</button>
+      <button class="btn btn-success" id="btn-create" onclick="createDataset()">创建</button>
+    </div>
+  </div>
+</div>
+<style>
+@keyframes pulse { from { opacity:.5; } to { opacity:1; } }
+</style>
+
+<script>
+async function loadDatasets() {
+  const res = await fetch('/alerts/api/datasets');
+  const datasets = await res.json();
+
+  document.getElementById('loading-msg').style.display = 'none';
+  const grid = document.getElementById('dataset-grid');
+  const empty = document.getElementById('empty-state');
+
+  grid.innerHTML = '';
+  if (!datasets.length) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+
+  for (const d of datasets) {
+    const date = new Date(d.created_at).toLocaleDateString('zh-CN');
+    const card = document.createElement('div');
+    card.className = 'dataset-card';
+    card.innerHTML = `
+      <h3>${escHtml(d.name)}</h3>
+      <div class="dataset-meta">${date}</div>
+      <div class="dataset-count">共 ${d.image_count} 张图片</div>
+      ${d.notes ? `<div class="dataset-notes" title="${escHtml(d.notes)}">${escHtml(d.notes)}</div>` : ''}
+      <div class="dataset-actions">
+        <a class="btn btn-sm" href="/alerts/${d.id}/">进入管理</a>
+        <button class="btn btn-sm btn-danger" onclick="deleteDataset(${d.id}, this)">删除</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+function onZipSelected(input) {
+  const file = input.files[0];
+  const el = document.getElementById('zip-selected');
+  if (file) {
+    el.style.display = 'block';
+    el.textContent = `已选择：${file.name}（${(file.size/1024/1024).toFixed(1)} MB）`;
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+// ZIP 拖拽
+const zipDrop = document.getElementById('zip-drop');
+zipDrop.addEventListener('dragover', e => { e.preventDefault(); zipDrop.classList.add('dragover'); });
+zipDrop.addEventListener('dragleave', () => zipDrop.classList.remove('dragover'));
+zipDrop.addEventListener('drop', e => {
+  e.preventDefault(); zipDrop.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file && file.name.toLowerCase().endsWith('.zip')) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    document.getElementById('zip-input').files = dt.files;
+    onZipSelected(document.getElementById('zip-input'));
+  } else {
+    alert('请拖入 .zip 文件');
+  }
+});
+
+async function createDataset() {
+  const name = document.getElementById('new-name').value.trim();
+  if (!name) { alert('请输入数据集名称'); return; }
+  const notes = document.getElementById('new-notes').value.trim();
+  const zipFile = document.getElementById('zip-input').files[0];
+
+  // 禁用按钮防重复
+  document.getElementById('btn-create').disabled = true;
+  document.getElementById('btn-cancel').disabled = true;
+
+  // Step 1: 创建数据集
+  const res = await fetch('/alerts/api/datasets', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, notes})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    document.getElementById('btn-create').disabled = false;
+    document.getElementById('btn-cancel').disabled = false;
+    alert('创建失败: ' + (data.error || '未知'));
+    return;
+  }
+
+  const datasetId = data.dataset.id;
+
+  // Step 2: 如有 ZIP 文件则导入
+  if (zipFile) {
+    document.getElementById('import-progress').style.display = 'block';
+    document.getElementById('import-status').textContent = '正在上传并解压文件…';
+
+    const form = new FormData();
+    form.append('file', zipFile);
+
+    const ir = await fetch(`/alerts/api/datasets/${datasetId}/import`, {
+      method: 'POST', body: form
+    });
+    const idata = await ir.json();
+
+    document.getElementById('import-bar').style.animation = 'none';
+    document.getElementById('import-bar').style.width = '100%';
+    document.getElementById('import-bar').style.background = ir.ok ? '#27ae60' : '#e74c3c';
+
+    if (ir.ok) {
+      let msg = `✔ 成功导入 ${idata.imported} 张图片`;
+      if (idata.skipped > 0) msg += `，跳过 ${idata.skipped} 张（重名）`;
+      document.getElementById('import-status').textContent = msg;
+    } else {
+      document.getElementById('import-status').textContent = '✘ 导入失败: ' + (idata.error || '未知');
+    }
+
+    // 等 1.2s 让用户看到结果再关闭
+    await new Promise(r => setTimeout(r, 1200));
+  }
+
+  closeCreateModal();
+  loadDatasets();
+}
+
+async function deleteDataset(id, btn) {
+  if (!confirm('确认删除该数据集及其所有图片？')) return;
+  btn.disabled = true;
+  const res = await fetch(`/alerts/api/datasets/${id}`, {method: 'DELETE'});
+  if (res.ok) {
+    loadDatasets();
+  } else {
+    btn.disabled = false;
+    const err = await res.json();
+    alert('删除失败: ' + (err.error || '未知'));
+  }
+}
+
+function openCreateModal() {
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-notes').value = '';
+  document.getElementById('zip-input').value = '';
+  document.getElementById('zip-selected').style.display = 'none';
+  document.getElementById('import-progress').style.display = 'none';
+  document.getElementById('btn-create').disabled = false;
+  document.getElementById('btn-cancel').disabled = false;
+  document.getElementById('create-modal').classList.add('open');
+  setTimeout(() => document.getElementById('new-name').focus(), 50);
+}
+function closeCreateModal() {
+  document.getElementById('create-modal').classList.remove('open');
+}
+document.getElementById('create-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeCreateModal();
+});
+document.getElementById('new-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') createDataset();
+  if (e.key === 'Escape') closeCreateModal();
+});
+
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+loadDatasets();
+</script>
+{% endblock %}

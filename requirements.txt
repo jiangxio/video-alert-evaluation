@@ -1,0 +1,11 @@
+#基础依赖
+qrcode[pil]>=7.0
+Pillow>=9.0
+# EasyOCR
+easyocr>=1.7
+# Flask Web Platform Dependencies
+Flask>=2.3
+Werkzeug>=2.3
+
+
+

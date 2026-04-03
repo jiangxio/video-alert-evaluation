@@ -1,0 +1,413 @@
+{% extends "base.html" %}
+
+{% block title %}{{ dataset.name }} - 告警数据集{% endblock %}
+
+{% block content %}
+<style>
+  /* 面包屑 */
+  .breadcrumb { font-size:0.88rem; color:#888; margin-bottom:1rem; }
+  .breadcrumb a { color:#3498db; text-decoration:none; }
+  .breadcrumb a:hover { text-decoration:underline; }
+
+  /* 数据集信息栏 */
+  .ds-info { display:flex; gap:2rem; align-items:baseline; flex-wrap:wrap; margin-bottom:0.5rem; }
+  .ds-info .ds-name { font-size:1.2rem; font-weight:700; color:#2c3e50; }
+  .ds-info .ds-meta { font-size:0.85rem; color:#888; }
+  .ds-notes { font-size:0.88rem; color:#666; margin-top:0.2rem; }
+
+  /* 工具栏 */
+  .toolbar { display:flex; gap:0.6rem; align-items:center; margin:1rem 0; flex-wrap:wrap; }
+  .toolbar span { font-size:0.88rem; color:#888; }
+
+  /* 上传区 */
+  .upload-area { border:2px dashed #bdc3c7; border-radius:8px; padding:1.2rem; text-align:center; margin-bottom:1rem; cursor:pointer; }
+  .upload-area:hover, .upload-area.dragover { border-color:#3498db; background:#ecf7ff; }
+  .upload-area p { margin:0; color:#888; }
+
+  /* 图片网格：8列 */
+  .img-grid {
+    display:grid;
+    grid-template-columns:repeat(8, 1fr);
+    gap:8px;
+  }
+  .img-cell {
+    display:flex; flex-direction:column; align-items:center;
+    cursor:pointer; border:2px solid transparent; border-radius:6px;
+    overflow:hidden; transition:border-color .15s;
+    background:#f5f5f5;
+  }
+  .img-cell:hover { border-color:#3498db; }
+  .img-cell img {
+    width:100%; aspect-ratio:4/3; object-fit:cover; display:block;
+  }
+  .img-label {
+    width:100%; text-align:center; padding:3px 4px;
+    font-size:0.72rem; color:#fff; background:#2c3e50;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .img-label.no-label { background:#aaa; }
+  .img-cell.ocr-ok .img-label { background:#27ae60; }
+  .img-cell.ocr-fail .img-label { background:#e74c3c; }
+
+  #empty-grid { text-align:center; color:#aaa; padding:3rem; grid-column:1/-1; }
+  #upload-msg { margin-bottom:0.5rem; }
+
+  /* 详情 Modal */
+  .modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:1000; align-items:flex-start; justify-content:center; overflow-y:auto; padding:2rem 1rem; }
+  .modal-bg.open { display:flex; }
+  .modal-box { background:white; border-radius:8px; padding:1.5rem; width:560px; max-width:100%; box-shadow:0 8px 32px rgba(0,0,0,.25); margin:auto; }
+  .modal-box h3 { margin:0 0 1rem; display:flex; justify-content:space-between; align-items:center; }
+  .detail-img { width:100%; max-height:300px; object-fit:contain; border-radius:4px; background:#111; margin-bottom:1rem; }
+  .detail-table { width:100%; border-collapse:collapse; font-size:0.9rem; margin-bottom:1rem; }
+  .detail-table td { padding:0.4rem 0.6rem; border-bottom:1px solid #eee; }
+  .detail-table td:first-child { color:#888; width:35%; }
+  .detail-table td:last-child { font-weight:500; }
+  .detail-footer { display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; }
+
+  /* OCR 进度 Modal */
+  .ocr-modal-box { background:white; border-radius:8px; padding:1.5rem; width:520px; max-width:100%; margin:auto; }
+  .ocr-modal-box h3 { margin:0 0 1rem; }
+  .progress-bar-wrap { background:#eee; border-radius:20px; height:14px; overflow:hidden; margin-bottom:0.5rem; }
+  .progress-bar-fill { height:100%; background:#3498db; border-radius:20px; transition:width .3s; }
+  .progress-text { font-size:0.88rem; color:#555; margin-bottom:0.8rem; }
+  .ocr-log { height:200px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; font-family:monospace; font-size:0.8rem; padding:0.8rem; border-radius:4px; }
+  .ocr-log .log-ok { color:#6fc; }
+  .ocr-log .log-fail { color:#f66; }
+
+  .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
+  .btn-secondary { background:#7f8c8d; }
+  .btn-secondary:hover { background:#636e72; }
+</style>
+
+<div class="breadcrumb">
+  <a href="/alerts/">告警数据集</a> &rsaquo; <strong>{{ dataset.name }}</strong>
+</div>
+
+<div class="card">
+  <div class="ds-info">
+    <span class="ds-name">{{ dataset.name }}</span>
+    <span class="ds-meta">创建于 {{ dataset.created_at[:10] }}</span>
+    <span class="ds-meta" id="img-count-badge">-</span>
+  </div>
+  {% if dataset.notes %}
+  <div class="ds-notes">{{ dataset.notes }}</div>
+  {% endif %}
+
+  <div class="upload-area" id="upload-area">
+    <p>拖拽图片到这里，或 <strong>点击选择文件</strong>（支持多选）</p>
+    <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.bmp" multiple class="hidden">
+  </div>
+  <div id="upload-msg"></div>
+
+  <div class="toolbar">
+    <button class="btn btn-sm" onclick="openOcrModal()">全部执行 OCR</button>
+    <span id="ocr-summary"></span>
+  </div>
+
+  <div class="img-grid" id="img-grid">
+    <div id="empty-grid">暂无图片，请上传</div>
+  </div>
+</div>
+
+<!-- 详情 Modal -->
+<div class="modal-bg" id="detail-modal">
+  <div class="modal-box">
+    <h3>
+      <span id="detail-filename" style="font-size:0.95rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:380px;"></span>
+      <button class="btn btn-secondary btn-sm" onclick="closeDetailModal()">关闭</button>
+    </h3>
+    <img id="detail-img" class="detail-img" src="" alt="">
+    <table class="detail-table">
+      <tr><td>事件类型</td><td>
+        <select id="detail-label" onchange="saveLabel()" style="padding:0.3rem;border:1px solid #ddd;border-radius:4px;font-size:0.9rem;">
+          <option value="">未标记</option>
+        </select>
+      </td></tr>
+      <tr><td>video_id</td><td id="detail-video-id">-</td></tr>
+      <tr><td>时间戳</td><td id="detail-timestamp">-</td></tr>
+      <tr><td>原始尺寸</td><td id="detail-size">-</td></tr>
+      <tr><td>文件大小</td><td id="detail-filesize">-</td></tr>
+    </table>
+    <div class="detail-footer">
+      <button class="btn btn-sm" id="btn-ocr-single" onclick="runSingleOcr()">执行 OCR</button>
+      <button class="btn btn-sm btn-danger" onclick="deleteCurrentImage()">删除图片</button>
+    </div>
+  </div>
+</div>
+
+<!-- OCR 批量进度 Modal -->
+<div class="modal-bg" id="ocr-modal">
+  <div class="ocr-modal-box">
+    <h3>批量 OCR 执行中</h3>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar-fill" id="ocr-bar" style="width:0%"></div>
+    </div>
+    <div class="progress-text" id="ocr-progress-text">准备中…</div>
+    <div class="ocr-log" id="ocr-log"></div>
+    <div style="margin-top:1rem;display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn btn-secondary btn-sm" id="ocr-close-btn" onclick="closeOcrModal()" disabled>关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const DATASET_ID = {{ dataset.id }};
+let EVENT_TYPES = [];  // 从配置文件动态加载
+
+let allImages = [];
+let currentImageId = null;
+let ocrPollTimer = null;
+
+// ── 加载图片 ──────────────────────────────────────────────────────────────────
+async function loadImages() {
+  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/images`);
+  allImages = await res.json();
+  renderGrid(allImages);
+}
+
+function renderGrid(images) {
+  const grid = document.getElementById('img-grid');
+  const empty = document.getElementById('empty-grid');
+  document.getElementById('img-count-badge').textContent = `共 ${images.length} 张`;
+
+  // 移除旧的图片格子（保留 empty-grid）
+  grid.querySelectorAll('.img-cell').forEach(el => el.remove());
+
+  if (!images.length) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+
+  const ocrOk = images.filter(i => i.ocr && i.ocr.success).length;
+  document.getElementById('ocr-summary').textContent =
+    ocrOk ? `已完成 OCR ${ocrOk} / ${images.length} 张` : '';
+
+  for (const img of images) {
+    const cell = document.createElement('div');
+    cell.className = 'img-cell' + (img.ocr ? (img.ocr.success ? ' ocr-ok' : ' ocr-fail') : '');
+    cell.dataset.id = img.id;
+    cell.onclick = () => openDetail(img.id);
+
+    const label = img.event_label || img.alert_type || '';
+    cell.innerHTML = `
+      <img src="/alerts/api/images/${img.id}/file" loading="lazy" alt="${escHtml(img.filename)}">
+      <div class="img-label${label ? '' : ' no-label'}">${escHtml(label || '未标记')}</div>
+    `;
+    grid.appendChild(cell);
+  }
+}
+
+// ── 详情 Modal ────────────────────────────────────────────────────────────────
+async function openDetail(imageId) {
+  currentImageId = imageId;
+  const res = await fetch(`/alerts/api/images/${imageId}`);
+  const img = await res.json();
+
+  document.getElementById('detail-filename').textContent = img.filename;
+  document.getElementById('detail-img').src = `/alerts/api/images/${imageId}/file?t=${Date.now()}`;
+  document.getElementById('detail-label').value = img.event_label || '';
+  document.getElementById('detail-video-id').textContent = img.ocr?.video_id || '-';
+  document.getElementById('detail-timestamp').textContent =
+    img.ocr?.timestamp ? `${img.ocr.timestamp} (${img.ocr.timestamp_seconds}s)` : '-';
+  document.getElementById('detail-size').textContent =
+    img.image_width ? `${img.image_width} × ${img.image_height} px` : '-';
+  document.getElementById('detail-filesize').textContent =
+    img.file_size ? (img.file_size / 1024).toFixed(1) + ' KB' : '-';
+
+  document.getElementById('detail-modal').classList.add('open');
+}
+
+function closeDetailModal() {
+  document.getElementById('detail-modal').classList.remove('open');
+  currentImageId = null;
+}
+
+async function saveLabel() {
+  if (!currentImageId) return;
+  const label = document.getElementById('detail-label').value;
+  if (!label) return;
+  await fetch(`/alerts/api/images/${currentImageId}/label`, {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({event_label: label})
+  });
+  // 刷新网格中该格子的标签
+  const img = allImages.find(i => i.id === currentImageId);
+  if (img) { img.event_label = label; }
+  const cell = document.querySelector(`.img-cell[data-id="${currentImageId}"]`);
+  if (cell) {
+    const labelEl = cell.querySelector('.img-label');
+    labelEl.textContent = label;
+    labelEl.classList.remove('no-label');
+  }
+}
+
+async function deleteCurrentImage() {
+  if (!currentImageId || !confirm('确认删除该图片？')) return;
+  const res = await fetch(`/alerts/api/images/${currentImageId}`, {method:'DELETE'});
+  if (res.ok) {
+    closeDetailModal();
+    loadImages();
+  } else {
+    alert('删除失败');
+  }
+}
+
+// ── 单张 OCR ──────────────────────────────────────────────────────────────────
+async function runSingleOcr() {
+  if (!currentImageId) return;
+  const btn = document.getElementById('btn-ocr-single');
+  btn.disabled = true;
+  btn.textContent = 'OCR 中…';
+
+  const res = await fetch(`/alerts/api/images/${currentImageId}/ocr`, {method:'POST'});
+  const data = await res.json();
+  btn.disabled = false;
+  btn.textContent = '执行 OCR';
+
+  if (data.ocr) {
+    document.getElementById('detail-video-id').textContent = data.ocr.video_id || '-';
+    document.getElementById('detail-timestamp').textContent =
+      data.ocr.timestamp ? `${data.ocr.timestamp} (${data.ocr.timestamp_seconds}s)` : '-';
+    // 同步本地数据
+    const img = allImages.find(i => i.id === currentImageId);
+    if (img) img.ocr = data.ocr;
+    renderGrid(allImages);
+  }
+}
+
+// ── 批量 OCR ──────────────────────────────────────────────────────────────────
+async function openOcrModal() {
+  document.getElementById('ocr-log').innerHTML = '';
+  document.getElementById('ocr-bar').style.width = '0%';
+  document.getElementById('ocr-progress-text').textContent = '启动中…';
+  document.getElementById('ocr-close-btn').disabled = true;
+  document.getElementById('ocr-modal').classList.add('open');
+
+  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/batch`, {method:'POST'});
+  const data = await res.json();
+  if (!res.ok) {
+    appendLog('❌ ' + (data.error || '启动失败'), 'fail');
+    document.getElementById('ocr-close-btn').disabled = false;
+    return;
+  }
+
+  let seenCount = 0;
+  ocrPollTimer = setInterval(async () => {
+    const sr = await fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/status`);
+    const status = await sr.json();
+    if (!sr.ok) return;
+
+    const pct = status.total ? Math.round(status.done / status.total * 100) : 0;
+    document.getElementById('ocr-bar').style.width = pct + '%';
+    document.getElementById('ocr-progress-text').textContent =
+      `已完成 ${status.done} / ${status.total} 张`;
+
+    // 追加新结果到日志
+    const newResults = status.results.slice(seenCount);
+    for (const r of newResults) {
+      const img = allImages.find(i => i.id === r.image_id);
+      const name = img ? img.filename : `#${r.image_id}`;
+      if (r.success) {
+        appendLog(`✔ ${name}  video_id=${r.video_id || '-'}  ts=${r.timestamp || '-'}`, 'ok');
+        if (img) img.ocr = {video_id: r.video_id, timestamp: r.timestamp, timestamp_seconds: r.timestamp_seconds, success: true};
+      } else {
+        appendLog(`✘ ${name}  ${r.error || 'OCR 未识别'}`, 'fail');
+        if (img) img.ocr = {success: false};
+      }
+    }
+    seenCount = status.results.length;
+
+    if (!status.running) {
+      clearInterval(ocrPollTimer);
+      const ok = status.results.filter(r => r.success).length;
+      const fail = status.results.length - ok;
+      document.getElementById('ocr-progress-text').textContent =
+        `完成！✔ 成功 ${ok} 张  ✘ 失败 ${fail} 张`;
+      document.getElementById('ocr-close-btn').disabled = false;
+      renderGrid(allImages);
+    }
+  }, 1500);
+}
+
+function closeOcrModal() {
+  if (ocrPollTimer) clearInterval(ocrPollTimer);
+  document.getElementById('ocr-modal').classList.remove('open');
+}
+
+function appendLog(text, type) {
+  const log = document.getElementById('ocr-log');
+  const line = document.createElement('div');
+  line.className = type === 'ok' ? 'log-ok' : (type === 'fail' ? 'log-fail' : '');
+  line.textContent = text;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── 上传 ──────────────────────────────────────────────────────────────────────
+const uploadArea = document.getElementById('upload-area');
+const fileInput = document.getElementById('file-input');
+
+uploadArea.addEventListener('click', e => { if (e.target !== fileInput) fileInput.click(); });
+uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault(); uploadArea.classList.remove('dragover');
+  uploadFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
+
+async function uploadFiles(files) {
+  if (!files.length) return;
+  const msg = document.getElementById('upload-msg');
+  msg.innerHTML = `<div style="color:#555;font-size:.88rem;">上传中…</div>`;
+
+  const form = new FormData();
+  for (const f of files) form.append('image', f);
+
+  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/upload`, {method:'POST', body: form});
+  const data = await res.json();
+
+  let html = '';
+  if (data.uploaded?.length) html += `<div style="color:#27ae60;font-size:.88rem;">✔ 成功上传 ${data.uploaded.length} 张</div>`;
+  if (data.errors?.length) html += data.errors.map(e => `<div style="color:#e74c3c;font-size:.85rem;">✘ ${escHtml(e)}</div>`).join('');
+  msg.innerHTML = html;
+  setTimeout(() => { msg.innerHTML = ''; }, 5000);
+  fileInput.value = '';
+  loadImages();
+}
+
+// ── 关闭 Modal（点击背景） ────────────────────────────────────────────────────
+document.getElementById('detail-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeDetailModal();
+});
+document.getElementById('ocr-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeOcrModal();
+});
+
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// 初始化：先加载事件类型配置，再加载图片
+async function init() {
+  const res = await fetch('/alerts/api/event-types');
+  const types = await res.json();
+  EVENT_TYPES = types.map(t => t.name);
+
+  // 动态填充详情弹窗的事件类型下拉框
+  const sel = document.getElementById('detail-label');
+  sel.innerHTML = '<option value="">未标记</option>';
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t.name;
+    opt.textContent = `${t.name}  (${t.id})`;
+    sel.appendChild(opt);
+  }
+
+  await loadImages();
+}
+
+init();
+</script>
+{% endblock %}

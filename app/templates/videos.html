@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}视频管理 - 视频水印Benchmark{% endblock %}
+{% block title %}视频管理 - 视频数据预处理与告警评估平台{% endblock %}
 
 {% block content %}
 <style>
@@ -19,6 +19,13 @@
   .btn-secondary:hover { background:#636e72; }
   .btn-info { background:#16a085; }
   .btn-info:hover { background:#1abc9c; }
+
+  /* GT帧状态标签 */
+  .gt-status { font-size:0.75rem; padding:2px 8px; border-radius:10px; font-weight:600; }
+  .gt-status-pending { background:#fff3cd; color:#856404; }
+  .gt-status-processing { background:#cce5ff; color:#004085; }
+  .gt-status-done { background:#d4edda; color:#155724; }
+  .gt-status-failed { background:#f8d7da; color:#721c24; }
 
   /* 标注面板 */
   .annotate-panel { display:none; background:#f8f9fa; border:1px solid #e0e0e0; border-radius:6px; padding:1rem; margin-top:0.5rem; }
@@ -87,6 +94,12 @@
     <input type="text" id="search-input" placeholder="搜索文件名、视频ID或事件类型…">
     <button class="btn btn-secondary btn-sm" onclick="clearSearch()">清空</button>
   </div>
+  <div style="margin-bottom:1rem;">
+    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+      <input type="checkbox" id="filter-eligible" onchange="toggleFilter()">
+      <span style="font-size:0.9rem;">只显示「已打水印且视频ID为10位」的视频</span>
+    </label>
+  </div>
 
   <!-- 批量操作栏 -->
   <div id="batch-bar">
@@ -152,6 +165,14 @@ async function loadVideos(q = '') {
   renderTable(allVideos);
 }
 
+let filterEligible = false;
+
+function isEligible(v) {
+  const hasWatermark = v.watermarked_videos && v.watermarked_videos.length > 0;
+  const has10DigitId = v.video_id && v.video_id.length === 10 && /^\d{10}$/.test(v.video_id);
+  return hasWatermark && has10DigitId;
+}
+
 function renderTable(videos) {
   const tbody = document.getElementById('video-tbody');
   const emptyMsg = document.getElementById('empty-msg');
@@ -164,15 +185,20 @@ function renderTable(videos) {
   if (checkAll) { checkAll.checked = false; checkAll.indeterminate = false; }
   document.getElementById('batch-bar').classList.remove('visible');
 
-  if (!videos.length) {
+  // 应用筛选
+  const displayVideos = filterEligible ? videos.filter(isEligible) : videos;
+
+  if (!displayVideos.length) {
     emptyMsg.style.display = 'block';
+    emptyMsg.textContent = filterEligible ? '暂无符合条件的视频（需要已打水印且视频ID为10位数字）' : '暂无视频';
     return;
   }
   emptyMsg.style.display = 'none';
 
-  for (const v of videos) {
+  for (const v of displayVideos) {
     const hasWatermark = v.watermarked_videos && v.watermarked_videos.length > 0;
     const sizeStr = v.file_size ? (v.file_size / 1024 / 1024).toFixed(1) + ' MB' : '-';
+    const eligible = isEligible(v);
 
     const tr = document.createElement('tr');
     tr.id = `row-${v.id}`;
@@ -210,11 +236,12 @@ function renderTable(videos) {
           </div>
           <button class="btn btn-sm btn-warning" onclick="applyWatermark(${v.id}, this)">${hasWatermark ? '重新打水印' : '打水印'}</button>
           <button class="btn btn-sm" onclick="toggleAnnotate(${v.id})">标注事件</button>
+          ${eligible ? `<button class="btn btn-sm btn-success" onclick="addToEvalSet(${v.id})">加入评测集</button>` : ''}
         </div>
         <div class="annotate-panel" id="annotate-${v.id}">
           <h4>事件标注</h4>
           <table class="event-table">
-            <thead><tr><th>事件类型</th><th>开始(秒)</th><th>结束(秒)</th><th></th></tr></thead>
+            <thead><tr><th>事件类型</th><th>开始(秒)</th><th>结束(秒)</th><th>GT帧状态</th><th></th></tr></thead>
             <tbody id="events-tbody-${v.id}"></tbody>
           </table>
           <div class="add-event-form">
@@ -245,6 +272,11 @@ document.getElementById('search-input').addEventListener('input', function() {
 function clearSearch() {
   document.getElementById('search-input').value = '';
   loadVideos();
+}
+
+function toggleFilter() {
+  filterEligible = document.getElementById('filter-eligible').checked;
+  renderTable(allVideos);
 }
 
 // ── 视频ID ───────────────────────────────────────────────────────────────────
@@ -415,7 +447,7 @@ async function applyWatermark(id, btn) {
     showMsg('upload-message', '水印添加成功！', 'success');
     loadVideos(document.getElementById('search-input').value.trim());
   } else {
-    btn.textContent = '打水印';
+    btn.textContent = hasWatermark ? '重新打水印' : '打水印';
     showMsg('upload-message', '错误: ' + (data.error || '失败'), 'error');
   }
 }
@@ -437,23 +469,57 @@ async function loadEvents(id) {
   renderEvents(id, events);
 }
 
+let eventsPollingTimers = {};
+
 function renderEvents(id, events) {
   const tbody = document.getElementById(`events-tbody-${id}`);
   tbody.innerHTML = '';
   if (!events.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:#999;text-align:center;">暂无事件</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#999;text-align:center;">暂无事件</td></tr>';
     return;
   }
   for (const e of events) {
+    const gtStatus = e.gt_frames_status || 'pending';
+    const gtStatusText = {
+      'pending': '等待生成',
+      'processing': '生成中…',
+      'done': '已生成',
+      'failed': '生成失败'
+    }[gtStatus] || gtStatus;
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${escHtml(e.event_type)}</td>
       <td>${e.start_seconds}</td>
       <td>${e.end_seconds}</td>
+      <td><span class="gt-status gt-status-${gtStatus}" data-event-id="${e.id}">${gtStatusText}</span></td>
       <td><button class="btn btn-sm btn-danger" onclick="deleteEvent(${id}, ${e.id}, this)">删除</button></td>
     `;
     tbody.appendChild(tr);
   }
+
+  // 如果有pending或processing的状态，启动轮询
+  const hasPending = events.some(e => !e.gt_frames_status || e.gt_frames_status === 'pending' || e.gt_frames_status === 'processing');
+  if (hasPending) {
+    startEventsPolling(id);
+  }
+}
+
+function startEventsPolling(videoId) {
+  // 清除旧的定时器
+  if (eventsPollingTimers[videoId]) {
+    clearInterval(eventsPollingTimers[videoId]);
+  }
+  eventsPollingTimers[videoId] = setInterval(async () => {
+    await loadEvents(videoId);
+    // 检查是否还有需要轮询的
+    const res = await fetch(`/videos/api/${videoId}/events`);
+    const events = await res.json();
+    const hasPending = events.some(e => !e.gt_frames_status || e.gt_frames_status === 'pending' || e.gt_frames_status === 'processing');
+    if (!hasPending) {
+      clearInterval(eventsPollingTimers[videoId]);
+      delete eventsPollingTimers[videoId];
+    }
+  }, 1500);
 }
 
 async function addEvent(id) {
@@ -515,6 +581,73 @@ async function viewJson(id) {
 
 function closeJsonModal() {
   document.getElementById('json-modal').style.display = 'none';
+}
+
+// ── 加入评测集 ─────────────────────────────────────────────────────────────
+async function addToEvalSet(videoId) {
+  // 先获取现有的评测集列表
+  const res = await fetch('/videos/api/eval-sets');
+  const data = await res.json();
+  const sets = data.sets || [];
+
+  if (sets.length === 0) {
+    // 创建新的评测集
+    const name = prompt('请输入评测集名称：', '默认评测集');
+    if (!name) return;
+
+    const createRes = await fetch('/videos/api/eval-sets', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, video_ids: [videoId]})
+    });
+
+    if (createRes.ok) {
+      showMsg('upload-message', '已创建评测集并添加视频！', 'success');
+    } else {
+      const err = await createRes.json();
+      alert('创建失败: ' + (err.error || '未知'));
+    }
+  } else {
+    // 让用户选择添加到哪个评测集
+    const setOptions = sets.map((s, i) => `${i+1}. ${s.name}`).join('\\n');
+    const choice = prompt(`请选择要添加到的评测集（输入序号）：\\n${setOptions}\\n\\n输入 0 创建新评测集`, '1');
+
+    if (choice === null) return;
+
+    if (choice === '0') {
+      const name = prompt('请输入评测集名称：', '新评测集');
+      if (!name) return;
+
+      const createRes = await fetch('/videos/api/eval-sets', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, video_ids: [videoId]})
+      });
+
+      if (createRes.ok) {
+        showMsg('upload-message', '已创建评测集并添加视频！', 'success');
+      } else {
+        const err = await createRes.json();
+        alert('创建失败: ' + (err.error || '未知'));
+      }
+    } else {
+      const idx = parseInt(choice) - 1;
+      if (idx >= 0 && idx < sets.length) {
+        const addRes = await fetch(`/videos/api/eval-sets/${sets[idx].id}/add`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({video_id: videoId})
+        });
+
+        if (addRes.ok) {
+          showMsg('upload-message', `已添加到评测集「${sets[idx].name}」！`, 'success');
+        } else {
+          const err = await addRes.json();
+          alert('添加失败: ' + (err.error || '未知'));
+        }
+      }
+    }
+  }
 }
 
 // ── 上传 ─────────────────────────────────────────────────────────────────────

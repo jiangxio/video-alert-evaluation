@@ -6,8 +6,10 @@ import os
 import json
 import zipfile
 import tempfile
+import subprocess
+import threading
 
-from app.database import get_db
+from app.database import get_db, DATABASE_PATH
 from app.services.watermark_service import add_watermark
 
 bp = Blueprint('videos', __name__, url_prefix='/videos')
@@ -393,7 +395,7 @@ def list_events(video_id):
 
 @bp.route('/api/<int:video_id>/events', methods=['POST'])
 def add_event(video_id):
-    """添加事件"""
+    """添加事件（GT帧异步后台生成）"""
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT id FROM videos WHERE id = ?', (video_id,))
@@ -418,30 +420,143 @@ def add_event(video_id):
         return jsonify({'error': '开始时间必须小于结束时间'}), 400
 
     cursor.execute(
-        'INSERT INTO events (video_db_id, event_type, start_seconds, end_seconds) VALUES (?, ?, ?, ?)',
-        (video_id, event_type, start, end)
+        'INSERT INTO events (video_db_id, event_type, start_seconds, end_seconds, gt_frames_status) VALUES (?, ?, ?, ?, ?)',
+        (video_id, event_type, start, end, 'pending')
     )
     db.commit()
     event_id = cursor.lastrowid
 
+    # 提前获取配置，传给后台线程
+    project_root = current_app.config['PROJECT_ROOT']
+
+    # 后台异步生成GT帧
+    thread = threading.Thread(
+        target=_capture_gt_frames_async,
+        args=(video_id, event_id, event_type, start, end, project_root),
+        daemon=True
+    )
+    thread.start()
+
     return jsonify({
         'success': True,
-        'event': {'id': event_id, 'event_type': event_type, 'start_seconds': start, 'end_seconds': end}
+        'event': {
+            'id': event_id,
+            'event_type': event_type,
+            'start_seconds': start,
+            'end_seconds': end,
+            'gt_frames_status': 'pending'
+        }
     })
 
 
 @bp.route('/api/<int:video_id>/events/<int:event_id>', methods=['DELETE'])
 def delete_event(video_id, event_id):
-    """删除事件"""
+    """删除事件（同时删除关联的GT帧）"""
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT id FROM events WHERE id = ? AND video_db_id = ?', (event_id, video_id))
     if not cursor.fetchone():
         return jsonify({'error': '事件不存在'}), 404
 
+    # 先获取该事件对应的GT帧文件路径并删除磁盘文件
+    cursor.execute('SELECT file_path FROM gt_frames WHERE event_id = ?', (event_id,))
+    frames = cursor.fetchall()
+    for frame in frames:
+        try:
+            Path(frame['file_path']).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # 删除数据库中的GT帧记录
+    cursor.execute('DELETE FROM gt_frames WHERE event_id = ?', (event_id,))
+
+    # 删除事件
     cursor.execute('DELETE FROM events WHERE id = ?', (event_id,))
     db.commit()
     return jsonify({'success': True})
+
+
+def _capture_gt_frames_async(video_db_id, event_id, event_type, start_sec, end_sec, project_root):
+    """后台异步：在事件范围内每秒截取一帧，保存为 GT 帧"""
+    import sqlite3
+
+    # 后台线程需要自己创建数据库连接
+    conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    try:
+        # 更新状态为 processing
+        cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('processing', event_id))
+        conn.commit()
+
+        cursor.execute('SELECT * FROM videos WHERE id = ?', (video_db_id,))
+        video = cursor.fetchone()
+        if not video or not video['video_id']:
+            cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
+            conn.commit()
+            return
+
+        # 优先使用打水印后的视频
+        cursor.execute('''
+            SELECT output_path FROM watermarked_videos
+            WHERE original_video_id = ?
+            ORDER BY created_at DESC LIMIT 1
+        ''', (video_db_id,))
+        wm = cursor.fetchone()
+        video_path = Path(wm['output_path']) if wm else Path(video['original_path'])
+        if not video_path.exists():
+            cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
+            conn.commit()
+            return
+
+        # 创建输出目录（使用传入的 project_root）
+        frames_dir = Path(project_root) / 'ground_truth_frames' / video['video_id']
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+        # 用 FFmpeg 每秒截一帧
+        for t in range(int(start_sec), int(end_sec) + 1):
+            filename = f'{event_id}_{t}.png'
+            out_path = frames_dir / filename
+
+            # 检查是否已经存在（防重复）
+            if out_path.exists():
+                # 检查数据库中是否已有记录
+                cursor.execute('''
+                    SELECT id FROM gt_frames
+                    WHERE event_id = ? AND timestamp_sec = ?
+                ''', (event_id, float(t)))
+                if cursor.fetchone():
+                    continue  # 已存在，跳过
+
+            try:
+                subprocess.run([
+                    'ffmpeg', '-ss', str(t), '-i', str(video_path),
+                    '-vframes', '1', '-y', '-f', 'image2',
+                    '-loglevel', 'error',
+                    str(out_path)
+                ], timeout=30, check=True)
+            except Exception:
+                continue
+
+            if out_path.exists():
+                cursor.execute('''
+                    INSERT INTO gt_frames
+                    (video_db_id, event_id, event_type, timestamp_sec, file_path, filename)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (video_db_id, event_id, event_type, float(t), str(out_path), filename))
+                conn.commit()
+
+        # 完成
+        cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('done', event_id))
+        conn.commit()
+
+    except Exception as e:
+        # 出错
+        cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ── Ground Truth JSON ─────────────────────────────────────────────────────────
@@ -507,3 +622,84 @@ def view_ground_truth(video_id):
         data = json.load(f)
 
     return jsonify(data)
+
+
+# ── 评测视频集管理 ───────────────────────────────────────────────────────────
+
+@bp.route('/api/eval-sets', methods=['GET'])
+def list_eval_sets():
+    """获取所有评测视频集"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_video_sets ORDER BY created_at DESC')
+    sets = cursor.fetchall()
+
+    result = []
+    for s in sets:
+        s_dict = dict(s)
+        if s_dict.get('video_ids'):
+            try:
+                s_dict['video_ids'] = json.loads(s_dict['video_ids'])
+            except Exception:
+                s_dict['video_ids'] = []
+        else:
+            s_dict['video_ids'] = []
+        result.append(s_dict)
+
+    return jsonify({'sets': result})
+
+
+@bp.route('/api/eval-sets', methods=['POST'])
+def create_eval_set():
+    """创建新的评测视频集"""
+    data = request.get_json() or {}
+    name = data.get('name', '').strip()
+    video_ids = data.get('video_ids', [])
+
+    if not name:
+        return jsonify({'error': '评测集名称不能为空'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        'INSERT INTO eval_video_sets (name, notes, video_ids) VALUES (?, ?, ?)',
+        (name, data.get('notes', ''), json.dumps(video_ids))
+    )
+    db.commit()
+
+    return jsonify({'success': True, 'id': cursor.lastrowid})
+
+
+@bp.route('/api/eval-sets/<int:set_id>/add', methods=['POST'])
+def add_video_to_eval_set(set_id):
+    """添加视频到评测集"""
+    data = request.get_json() or {}
+    video_id = data.get('video_id')
+
+    if not video_id:
+        return jsonify({'error': '视频ID不能为空'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (set_id,))
+    eval_set = cursor.fetchone()
+
+    if not eval_set:
+        return jsonify({'error': '评测集不存在'}), 404
+
+    current_ids = []
+    if eval_set.get('video_ids'):
+        try:
+            current_ids = json.loads(eval_set['video_ids'])
+        except Exception:
+            current_ids = []
+
+    if video_id not in current_ids:
+        current_ids.append(video_id)
+        cursor.execute(
+            'UPDATE eval_video_sets SET video_ids = ? WHERE id = ?',
+            (json.dumps(current_ids), set_id)
+        )
+        db.commit()
+
+    return jsonify({'success': True})

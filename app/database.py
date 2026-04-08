@@ -127,9 +127,16 @@ def init_db():
             event_type TEXT NOT NULL,
             start_seconds REAL NOT NULL,
             end_seconds REAL NOT NULL,
+            gt_frames_status TEXT DEFAULT 'pending',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # 为 events 追加 gt_frames_status 列（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE events ADD COLUMN gt_frames_status TEXT DEFAULT "pending"')
+    except Exception:
+        pass  # 列已存在
 
     # 对 videos.filename 加唯一索引（防止重复上传）
     cursor.execute('''
@@ -146,6 +153,134 @@ def init_db():
         col_name = col_def.split()[0]
         try:
             cursor.execute(f'ALTER TABLE alert_images ADD COLUMN {col_def}')
+        except Exception:
+            pass  # 列已存在
+
+    # 评测任务表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS eval_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            notes TEXT,
+            dataset_id INTEGER REFERENCES datasets(id),
+            eval_set_id INTEGER REFERENCES eval_video_sets(id),
+            merge_interval_sec REAL DEFAULT 5.0,
+            event_start_sec REAL DEFAULT 5.0,
+            event_end_sec REAL DEFAULT 60.0,
+            event_interval_sec REAL DEFAULT 10.0,
+            trigger_rate REAL DEFAULT 0.5,
+            status TEXT DEFAULT 'created',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 为 eval_tasks 追加 eval_set_id 列（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE eval_tasks ADD COLUMN eval_set_id INTEGER REFERENCES eval_video_sets(id)')
+    except Exception:
+        pass  # 列已存在
+
+    # 合并事件表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS eval_merged_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER REFERENCES eval_tasks(id),
+            video_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            start_sec REAL,
+            end_sec REAL,
+            expected_count INTEGER,
+            confirmed_count INTEGER,
+            image_ids TEXT,
+            confirmed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 评测结果表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS eval_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER REFERENCES eval_tasks(id),
+            merged_event_id INTEGER REFERENCES eval_merged_events(id),
+            alert_image_id INTEGER REFERENCES alert_images(id),
+            is_false_positive BOOLEAN DEFAULT 0,
+            is_missed BOOLEAN DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # GT 帧表（标注事件后每秒截一帧）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gt_frames (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_db_id INTEGER REFERENCES videos(id),
+            event_id INTEGER REFERENCES events(id),
+            event_type TEXT NOT NULL,
+            timestamp_sec REAL NOT NULL,
+            file_path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 为 gt_frames 追加 event_id 列（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE gt_frames ADD COLUMN event_id INTEGER REFERENCES events(id)')
+    except Exception:
+        pass  # 列已存在
+
+    # 评测视频集表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS eval_video_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            notes TEXT,
+            video_ids TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 为 eval_merged_events 追加新列（兼容已有数据）
+    for col_def in [
+        'ts_start REAL',
+        'ts_end REAL',
+        'representative_image_id INTEGER',
+        'is_false_positive INTEGER DEFAULT 0',
+        'matched_gt_event_id INTEGER',
+    ]:
+        col_name = col_def.split()[0]
+        try:
+            cursor.execute(f'ALTER TABLE eval_merged_events ADD COLUMN {col_def}')
+        except Exception:
+            pass  # 列已存在
+
+    # GT 事件得分表（评测任务的 GT 事件视角）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS eval_gt_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER REFERENCES eval_tasks(id),
+            gt_event_id INTEGER REFERENCES events(id),
+            video_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            start_sec REAL,
+            end_sec REAL,
+            expected_count INTEGER DEFAULT 1,
+            confirmed_count INTEGER DEFAULT 1,
+            actual_count INTEGER DEFAULT 0,
+            mid_frame_id INTEGER REFERENCES gt_frames(id),
+            mid_frame_path TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 为 eval_tasks 追加 finalized/accuracy/recall 列（兼容已有数据）
+    for col_def in [
+        'finalized INTEGER DEFAULT 0',
+        'accuracy REAL',
+        'recall REAL',
+    ]:
+        try:
+            cursor.execute(f'ALTER TABLE eval_tasks ADD COLUMN {col_def}')
         except Exception:
             pass  # 列已存在
 

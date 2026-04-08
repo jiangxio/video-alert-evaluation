@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+
+{% block title %}评测任务 - 视频数据预处理与告警评估平台{% endblock %}
+
+{% block content %}
+<style>
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; }
+  .page-header h2 { margin:0; }
+
+  .task-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:1.2rem; }
+  .task-card {
+    background:white; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.1);
+    padding:1.2rem; display:flex; flex-direction:column; gap:0.5rem;
+  }
+  .task-card h3 { margin:0; font-size:1.05rem; color:#2c3e50; }
+  .task-meta { font-size:0.82rem; color:#888; }
+  .task-notes { font-size:0.88rem; color:#555; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .task-status { font-size:0.88rem; font-weight:600; }
+  .status-created { color:#3498db; }
+  .status-confirming { color:#f39c12; }
+  .status-evaluating { color:#9b59b6; }
+  .status-done { color:#27ae60; }
+
+  #empty-state { text-align:center; color:#aaa; padding:3rem; }
+
+  /* 新建弹窗 */
+  .modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:1000; align-items:center; justify-content:center; }
+  .modal-bg.open { display:flex; }
+  .modal-box { background:white; border-radius:8px; padding:1.5rem; width:520px; max-width:100%; box-shadow:0 8px 32px rgba(0,0,0,.2); }
+  .modal-box h3 { margin:0 0 1rem; }
+  .form-row { display:grid; grid-template-columns:1fr 1fr; gap:0.8rem; }
+  .form-group { margin-bottom:0.9rem; }
+  .form-group label { display:block; font-size:0.88rem; color:#555; margin-bottom:0.3rem; }
+  .form-group input, .form-group select, .form-group textarea {
+    width:100%; padding:0.55rem 0.7rem; border:1px solid #ddd; border-radius:4px; font-size:0.95rem;
+  }
+  .form-group textarea { resize:vertical; min-height:70px; }
+  .modal-footer { display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem; }
+</style>
+
+<div class="card">
+  <div class="page-header">
+    <h2>评测任务</h2>
+    <button class="btn" onclick="openCreateModal()">+ 新建任务</button>
+  </div>
+
+  <div id="task-container">
+    <p id="loading-msg">加载中…</p>
+    <div class="task-grid" id="task-grid"></div>
+    <div id="empty-state" style="display:none;">
+      <p>暂无评测任务</p>
+      <p style="font-size:0.88rem;">点击右上角"新建任务"开始</p>
+    </div>
+  </div>
+</div>
+
+<!-- 新建任务 Modal -->
+<div class="modal-bg" id="create-modal">
+  <div class="modal-box">
+    <h3>新建评测任务</h3>
+    <div class="form-group">
+      <label>任务名称 <span style="color:#e74c3c">*</span></label>
+      <input type="text" id="new-name" placeholder="输入任务名称">
+    </div>
+    <div class="form-group">
+      <label>备注</label>
+      <textarea id="new-notes" placeholder="可选备注信息"></textarea>
+    </div>
+    <div class="form-group">
+      <label>选择告警数据集 <span style="color:#e74c3c">*</span></label>
+      <select id="new-dataset"></select>
+    </div>
+    <div class="form-group">
+      <label>选择评测视频集 <span style="color:#e74c3c">*</span></label>
+      <select id="new-eval-set"></select>
+    </div>
+
+    <hr style="margin:1rem 0;border:none;border-top:1px solid #eee;">
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>同一事件合并间隔（秒）</label>
+        <input type="number" id="new-merge-interval" min="0" step="0.5" value="5.0">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>事件间隔（秒）</label>
+        <input type="number" id="new-ev-interval" min="0.1" step="0.5" value="10.0">
+      </div>
+      <div class="form-group">
+        <label>触发率（0-1）</label>
+        <input type="number" id="new-trigger-rate" min="0" max="1" step="0.01" value="0.5">
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeCreateModal()">取消</button>
+      <button class="btn btn-success" onclick="createTask()">创建</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let datasets = [];
+let eval_sets = [];
+
+async function loadDatasets() {
+  const res = await fetch('/alerts/api/datasets');
+  datasets = await res.json();
+  const sel = document.getElementById('new-dataset');
+  sel.innerHTML = '<option value="">请选择告警数据集</option>';
+  for (const d of datasets) {
+    const opt = document.createElement('option');
+    opt.value = d.id;
+    opt.textContent = `${d.name} (${d.image_count || 0}张图片)`;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadEvalSets() {
+  const res = await fetch('/evaluation/api/eval-sets');
+  const data = await res.json();
+  eval_sets = data.sets || [];
+  const sel = document.getElementById('new-eval-set');
+  sel.innerHTML = '<option value="">请选择评测视频集</option>';
+  for (const s of eval_sets) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.video_count}个视频, ${s.gt_frame_count}个GT帧)`;
+    sel.appendChild(opt);
+  }
+}
+
+async function loadTasks() {
+  const res = await fetch('/evaluation/api/tasks');
+  const tasks = await res.json();
+
+  document.getElementById('loading-msg').style.display = 'none';
+  const grid = document.getElementById('task-grid');
+  const empty = document.getElementById('empty-state');
+
+  grid.innerHTML = '';
+  if (!tasks.length) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+
+  const statusText = {
+    'created': '待分析',
+    'confirming': '待确认',
+    'evaluating': '评测中',
+    'done': '已完成',
+  };
+  const statusClass = {
+    'created': 'status-created',
+    'confirming': 'status-confirming',
+    'evaluating': 'status-evaluating',
+    'done': 'status-done',
+  };
+
+  for (const t of tasks) {
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    const date = t.created_at ? new Date(t.created_at).toLocaleDateString('zh-CN') : '-';
+    const dsName = t.dataset_name || '-';
+    const esName = t.eval_set_name || '-';
+    const st = t.status || 'created';
+    card.innerHTML = `
+      <h3>${escHtml(t.name)}</h3>
+      <div class="task-meta">${date} · 告警数据集：${escHtml(dsName)}<br>评测集：${escHtml(esName)}</div>
+      ${t.notes ? `<div class="task-notes" title="${escHtml(t.notes)}">${escHtml(t.notes)}</div>` : ''}
+      <div class="task-status ${statusClass[st] || ''}">${statusText[st] || st}</div>
+      <div style="margin-top:0.5rem;display:flex;gap:0.5rem;">
+        <a class="btn btn-sm" href="/evaluation/${t.id}/">进入任务</a>
+        <button class="btn btn-sm btn-danger" onclick="deleteTask(${t.id}, this)">删除</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+async function deleteTask(taskId, btn) {
+  if (!confirm('确定要删除这个评测任务吗？')) return;
+  btn.disabled = true;
+  btn.textContent = '删除中…';
+
+  const res = await fetch(`/evaluation/api/tasks/${taskId}`, {method: 'DELETE'});
+  if (res.ok) {
+    loadTasks();
+  } else {
+    const data = await res.json();
+    alert('删除失败: ' + (data.error || '未知'));
+    btn.disabled = false;
+    btn.textContent = '删除';
+  }
+}
+
+function openCreateModal() {
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-notes').value = '';
+  document.getElementById('new-dataset').value = '';
+  document.getElementById('new-eval-set').value = '';
+  document.getElementById('new-merge-interval').value = '5.0';
+  document.getElementById('new-ev-interval').value = '10.0';
+  document.getElementById('new-trigger-rate').value = '0.5';
+  document.getElementById('create-modal').classList.add('open');
+  setTimeout(() => document.getElementById('new-name').focus(), 50);
+}
+function closeCreateModal() {
+  document.getElementById('create-modal').classList.remove('open');
+}
+document.getElementById('create-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeCreateModal();
+});
+
+async function createTask() {
+  const name = document.getElementById('new-name').value.trim();
+  if (!name) { alert('请输入任务名称'); return; }
+  const dataset_id = parseInt(document.getElementById('new-dataset').value || '0');
+  if (!dataset_id) { alert('请选择告警数据集'); return; }
+  const eval_set_id = parseInt(document.getElementById('new-eval-set').value || '0');
+  if (!eval_set_id) { alert('请选择评测视频集'); return; }
+
+  const payload = {
+    name,
+    notes: document.getElementById('new-notes').value.trim(),
+    dataset_id,
+    eval_set_id,
+    merge_interval_sec: parseFloat(document.getElementById('new-merge-interval').value),
+    event_interval_sec: parseFloat(document.getElementById('new-ev-interval').value),
+    trigger_rate: parseFloat(document.getElementById('new-trigger-rate').value),
+  };
+
+  const res = await fetch('/evaluation/api/tasks', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    closeCreateModal();
+    loadTasks();
+  } else {
+    alert('创建失败: ' + (data.error || '未知'));
+  }
+}
+
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+loadDatasets();
+loadEvalSets();
+loadTasks();
+</script>
+{% endblock %}

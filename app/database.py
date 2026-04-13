@@ -273,16 +273,48 @@ def init_db():
         )
     ''')
 
-    # 为 eval_tasks 追加 finalized/accuracy/recall 列（兼容已有数据）
+    # 为 eval_tasks 追加 finalized/accuracy/recall/event_metrics 列（兼容已有数据）
     for col_def in [
         'finalized INTEGER DEFAULT 0',
         'accuracy REAL',
         'recall REAL',
+        'event_metrics TEXT',
     ]:
         try:
             cursor.execute(f'ALTER TABLE eval_tasks ADD COLUMN {col_def}')
         except Exception:
             pass  # 列已存在
+
+    # 为 watermarked_videos 追加封面、分辨率、时长字段（兼容已有数据）
+    for col_def in [
+        'thumbnail_path TEXT',
+        'resolution TEXT',
+        'duration REAL',
+    ]:
+        try:
+            cursor.execute(f'ALTER TABLE watermarked_videos ADD COLUMN {col_def}')
+        except Exception:
+            pass  # 列已存在
+
+    # 为 videos 表追加 video_id_confirmed 字段（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE videos ADD COLUMN video_id_confirmed INTEGER DEFAULT 0')
+    except Exception:
+        pass  # 列已存在
+
+    # 生成视频表（存储拼接/打包结果）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS generated_videos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_size INTEGER,
+            source_video_ids TEXT,
+            status TEXT DEFAULT 'processing',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
 
     db.commit()
     db.close()

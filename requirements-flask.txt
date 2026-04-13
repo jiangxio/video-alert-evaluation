@@ -1,0 +1,3 @@
+# Flask Web Platform Dependencies
+Flask>=2.3
+Werkzeug>=2.3

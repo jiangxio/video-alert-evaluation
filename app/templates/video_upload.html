@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+
+{% block title %}视频上传{% endblock %}
+
+{% block content %}
+<style>
+  .breadcrumb { font-size:0.88rem; color:#888; margin-bottom:1rem; }
+  .breadcrumb a { color:#3498db; text-decoration:none; }
+
+  .upload-zone {
+    border:2px dashed #ccc;
+    border-radius:8px;
+    padding:2rem;
+    text-align:center;
+    margin-bottom:1.5rem;
+    cursor:pointer;
+    transition:border-color 0.2s;
+  }
+  .upload-zone:hover, .upload-zone.dragover { border-color:#3498db; background:#f8fbff; }
+  .upload-zone input { display:none; }
+
+  .video-table { width:100%; border-collapse:collapse; }
+  .video-table th, .video-table td { padding:0.7rem; border-bottom:1px solid #eee; text-align:left; }
+  .video-table th { background:#f8f9fa; font-weight:600; }
+  .video-table tr:hover { background:#f8f9fa; }
+
+  .video-id-input {
+    width:120px;
+    padding:0.3rem 0.5rem;
+    border:1px solid #ddd;
+    border-radius:4px;
+    font-size:0.9rem;
+  }
+  .video-id-input.invalid { border-color:#e74c3c; }
+  .video-id-input.valid { border-color:#27ae60; }
+
+  .action-btns { display:flex; gap:0.4rem; flex-wrap:wrap; }
+  .btn-sm { padding:0.3rem 0.6rem; font-size:0.85rem; }
+
+  .search-bar {
+    display:flex;
+    gap:0.5rem;
+    margin-bottom:1rem;
+  }
+  .search-bar input {
+    flex:1;
+    max-width:300px;
+    padding:0.5rem;
+    border:1px solid #ddd;
+    border-radius:4px;
+  }
+
+  .download-dropdown {
+    position:relative;
+    display:inline-block;
+  }
+  .download-dropdown-content {
+    display:none;
+    position:absolute;
+    background:white;
+    min-width:120px;
+    box-shadow:0 4px 8px rgba(0,0,0,0.15);
+    border-radius:4px;
+    z-index:10;
+  }
+  .download-dropdown:hover .download-dropdown-content { display:block; }
+  .download-dropdown-content a {
+    display:block;
+    padding:0.5rem 0.8rem;
+    color:#333;
+    text-decoration:none;
+    font-size:0.85rem;
+  }
+  .download-dropdown-content a:hover { background:#f5f5f5; }
+
+  .watermark-status { font-size:0.8rem; }
+  .watermark-status.done { color:#27ae60; }
+  .watermark-status.pending { color:#888; }
+
+  .rename-input {
+    display:none;
+    width:150px;
+    padding:0.3rem;
+    border:1px solid #ddd;
+    border-radius:4px;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity:1; }
+    50% { opacity:0.4; }
+  }
+</style>
+
+<div class="breadcrumb">
+  <a href="/">首页</a> &rsaquo; 视频上传
+</div>
+
+<div class="card">
+  <h2>视频上传</h2>
+  <p style="color:#666;margin-bottom:1rem;">上传原始视频，设置视频ID后打水印，打水印后的视频将出现在<a href="/videos/">视频管理</a>页</p>
+
+  <p style="background:#fff3cd;padding:0.8rem;border-radius:6px;color:#856404;margin-bottom:1rem;">
+    <strong>提示：</strong>打水印任务比较慢，点击后会在后台进行，不会影响其他操作，可以过段时间再来看结果。
+  </p>
+
+  <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+    <input type="file" id="fileInput" multiple accept=".mp4,.avi,.mov,.mkv">
+    <div style="font-size:2rem;color:#ccc;margin-bottom:0.5rem;">📁</div>
+    <div>点击或拖拽视频文件到此处上传</div>
+    <div style="font-size:0.85rem;color:#888;margin-top:0.5rem;">支持 MP4, AVI, MOV, MKV 格式</div>
+  </div>
+
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="搜索文件名或video_id..." oninput="searchVideos()">
+    <button class="btn" onclick="loadVideos()">刷新</button>
+  </div>
+
+  <table class="video-table">
+    <thead>
+      <tr>
+        <th>文件名</th>
+        <th>Video ID</th>
+        <th>水印状态</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="videoTableBody">
+      <tr><td colspan="4" style="text-align:center;color:#888;">加载中...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+let allVideos = [];
+let watermarkingVideos = new Map(); // video_db_id -> { task_id, progress }
+
+// 上传区域拖拽
+document.getElementById('uploadZone').addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.currentTarget.classList.add('dragover');
+});
+document.getElementById('uploadZone').addEventListener('dragleave', (e) => {
+  e.currentTarget.classList.remove('dragover');
+});
+document.getElementById('uploadZone').addEventListener('drop', (e) => {
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  const files = e.dataTransfer.files;
+  uploadFiles(files);
+});
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  uploadFiles(e.target.files);
+});
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append('video', file);
+    try {
+      const res = await fetch('/videos/api/upload', {method:'POST', body:formData});
+      const data = await res.json();
+      if (!res.ok) {
+        alert('上传失败: ' + (data.error || '未知错误'));
+      }
+    } catch(e) {
+      alert('上传失败: ' + e.message);
+    }
+  }
+  loadVideos();
+}
+
+async function loadVideos() {
+  const res = await fetch('/videos/api/all');
+  allVideos = await res.json();
+  renderTable(allVideos);
+}
+
+function searchVideos() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  if (!q) {
+    renderTable(allVideos);
+    return;
+  }
+  const filtered = allVideos.filter(v =>
+    v.filename.toLowerCase().includes(q) ||
+    (v.video_id && v.video_id.toLowerCase().includes(q))
+  );
+  renderTable(filtered);
+}
+
+function renderTable(videos) {
+  const tbody = document.getElementById('videoTableBody');
+  if (!videos.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;">暂无视频</td></tr>';
+    return;
+  }
+  tbody.innerHTML = videos.map(v => {
+    const isWatermarking = watermarkingVideos.has(v.id);
+    const progress = isWatermarking ? watermarkingVideos.get(v.id).progress : 0;
+    const isVideoIdConfirmed = v.video_id_confirmed || v.has_watermark;
+
+    return `
+    <tr data-id="${v.id}">
+      <td>
+        <span class="filename-text">${escHtml(v.filename)}</span>
+        <input type="text" class="rename-input" value="${escHtml(v.filename)}" onblur="saveRename(${v.id}, this)" onkeydown="if(event.key==='Enter')this.blur()">
+      </td>
+      <td style="display:flex;gap:0.5rem;align-items:center;">
+        <input type="text" class="video-id-input ${v.video_id ? 'valid' : ''}"
+               value="${escHtml(v.video_id || '')}"
+               placeholder="10位数字"
+               maxlength="10"
+               ${isVideoIdConfirmed ? 'disabled' : ''}
+               onchange="updateVideoId(${v.id}, this.value, this)">
+        ${!isVideoIdConfirmed && v.video_id ? `<button class="btn btn-sm btn-success" onclick="confirmVideoId(${v.id}, '${escHtml(v.video_id)}')">确认</button>` : ''}
+      </td>
+      <td>
+        ${isWatermarking ? `
+          <span class="watermark-status" style="color:#f39c12;">
+            <span style="animation:pulse 1.5s infinite;">⏳</span> 处理中
+          </span>
+        ` : `
+          <span class="watermark-status ${v.has_watermark ? 'done' : 'pending'}">
+            ${v.has_watermark ? '✓ 已打水印' : '未打水印'}
+          </span>
+        `}
+      </td>
+      <td>
+        <div class="action-btns">
+          <button class="btn btn-sm btn-secondary" onclick="startRename(${v.id})">重命名</button>
+          ${!v.has_watermark && !isWatermarking ? `<button class="btn btn-sm" onclick="applyWatermark(${v.id})" ${!v.video_id ? 'disabled' : ''}>打水印</button>` : ''}
+          ${isWatermarking ? `<button class="btn btn-sm" disabled>处理中</button>` : ''}
+          <div class="download-dropdown">
+            <button class="btn btn-sm btn-secondary">下载 ▼</button>
+            <div class="download-dropdown-content">
+              <a href="/videos/api/${v.id}/download?type=original" download>原视频</a>
+              ${v.has_watermark ? `<a href="/videos/api/${v.id}/download?type=watermarked" download>水印版</a>` : ''}
+            </div>
+          </div>
+          <button class="btn btn-sm btn-danger" onclick="deleteVideo(${v.id})">删除</button>
+        </div>
+      </td>
+    </tr>
+  `}).join('');
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function updateVideoId(videoId, value, input) {
+  const val = value.trim();
+  if (!val) return;
+  if (!/^\d{10}$/.test(val)) {
+    input.classList.add('invalid');
+    input.classList.remove('valid');
+    alert('video_id 必须为10位数字');
+    return;
+  }
+  input.classList.remove('invalid');
+  const res = await fetch(`/videos/api/${videoId}/video-id`, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({video_id:val})
+  });
+  if (res.ok) {
+    input.classList.add('valid');
+    loadVideos();
+  } else {
+    const data = await res.json();
+    alert(data.error || '设置失败');
+  }
+}
+
+async function confirmVideoId(videoId, videoIdValue) {
+  if (!confirm(`确认设置 Video ID 为 "${videoIdValue}" 吗？\n确认后将无法修改。`)) return;
+
+  // 在本地标记为已确认（不需要后端API，因为确认只是前端状态）
+  // 但为了持久化，我们需要保存到数据库
+  const res = await fetch(`/videos/api/${videoId}/confirm-video-id`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video_id: videoIdValue})
+  });
+
+  if (res.ok) {
+    loadVideos();
+  } else {
+    const data = await res.json();
+    alert(data.error || '确认失败');
+  }
+}
+
+async function applyWatermark(videoId) {
+  const res = await fetch(`/videos/api/${videoId}/watermark`, {method:'POST'});
+  const data = await res.json();
+  if (!res.ok) {
+    alert(data.error || '打水印失败');
+    return;
+  }
+
+  // 开始跟踪进度
+  watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0 });
+  renderTable(allVideos);
+  pollWatermarkProgress(videoId, data.task_id);
+}
+
+function startRename(videoId) {
+  const row = document.querySelector(`tr[data-id="${videoId}"]`);
+  const textSpan = row.querySelector('.filename-text');
+  const input = row.querySelector('.rename-input');
+  textSpan.style.display = 'none';
+  input.style.display = 'inline-block';
+  input.focus();
+  input.select();
+}
+
+async function saveRename(videoId, input) {
+  const newName = input.value.trim();
+  if (!newName) {
+    cancelRename(videoId);
+    return;
+  }
+  const res = await fetch(`/videos/api/${videoId}/rename`, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({filename:newName})
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    alert(data.error || '重命名失败');
+  }
+  loadVideos();
+}
+
+function cancelRename(videoId) {
+  const row = document.querySelector(`tr[data-id="${videoId}"]`);
+  const textSpan = row.querySelector('.filename-text');
+  const input = row.querySelector('.rename-input');
+  textSpan.style.display = '';
+  input.style.display = 'none';
+}
+
+async function deleteVideo(videoId) {
+  if (!confirm('确定要删除此视频吗？相关的水印视频、事件标注、GT帧等都将被删除。')) return;
+  const res = await fetch(`/videos/api/${videoId}`, {method:'DELETE'});
+  if (res.ok) {
+    loadVideos();
+  } else {
+    const data = await res.json();
+    alert(data.error || '删除失败');
+  }
+}
+
+loadVideos();
+
+// 轮询打水印进度
+async function pollWatermarkProgress(videoDbId, taskId) {
+  const checkProgress = async () => {
+    const res = await fetch(`/videos/api/watermark-tasks/${taskId}/progress`);
+    const data = await res.json();
+    if (!res.ok) {
+      watermarkingVideos.delete(videoDbId);
+      alert('获取进度失败');
+      loadVideos();
+      return;
+    }
+
+    if (data.status === 'processing') {
+      // 不更新进度，只显示"处理中"，每3秒检查一次
+      setTimeout(checkProgress, 3000);
+    } else if (data.status === 'done') {
+      watermarkingVideos.delete(videoDbId);
+      loadVideos();
+    } else if (data.status === 'failed') {
+      watermarkingVideos.delete(videoDbId);
+      alert('打水印失败: ' + (data.error || '未知错误'));
+      loadVideos();
+    }
+  };
+  checkProgress();
+}
+</script>
+{% endblock %}

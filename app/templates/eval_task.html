@@ -83,6 +83,34 @@
   .result-panel.active { display:block; }
 
   #empty-state { text-align:center; color:#aaa; padding:3rem; grid-column:1/-1; }
+
+  /* 事件指标弹窗 */
+  .modal-overlay {
+    position:fixed; inset:0; background:rgba(0,0,0,0.5); display:none; align-items:center; justify-content:center; z-index:1000;
+  }
+  .modal-overlay.visible { display:flex; }
+  .modal-content {
+    background:white; border-radius:8px; max-width:900px; width:95%; max-height:80vh; overflow:auto;
+  }
+  .modal-header {
+    padding:1rem 1.2rem; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;
+  }
+  .modal-header h3 { margin:0; }
+  .modal-close {
+    background:none; border:none; font-size:1.5rem; cursor:pointer; color:#888;
+  }
+  .modal-body { padding:1.2rem; }
+
+  /* 事件指标表格 */
+  .event-metrics-table { width:100%; border-collapse:collapse; }
+  .event-metrics-table th, .event-metrics-table td {
+    padding:0.7rem 0.5rem; border-bottom:1px solid #eee; text-align:center;
+  }
+  .event-metrics-table th { background:#f8f9fa; font-weight:600; font-size:0.85rem; }
+  .event-metrics-table td:first-child { text-align:left; font-weight:500; }
+  .metric-good { color:#27ae60; font-weight:600; }
+  .metric-mid { color:#f39c12; font-weight:600; }
+  .metric-bad { color:#e74c3c; font-weight:600; }
 </style>
 
 <div class="breadcrumb">
@@ -170,12 +198,16 @@
     <!-- 指标展示区（确认后显示） -->
     <div id="metrics-bar" class="param-grid" style="margin-bottom:1rem; display:none; background:#eaf7ee; border-radius:6px; padding:0.8rem;">
       <div class="param-item" style="background:transparent;">
-        <label>准确率（Precision）</label>
+        <label>整体精确率（Precision）</label>
         <span id="metric-accuracy" style="color:#27ae60;">—</span>
       </div>
       <div class="param-item" style="background:transparent;">
-        <label>召回率（Recall）</label>
+        <label>整体召回率（Recall）</label>
         <span id="metric-recall" style="color:#27ae60;">—</span>
+      </div>
+      <div class="param-item" style="background:transparent;">
+        <label>&nbsp;</label>
+        <button class="btn btn-sm" onclick="showEventMetrics()" style="font-size:0.85rem;">查看事件详细指标</button>
       </div>
     </div>
 
@@ -223,6 +255,19 @@
         </div>
       </div>
       <div class="img-grid" id="gt-result-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 事件指标弹窗 -->
+<div class="modal-overlay" id="eventMetricsModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>事件级别的详细指标</h3>
+      <button class="modal-close" onclick="closeEventMetricsModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="eventMetricsBody">
+      <p style="text-align:center;color:#888;">加载中…</p>
     </div>
   </div>
 </div>
@@ -542,6 +587,9 @@ function escHtml(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// 事件指标数据
+let eventMetricsData = [];
+
 // ── 指标展示 ──────────────────────────────────────────────────────────────────
 function renderMetrics(accuracy, recall) {
   document.getElementById('metrics-bar').style.display = '';
@@ -550,6 +598,103 @@ function renderMetrics(accuracy, recall) {
   document.getElementById('metric-recall').textContent =
     recall != null ? (recall * 100).toFixed(1) + '%' : 'N/A';
 }
+
+// ── 事件指标详情弹窗 ───────────────────────────────────────────────────────────
+async function showEventMetrics() {
+  const modal = document.getElementById('eventMetricsModal');
+  modal.classList.add('visible');
+
+  try {
+    const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/event-metrics');
+    const data = await res.json();
+    if (!res.ok) {
+      alert('加载事件指标失败: ' + (data.error || '未知'));
+      return;
+    }
+    eventMetricsData = data.event_metrics || [];
+    renderEventMetricsTable();
+  } catch(e) {
+    alert('请求失败: ' + e.message);
+  }
+}
+
+function closeEventMetricsModal() {
+  document.getElementById('eventMetricsModal').classList.remove('visible');
+}
+
+function getMetricClass(value, isRecall = false) {
+  if (value == null) return '';
+  const pct = value * 100;
+  if (pct >= 80) return 'metric-good';
+  if (pct >= 50) return 'metric-mid';
+  return 'metric-bad';
+}
+
+function renderEventMetricsTable() {
+  const body = document.getElementById('eventMetricsBody');
+  if (!eventMetricsData.length) {
+    body.innerHTML = '<p style="text-align:center;color:#888;">暂无事件指标数据</p>';
+    return;
+  }
+
+  const totalAlertCount = eventMetricsData.reduce((sum, e) => sum + e.alert_count, 0);
+  const totalGTCount = eventMetricsData.reduce((sum, e) => sum + e.gt_count, 0);
+  const totalCorrectPredCount = eventMetricsData.reduce((sum, e) => sum + e.correct_pred_count, 0);
+  const totalHitCount = eventMetricsData.reduce((sum, e) => sum + e.hit_count, 0);
+  const totalMissedGTCount = eventMetricsData.reduce((sum, e) => sum + e.missed_gt_count, 0);
+  const overallPrecision = totalAlertCount > 0 ? totalCorrectPredCount / totalAlertCount : null;
+  const overallRecall = totalGTCount > 0 ? totalHitCount / totalGTCount : null;
+
+  body.innerHTML = `
+    <table class="event-metrics-table">
+      <thead>
+        <tr>
+          <th style="text-align:left;">事件类型</th>
+          <th>告警事件个数</th>
+          <th>准确预测个数</th>
+          <th>精确率</th>
+          <th>GT事件个数</th>
+          <th>命中个数</th>
+          <th>漏检个数</th>
+          <th>召回率</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${eventMetricsData.map(em => {
+          const precClass = getMetricClass(em.precision);
+          const recallClass = getMetricClass(em.recall, true);
+          return `
+            <tr>
+              <td style="text-align:left;">${escHtml(em.event_type)}</td>
+              <td>${em.alert_count}</td>
+              <td>${em.correct_pred_count}</td>
+              <td class="${precClass}">${em.precision != null ? (em.precision * 100).toFixed(1) + '%' : 'N/A'}</td>
+              <td>${em.gt_count}</td>
+              <td>${em.hit_count}</td>
+              <td>${em.missed_gt_count}</td>
+              <td class="${recallClass}">${em.recall != null ? (em.recall * 100).toFixed(1) + '%' : 'N/A'}</td>
+            </tr>
+          `;
+        }).join('')}
+        <tr style="background:#f8f9fa;font-weight:600;">
+          <td style="text-align:left;">合计/整体</td>
+          <td>${totalAlertCount}</td>
+          <td>${totalCorrectPredCount}</td>
+          <td class="${getMetricClass(overallPrecision)}">${overallPrecision != null ? (overallPrecision * 100).toFixed(1) + '%' : 'N/A'}</td>
+          <td>${totalGTCount}</td>
+          <td>${totalHitCount}</td>
+          <td>${totalMissedGTCount}</td>
+          <td class="${getMetricClass(overallRecall, true)}">${overallRecall != null ? (overallRecall * 100).toFixed(1) + '%' : 'N/A'}</td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+}
+
+// 点击弹窗外部关闭
+document.getElementById('eventMetricsModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeEventMetricsModal();
+});
 
 // ── 确认结果 ──────────────────────────────────────────────────────────────────
 async function doFinalize() {
@@ -560,6 +705,10 @@ async function doFinalize() {
     const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/finalize', {method:'POST'});
     const data = await res.json();
     if (!res.ok) { alert('确认失败: ' + (data.error || '未知')); btn.disabled = false; btn.textContent = '确认结果'; return; }
+    // 保存事件指标数据
+    if (data.event_metrics) {
+      eventMetricsData = data.event_metrics;
+    }
     // 锁定 UI
     document.querySelector('.stage-tabs').style.display = 'none';
     btn.style.display = 'none';

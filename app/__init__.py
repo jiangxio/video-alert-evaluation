@@ -7,6 +7,9 @@ def create_app(config_class=Config):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
+    # 初始化配置（创建必要的目录）
+    config_class.init_app(app)
+
     # 初始化数据库
     from app import database
     database.init_app(app)

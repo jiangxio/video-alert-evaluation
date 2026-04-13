@@ -1,0 +1,856 @@
+{% extends "base.html" %}
+
+{% block title %}视频标注 - {{ video.video_id }}{% endblock %}
+
+{% block content %}
+<style>
+  .breadcrumb { font-size:0.88rem; color:#888; margin-bottom:1rem; }
+  .breadcrumb a { color:#3498db; text-decoration:none; }
+
+  .annotate-container {
+    display:flex;
+    height:calc(100vh - 140px);
+    gap:1rem;
+  }
+
+  .video-player {
+    flex:1.5;
+    background:#000;
+    border-radius:8px;
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+  }
+  .video-player video {
+    width:100%;
+    height:100%;
+    object-fit:contain;
+  }
+  .video-controls {
+    background:#1a1a1a;
+    padding:0.5rem;
+    display:flex;
+    gap:0.5rem;
+    align-items:center;
+  }
+  .speed-btn {
+    padding:0.25rem 0.5rem;
+    background:#333;
+    color:#fff;
+    border:none;
+    border-radius:4px;
+    cursor:pointer;
+    font-size:0.85rem;
+  }
+  .speed-btn:hover {
+    background:#444;
+  }
+  .speed-btn.active {
+    background:#3498db;
+  }
+
+  .info-panel {
+    flex:1;
+    background:white;
+    border-radius:8px;
+    border:1px solid #eee;
+    overflow-y:auto;
+    padding:1rem;
+  }
+
+  .panel-section {
+    margin-bottom:1.5rem;
+    padding-bottom:1rem;
+    border-bottom:1px solid #f0f0f0;
+  }
+  .panel-section:last-child { border-bottom:none; }
+
+  .panel-title {
+    font-size:1rem;
+    font-weight:600;
+    margin-bottom:0.8rem;
+    color:#333;
+  }
+
+  .info-grid {
+    display:grid;
+    grid-template-columns:repeat(2, 1fr);
+    gap:0.6rem;
+    font-size:0.9rem;
+  }
+  .info-item label {
+    color:#888;
+    font-size:0.85rem;
+  }
+  .info-item span {
+    font-weight:500;
+    color:#333;
+  }
+
+  .eval-set-list {
+    display:flex;
+    flex-wrap:wrap;
+    gap:0.4rem;
+    margin-bottom:0.8rem;
+  }
+  .eval-set-tag {
+    font-size:0.8rem;
+    padding:0.3rem 0.6rem;
+    background:#e8f4f8;
+    color:#3498db;
+    border-radius:4px;
+  }
+
+  .event-table {
+    width:100%;
+    font-size:0.88rem;
+    border-collapse:collapse;
+  }
+  .event-table th {
+    background:#f8f9fa;
+    padding:0.5rem;
+    text-align:left;
+    font-weight:600;
+    border-bottom:2px solid #eee;
+  }
+  .event-table td {
+    padding:0.5rem;
+    border-bottom:1px solid #f0f0f0;
+  }
+
+  .gt-status {
+    font-size:0.75rem;
+    padding:0.15rem 0.5rem;
+    border-radius:10px;
+    font-weight:500;
+  }
+  .gt-status-pending { background:#fff3cd; color:#856404; }
+  .gt-status-processing { background:#cce5ff; color:#004085; }
+  .gt-status-done { background:#d4edda; color:#155724; }
+  .gt-status-failed { background:#f8d7da; color:#721c24; }
+
+  .add-event-form {
+    display:flex;
+    flex-wrap:wrap;
+    gap:0.5rem;
+    margin-top:0.8rem;
+    padding:0.8rem;
+    background:#f8f9fa;
+    border-radius:6px;
+  }
+  .add-event-form select,
+  .add-event-form input {
+    padding:0.4rem;
+    border:1px solid #ddd;
+    border-radius:4px;
+    font-size:0.88rem;
+  }
+  .add-event-form input[type="number"] { width:90px; }
+
+  .json-editor {
+    width:100%;
+    min-height:150px;
+    padding:0.6rem;
+    border:1px solid #ddd;
+    border-radius:4px;
+    font-family:monospace;
+    font-size:0.85rem;
+    resize:vertical;
+  }
+
+  .btn-sm { padding:0.3rem 0.6rem; font-size:0.85rem; }
+
+  /* GT帧查看弹窗 */
+  .gt-modal-overlay {
+    display:none;
+    position:fixed;
+    top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.8);
+    z-index:1000;
+    align-items:center;
+    justify-content:center;
+  }
+  .gt-modal-overlay.visible { display:flex; }
+  .gt-modal-content {
+    background:white;
+    border-radius:8px;
+    padding:1rem;
+    max-width:90vw;
+    max-height:90vh;
+    overflow:auto;
+    position:relative;
+  }
+  .gt-modal-close {
+    position:absolute;
+    top:0.5rem;
+    right:0.5rem;
+    font-size:1.5rem;
+    cursor:pointer;
+    color:#666;
+  }
+  .gt-frame-grid {
+    display:grid;
+    grid-template-columns:repeat(4, 1fr);
+    gap:0.5rem;
+    margin-top:1rem;
+  }
+  @media (max-width:800px) { .gt-frame-grid { grid-template-columns:repeat(3, 1fr); } }
+  @media (max-width:600px) { .gt-frame-grid { grid-template-columns:repeat(2, 1fr); } }
+  .gt-frame-item {
+    text-align:center;
+  }
+  .gt-frame-item img {
+    width:100%;
+    aspect-ratio:16/9;
+    object-fit:cover;
+    border-radius:4px;
+    cursor:pointer;
+  }
+  .gt-frame-item .timestamp {
+    font-size:0.75rem;
+    color:#666;
+    margin-top:0.2rem;
+  }
+</style>
+
+<div class="breadcrumb">
+  <a href="/">首页</a> &rsaquo; <a href="/videos/">视频管理</a> &rsaquo; <strong>视频标注</strong>
+</div>
+
+<div class="annotate-container">
+  <div class="video-player">
+    <video id="mainVideo" controls></video>
+    <div class="video-controls">
+      <span style="color:#ccc;font-size:0.85rem;">播放速度:</span>
+      <button class="speed-btn active" onclick="setPlaybackRate(1)">正常</button>
+      <button class="speed-btn" onclick="setPlaybackRate(2)">x2</button>
+      <button class="speed-btn" onclick="setPlaybackRate(4)">x4</button>
+      <button class="speed-btn" onclick="setPlaybackRate(8)">x8</button>
+      <button class="speed-btn" onclick="setPlaybackRate(16)">x16</button>
+    </div>
+  </div>
+
+  <div class="info-panel">
+    <!-- 基本信息 -->
+    <div class="panel-section">
+      <div class="panel-title">基本信息</div>
+      <div class="info-grid" id="basicInfo">
+        <div class="info-item">
+          <label>视频ID</label>
+          <span id="infoVideoId">--</span>
+        </div>
+        <div class="info-item">
+          <label>时长</label>
+          <span id="infoDuration">--</span>
+        </div>
+        <div class="info-item">
+          <label>分辨率</label>
+          <span id="infoResolution">--</span>
+        </div>
+        <div class="info-item">
+          <label>文件大小</label>
+          <span id="infoFileSize">--</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 所属评测集 -->
+    <div class="panel-section">
+      <div class="panel-title">所属评测集</div>
+      <div class="eval-set-list" id="evalSetList">
+        <span style="color:#888;font-size:0.85rem;">未加入任何评测集</span>
+      </div>
+      <div style="display:flex;gap:0.5rem;">
+        <select id="addToSetSelect" style="flex:1;padding:0.4rem;border:1px solid #ddd;border-radius:4px;">
+          <option value="">添加到评测集...</option>
+        </select>
+        <button class="btn btn-sm" onclick="addToEvalSet()">添加</button>
+      </div>
+    </div>
+
+    <!-- 事件列表 -->
+    <div class="panel-section">
+      <div class="panel-title">事件标注</div>
+      <table class="event-table">
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>开始</th>
+            <th>结束</th>
+            <th>GT帧状态</th>
+            <th>GT帧</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="eventTableBody">
+          <tr><td colspan="5" style="text-align:center;color:#888;">加载中...</td></tr>
+        </tbody>
+      </table>
+
+      <div class="add-event-form" style="flex-wrap:wrap;align-items:center;">
+        <select id="eventType">
+          <option value="rat">rat</option>
+          <option value="smoke">smoke</option>
+          <option value="use_phone">use_phone</option>
+          <option value="call_phone">call_phone</option>
+          <option value="chef">chef</option>
+          <option value="trash">trash</option>
+          <option value="mask">mask</option>
+          <option value="flame">flame</option>
+        </select>
+        <div style="display:flex;gap:0.3rem;align-items:center;">
+          <input type="number" id="startMin" placeholder="0" min="0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">分</span>
+          <input type="number" id="startSec" placeholder="0" min="0" max="59" oninput="if(this.value>59)this.value=59;if(this.value<0)this.value=0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">秒</span>
+        </div>
+        <span style="color:#666;font-size:0.85rem;">至</span>
+        <div style="display:flex;gap:0.3rem;align-items:center;">
+          <input type="number" id="endMin" placeholder="0" min="0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">分</span>
+          <input type="number" id="endSec" placeholder="0" min="0" max="59" oninput="if(this.value>59)this.value=59;if(this.value<0)this.value=0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">秒</span>
+        </div>
+        <button class="btn btn-sm" onclick="addEvent()">添加事件</button>
+      </div>
+    </div>
+
+    <!-- 视频剪辑 -->
+    <div class="panel-section" style="background:#f8f9fa;border:1px dashed #3498db;">
+      <div class="panel-title" style="color:#3498db;">🎬 视频剪辑</div>
+      <p style="font-size:0.85rem;color:#666;margin-bottom:0.8rem;">选择开始和结束时间，裁剪生成新视频</p>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+        <div style="display:flex;gap:0.3rem;align-items:center;">
+          <input type="number" id="trimStartMin" placeholder="0" min="0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">分</span>
+          <input type="number" id="trimStartSec" placeholder="0" min="0" max="59" oninput="if(this.value>59)this.value=59;if(this.value<0)this.value=0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">秒</span>
+        </div>
+        <span style="color:#666;font-size:0.85rem;">至</span>
+        <div style="display:flex;gap:0.3rem;align-items:center;">
+          <input type="number" id="trimEndMin" placeholder="0" min="0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">分</span>
+          <input type="number" id="trimEndSec" placeholder="0" min="0" max="59" oninput="if(this.value>59)this.value=59;if(this.value<0)this.value=0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          <span style="font-size:0.85rem;color:#666;">秒</span>
+        </div>
+        <button class="btn btn-sm" style="background:#3498db;color:white;" onclick="openTrimModal()">剪辑视频</button>
+      </div>
+    </div>
+
+    <!-- JSON文件 -->
+    <div class="panel-section">
+      <div class="panel-title">Ground Truth JSON</div>
+      <textarea id="jsonEditor" class="json-editor" placeholder="点击“加载JSON”查看或编辑内容"></textarea>
+      <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
+        <button class="btn btn-sm" onclick="loadJson()">加载JSON</button>
+        <button class="btn btn-sm btn-secondary" onclick="saveJson()">保存JSON</button>
+        <button class="btn btn-sm" onclick="regenerateJson()">从事件重新生成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- GT帧查看弹窗 -->
+<div class="gt-modal-overlay" id="gtModal">
+  <div class="gt-modal-content">
+    <span class="gt-modal-close" onclick="closeGtModal()">&times;</span>
+    <h3 id="gtModalTitle">GT帧查看</h3>
+    <div class="gt-frame-grid" id="gtFrameGrid"></div>
+  </div>
+</div>
+
+<!-- 视频剪辑确认弹窗 -->
+<div class="gt-modal-overlay" id="trimModal" style="display:none;">
+  <div class="gt-modal-content" style="max-width:500px;">
+    <span class="gt-modal-close" onclick="closeTrimModal()">&times;</span>
+    <h3>确认视频剪辑</h3>
+    <div style="margin:1.5rem 0;">
+      <p style="margin-bottom:1rem;">
+        <strong>裁剪时间段：</strong>
+        <span id="trimTimeDisplay" style="color:#3498db;font-weight:600;"></span>
+      </p>
+      <p style="font-size:0.85rem;color:#666;margin-bottom:1rem;">
+        视频时长：${formatDuration(videoData?.watermarked?.duration || videoData?.video?.duration || 0)}
+      </p>
+      <div style="background:#fff3cd;padding:0.8rem;border-radius:6px;margin-bottom:1rem;">
+        <strong style="color:#856404;">⚠️ 注意：</strong>
+        <span style="color:#856404;font-size:0.85rem;">裁剪后需要为新生成的视频设置一个新的10位Video ID</span>
+      </div>
+      <label style="display:block;margin-bottom:0.5rem;font-weight:500;">新视频ID（10位数字）：</label>
+      <input type="text" id="newTrimVideoId" placeholder="例如：0540410003" maxlength="10"
+             style="width:100%;padding:0.6rem;border:1px solid #ddd;border-radius:4px;font-size:1rem;box-sizing:border-box;"
+             oninput="this.value=this.value.replace(/\D/g,'').slice(0,10)">
+      <div id="trimError" style="color:#e74c3c;font-size:0.85rem;margin-top:0.5rem;display:none;"></div>
+    </div>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn btn-sm btn-secondary" onclick="closeTrimModal()">取消</button>
+      <button class="btn btn-sm" style="background:#3498db;color:white;" onclick="confirmTrim()">确认裁剪</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const VIDEO_ID = {{ video.id }};
+let videoData = null;
+let eventsPollingTimer = null;
+
+async function loadData() {
+  try {
+    const res = await fetch(`/videos/api/${VIDEO_ID}/annotate/`);
+    if (!res.ok) {
+      const err = await res.json();
+      alert('加载数据失败: ' + (err.error || res.status));
+      return;
+    }
+    videoData = await res.json();
+    if (videoData.error) {
+      alert('加载数据失败: ' + videoData.error);
+      return;
+    }
+    renderBasicInfo();
+    renderEvalSets();
+    renderEvents();
+    loadVideoPlayer();
+    loadEvalSetOptions();
+  } catch (e) {
+    alert('加载数据出错: ' + e.message);
+  }
+}
+
+function renderBasicInfo() {
+  const v = videoData.video;
+  const wm = videoData.watermarked;
+  document.getElementById('infoVideoId').textContent = v.video_id || '--';
+  document.getElementById('infoDuration').textContent = formatDuration(wm.duration || v.duration);
+  document.getElementById('infoResolution').textContent = wm.resolution || '--';
+  document.getElementById('infoFileSize').textContent = formatFileSize(wm.file_size);
+}
+
+function renderEvalSets() {
+  const list = document.getElementById('evalSetList');
+  const sets = videoData.belonging_sets || [];
+  if (!sets.length) {
+    list.innerHTML = '<span style="color:#888;font-size:0.85rem;">未加入任何评测集</span>';
+    return;
+  }
+  list.innerHTML = sets.map(s => `
+    <span class="eval-set-tag">${escHtml(s.name)}</span>
+  `).join('');
+}
+
+async function loadEvalSetOptions() {
+  const res = await fetch('/videos/api/eval-sets');
+  const data = await res.json();
+  const sets = data.sets || [];
+  const currentSetIds = (videoData.belonging_sets || []).map(s => s.id);
+  const select = document.getElementById('addToSetSelect');
+  select.innerHTML = '<option value="">添加到评测集...</option>' +
+    sets.filter(s => !currentSetIds.includes(s.id)).map(s =>
+      `<option value="${s.id}">${escHtml(s.name)}</option>`
+    ).join('');
+}
+
+function renderEvents() {
+  const tbody = document.getElementById('eventTableBody');
+  const events = videoData.events || [];
+  if (!events.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#888;">暂无事件</td></tr>';
+    return;
+  }
+  tbody.innerHTML = events.map(e => {
+    const statusText = {
+      'pending': '等待生成',
+      'processing': '生成中…',
+      'done': '已生成',
+      'failed': '失败'
+    }[e.gt_frames_status] || e.gt_frames_status;
+    const viewBtn = e.gt_frames_status === 'done'
+      ? `<button class="btn btn-sm" onclick="viewGtFrames(${e.id}, '${escHtml(e.event_type)}')">查看</button>`
+      : '-';
+    return `
+      <tr data-event-id="${e.id}">
+        <td>${escHtml(e.event_type)}</td>
+        <td>${formatTime(e.start_seconds)}</td>
+        <td>${formatTime(e.end_seconds)}</td>
+        <td><span class="gt-status gt-status-${e.gt_frames_status}">${statusText}</span></td>
+        <td>${viewBtn}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="deleteEvent(${e.id})">删除</button></td>
+      </tr>
+    `;
+  }).join('');
+
+  // 检查是否需要轮询
+  const hasPending = events.some(e =>
+    !e.gt_frames_status ||
+    e.gt_frames_status === 'pending' ||
+    e.gt_frames_status === 'processing'
+  );
+  if (hasPending) {
+    startEventsPolling();
+  }
+}
+
+function startEventsPolling() {
+  if (eventsPollingTimer) return;
+  eventsPollingTimer = setInterval(async () => {
+    const res = await fetch(`/videos/api/${VIDEO_ID}/events/`);
+    const events = await res.json();
+    videoData.events = events;
+    renderEvents();
+    const hasPending = events.some(e =>
+      !e.gt_frames_status ||
+      e.gt_frames_status === 'pending' ||
+      e.gt_frames_status === 'processing'
+    );
+    if (!hasPending) {
+      clearInterval(eventsPollingTimer);
+      eventsPollingTimer = null;
+    }
+  }, 1500);
+}
+
+function loadVideoPlayer() {
+  const video = document.getElementById('mainVideo');
+  const wm = videoData.watermarked;
+  if (wm && wm.output_path) {
+    // 使用inline=true参数让浏览器直接播放视频
+    video.src = `/videos/api/${VIDEO_ID}/download?type=watermarked&inline=true`;
+    video.onerror = () => {
+      console.error('视频加载失败:', video.src);
+    };
+  }
+}
+
+async function addEvent() {
+  const eventType = document.getElementById('eventType').value;
+  const startMin = parseInt(document.getElementById('startMin').value) || 0;
+  const startSec = parseInt(document.getElementById('startSec').value) || 0;
+  const endMin = parseInt(document.getElementById('endMin').value) || 0;
+  const endSec = parseInt(document.getElementById('endSec').value) || 0;
+
+  // 验证秒字段不超过59
+  if (startSec > 59) {
+    alert('开始时间的秒数不能超过59');
+    return;
+  }
+  if (endSec > 59) {
+    alert('结束时间的秒数不能超过59');
+    return;
+  }
+
+  // 转换为总秒数
+  const startTotal = startMin * 60 + startSec;
+  const endTotal = endMin * 60 + endSec;
+
+  if (startTotal >= endTotal) {
+    alert('开始时间必须小于结束时间');
+    return;
+  }
+  if (endTotal <= 0) {
+    alert('结束时间必须大于0');
+    return;
+  }
+
+  // 验证不超过视频时长
+  const videoDuration = videoData.watermarked?.duration || videoData.video?.duration || 0;
+  if (endTotal > videoDuration) {
+    alert(`结束时间不能超过视频时长 (${formatDuration(videoDuration)})`);
+    return;
+  }
+
+  const res = await fetch(`/videos/api/${VIDEO_ID}/events`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      event_type: eventType,
+      start_seconds: startTotal,
+      end_seconds: endTotal
+    })
+  });
+
+  const data = await res.json();
+  if (res.ok) {
+    document.getElementById('startMin').value = '';
+    document.getElementById('startSec').value = '';
+    document.getElementById('endMin').value = '';
+    document.getElementById('endSec').value = '';
+    // 刷新事件列表
+    const eventsRes = await fetch(`/videos/api/${VIDEO_ID}/events`);
+    videoData.events = await eventsRes.json();
+    renderEvents();
+    // 刷新JSON（自动更新）
+    videoData.ground_truth = data.ground_truth;
+  } else {
+    alert(data.error || '添加失败');
+  }
+}
+
+async function deleteEvent(eventId) {
+  if (!confirm('确定要删除此事件吗？相关的GT帧也将被删除。')) return;
+
+  const res = await fetch(`/videos/api/${VIDEO_ID}/events/${eventId}/`, {
+    method: 'DELETE'
+  });
+
+  if (res.ok) {
+    const eventsRes = await fetch(`/videos/api/${VIDEO_ID}/events`);
+    videoData.events = await eventsRes.json();
+    renderEvents();
+  } else {
+    alert('删除失败');
+  }
+}
+
+async function addToEvalSet() {
+  const setId = document.getElementById('addToSetSelect').value;
+  if (!setId) {
+    alert('请选择评测集');
+    return;
+  }
+
+  const res = await fetch(`/videos/api/eval-sets/${setId}/add`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video_id: VIDEO_ID})
+  });
+
+  if (res.ok) {
+    alert('已添加到评测集');
+    loadData();
+  } else {
+    const data = await res.json();
+    alert(data.error || '添加失败');
+  }
+}
+
+function loadJson() {
+  const gt = videoData.ground_truth;
+  if (gt) {
+    document.getElementById('jsonEditor').value = JSON.stringify(gt, null, 2);
+  } else {
+    document.getElementById('jsonEditor').value = '{"file":"","id":"","events":[]}';
+  }
+}
+
+async function saveJson() {
+  const jsonText = document.getElementById('jsonEditor').value;
+  let data;
+  try {
+    data = JSON.parse(jsonText);
+  } catch (e) {
+    alert('JSON格式错误: ' + e.message);
+    return;
+  }
+
+  const res = await fetch(`/videos/api/${VIDEO_ID}/ground-truth`, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  });
+
+  if (res.ok) {
+    alert('JSON保存成功');
+    videoData.ground_truth = data;
+  } else {
+    const err = await res.json();
+    alert(err.error || '保存失败');
+  }
+}
+
+async function regenerateJson() {
+  const res = await fetch(`/videos/api/${VIDEO_ID}/ground-truth/generate`, {
+    method: 'POST'
+  });
+  const data = await res.json();
+  if (res.ok) {
+    document.getElementById('jsonEditor').value = JSON.stringify(data.data, null, 2);
+    videoData.ground_truth = data.data;
+    alert('JSON已重新生成');
+  } else {
+    alert(data.error || '生成失败');
+  }
+}
+
+async function viewGtFrames(eventId, eventType) {
+  const modal = document.getElementById('gtModal');
+  const grid = document.getElementById('gtFrameGrid');
+  const title = document.getElementById('gtModalTitle');
+
+  title.textContent = `GT帧查看 - ${eventType}`;
+  grid.innerHTML = '<div style="text-align:center;padding:2rem;">加载中...</div>';
+  modal.classList.add('visible');
+
+  try {
+    const res = await fetch(`/videos/api/${VIDEO_ID}/events/${eventId}/gt-frames/`);
+    const data = await res.json();
+
+    if (!res.ok || !data.frames || !data.frames.length) {
+      grid.innerHTML = '<div style="text-align:center;padding:2rem;color:#888;">暂无GT帧</div>';
+      return;
+    }
+
+    grid.innerHTML = data.frames.map(f => `
+      <div class="gt-frame-item">
+        <img src="/evaluation/api/gt-frames/${f.id}/file"
+             alt="${f.timestamp_sec}s"
+             onclick="window.open('/evaluation/api/gt-frames/${f.id}/file', '_blank')">
+        <div class="timestamp">${f.timestamp_sec.toFixed(1)}s</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    grid.innerHTML = '<div style="text-align:center;padding:2rem;color:#e74c3c;">加载失败</div>';
+  }
+}
+
+function closeGtModal() {
+  document.getElementById('gtModal').classList.remove('visible');
+}
+
+// 点击弹窗背景关闭
+document.getElementById('gtModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeGtModal();
+});
+
+function formatDuration(sec) {
+  if (!sec) return '0:00';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+  return `${m}:${s.toString().padStart(2,'0')}`;
+}
+
+function formatFileSize(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B','KB','MB','GB'];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return bytes.toFixed(1) + ' ' + units[i];
+}
+
+function formatTime(sec) {
+  if (!sec && sec !== 0) return '--';
+  sec = Math.floor(sec);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m > 0) {
+    return `${m}分${s}秒`;
+  }
+  return `${s}秒`;
+}
+
+function setPlaybackRate(rate) {
+  const video = document.getElementById('mainVideo');
+  if (video) {
+    video.playbackRate = rate;
+    // 更新按钮样式
+    const btns = document.querySelectorAll('.speed-btn');
+    btns.forEach(btn => btn.classList.remove('active'));
+    event.target.classList.add('active');
+  }
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// 视频剪辑相关函数
+function openTrimModal() {
+  const trimStartMin = parseInt(document.getElementById('trimStartMin').value) || 0;
+  const trimStartSec = parseInt(document.getElementById('trimStartSec').value) || 0;
+  const trimEndMin = parseInt(document.getElementById('trimEndMin').value) || 0;
+  const trimEndSec = parseInt(document.getElementById('trimEndSec').value) || 0;
+
+  const startTotal = trimStartMin * 60 + trimStartSec;
+  const endTotal = trimEndMin * 60 + trimEndSec;
+  const videoDuration = videoData.watermarked?.duration || videoData.video?.duration || 0;
+
+  // 验证
+  if (startTotal >= endTotal) {
+    alert('开始时间必须小于结束时间');
+    return;
+  }
+  if (endTotal > videoDuration) {
+    alert(`结束时间不能超过视频时长 (${formatDuration(videoDuration)})`);
+    return;
+  }
+
+  // 显示时间范围
+  document.getElementById('trimTimeDisplay').textContent =
+    `${formatTime(startTotal)} 至 ${formatTime(endTotal)}`;
+
+  // 清空输入和错误
+  document.getElementById('newTrimVideoId').value = '';
+  document.getElementById('trimError').style.display = 'none';
+
+  // 显示弹窗
+  document.getElementById('trimModal').style.display = 'flex';
+}
+
+function closeTrimModal() {
+  document.getElementById('trimModal').style.display = 'none';
+}
+
+async function confirmTrim() {
+  const newVideoId = document.getElementById('newTrimVideoId').value.trim();
+  const trimError = document.getElementById('trimError');
+
+  // 验证新视频ID
+  if (!newVideoId) {
+    trimError.textContent = '请输入新视频ID';
+    trimError.style.display = 'block';
+    return;
+  }
+  if (!/^\d{10}$/.test(newVideoId)) {
+    trimError.textContent = '视频ID必须为10位数字';
+    trimError.style.display = 'block';
+    return;
+  }
+
+  const trimStartMin = parseInt(document.getElementById('trimStartMin').value) || 0;
+  const trimStartSec = parseInt(document.getElementById('trimStartSec').value) || 0;
+  const trimEndMin = parseInt(document.getElementById('trimEndMin').value) || 0;
+  const trimEndSec = parseInt(document.getElementById('trimEndSec').value) || 0;
+
+  const startTotal = trimStartMin * 60 + trimStartSec;
+  const endTotal = trimEndMin * 60 + trimEndSec;
+
+  try {
+    const res = await fetch(`/videos/api/${VIDEO_ID}/trim`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        start_seconds: startTotal,
+        end_seconds: endTotal,
+        new_video_id: newVideoId
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      trimError.textContent = data.error || '裁剪失败';
+      trimError.style.display = 'block';
+      return;
+    }
+
+    alert('视频裁剪成功！新视频将出现在视频上传页，需要打水印后才能标注。');
+    closeTrimModal();
+  } catch (e) {
+    trimError.textContent = '请求失败: ' + e.message;
+    trimError.style.display = 'block';
+  }
+}
+
+// 点击弹窗背景关闭
+document.getElementById('trimModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeTrimModal();
+});
+
+// 页面加载时获取数据
+loadData();
+</script>
+{% endblock %}

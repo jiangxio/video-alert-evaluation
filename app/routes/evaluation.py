@@ -598,7 +598,7 @@ def finalize_task(task_id):
     if task['status'] != 'done':
         return jsonify({'error': '只有已完成的任务才能确认结果'}), 400
 
-    # 计算准确率
+    # 计算整体准确率
     cursor.execute('''
         SELECT COUNT(*) AS total,
                SUM(CASE WHEN is_false_positive=0 THEN 1 ELSE 0 END) AS correct
@@ -609,7 +609,7 @@ def finalize_task(task_id):
     correct = row['correct'] or 0
     accuracy = correct / total if total > 0 else None
 
-    # 计算召回率
+    # 计算整体召回率
     cursor.execute('''
         SELECT SUM(confirmed_count) AS expected, SUM(actual_count) AS actual
         FROM eval_gt_events WHERE task_id=?
@@ -619,12 +619,147 @@ def finalize_task(task_id):
     actual = row['actual'] or 0
     recall = actual / expected if expected > 0 else None
 
+    # 按事件类型计算指标
     cursor.execute('''
-        UPDATE eval_tasks SET finalized=1, accuracy=?, recall=? WHERE id=?
-    ''', (accuracy, recall, task_id))
+        SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
+        UNION
+        SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
+    ''', (task_id, task_id))
+    event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+
+    event_metrics = []
+    for etype in event_types:
+        # 告警相关指标
+        cursor.execute('''
+            SELECT COUNT(*) AS alert_count,
+                   SUM(CASE WHEN is_false_positive=0 THEN 1 ELSE 0 END) AS correct_pred_count
+            FROM eval_merged_events WHERE task_id=? AND event_type=?
+        ''', (task_id, etype))
+        alert_row = cursor.fetchone()
+        alert_count = alert_row['alert_count'] or 0
+        correct_pred_count = alert_row['correct_pred_count'] or 0
+
+        # GT相关指标
+        cursor.execute('''
+            SELECT SUM(confirmed_count) AS gt_count,
+                   SUM(actual_count) AS hit_count
+            FROM eval_gt_events WHERE task_id=? AND event_type=?
+        ''', (task_id, etype))
+        gt_row = cursor.fetchone()
+        gt_count = gt_row['gt_count'] or 0
+        hit_count = gt_row['hit_count'] or 0
+
+        # 计算精确率和召回率
+        precision = correct_pred_count / alert_count if alert_count > 0 else None
+        event_recall = hit_count / gt_count if gt_count > 0 else None
+
+        # 漏检的GT事件数（actual_count < confirmed_count）
+        cursor.execute('''
+            SELECT COUNT(*) AS missed_gt_count
+            FROM eval_gt_events
+            WHERE task_id=? AND event_type=? AND actual_count < confirmed_count
+        ''', (task_id, etype))
+        missed_gt_count = cursor.fetchone()['missed_gt_count'] or 0
+
+        event_metrics.append({
+            'event_type': etype,
+            'alert_count': alert_count,
+            'gt_count': gt_count,
+            'correct_pred_count': correct_pred_count,
+            'hit_count': hit_count,
+            'missed_gt_count': missed_gt_count,
+            'precision': precision,
+            'recall': event_recall
+        })
+
+    # 保存事件级别指标到JSON字段（可以扩展数据库表，这里先用JSON存储）
+    event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
+
+    cursor.execute('''
+        UPDATE eval_tasks SET finalized=1, accuracy=?, recall=?, event_metrics=? WHERE id=?
+    ''', (accuracy, recall, event_metrics_json, task_id))
     db.commit()
 
-    return jsonify({'success': True, 'accuracy': accuracy, 'recall': recall})
+    return jsonify({
+        'success': True,
+        'accuracy': accuracy,
+        'recall': recall,
+        'event_metrics': event_metrics
+    })
+
+
+@bp.route('/api/tasks/<int:task_id>/event-metrics', methods=['GET'])
+def get_event_metrics(task_id):
+    """获取事件级别的详细指标"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+
+    # 如果有保存的事件指标，直接返回
+    if task['event_metrics']:
+        try:
+            event_metrics = json.loads(task['event_metrics'])
+            return jsonify({'success': True, 'event_metrics': event_metrics})
+        except Exception:
+            pass
+
+    # 否则实时计算
+    cursor.execute('''
+        SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
+        UNION
+        SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
+    ''', (task_id, task_id))
+    event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+
+    event_metrics = []
+    for etype in event_types:
+        # 告警相关指标
+        cursor.execute('''
+            SELECT COUNT(*) AS alert_count,
+                   SUM(CASE WHEN is_false_positive=0 THEN 1 ELSE 0 END) AS correct_pred_count
+            FROM eval_merged_events WHERE task_id=? AND event_type=?
+        ''', (task_id, etype))
+        alert_row = cursor.fetchone()
+        alert_count = alert_row['alert_count'] or 0
+        correct_pred_count = alert_row['correct_pred_count'] or 0
+
+        # GT相关指标
+        cursor.execute('''
+            SELECT SUM(confirmed_count) AS gt_count,
+                   SUM(actual_count) AS hit_count
+            FROM eval_gt_events WHERE task_id=? AND event_type=?
+        ''', (task_id, etype))
+        gt_row = cursor.fetchone()
+        gt_count = gt_row['gt_count'] or 0
+        hit_count = gt_row['hit_count'] or 0
+
+        # 计算精确率和召回率
+        precision = correct_pred_count / alert_count if alert_count > 0 else None
+        event_recall = hit_count / gt_count if gt_count > 0 else None
+
+        # 漏检的GT事件数
+        cursor.execute('''
+            SELECT COUNT(*) AS missed_gt_count
+            FROM eval_gt_events
+            WHERE task_id=? AND event_type=? AND actual_count < confirmed_count
+        ''', (task_id, etype))
+        missed_gt_count = cursor.fetchone()['missed_gt_count'] or 0
+
+        event_metrics.append({
+            'event_type': etype,
+            'alert_count': alert_count,
+            'gt_count': gt_count,
+            'correct_pred_count': correct_pred_count,
+            'hit_count': hit_count,
+            'missed_gt_count': missed_gt_count,
+            'precision': precision,
+            'recall': event_recall
+        })
+
+    return jsonify({'success': True, 'event_metrics': event_metrics})
 
 
 @bp.route('/api/gt-frames/<int:frame_id>/file', methods=['GET'])

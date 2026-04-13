@@ -1,714 +1,668 @@
 {% extends "base.html" %}
 
-{% block title %}视频管理 - 视频数据预处理与告警评估平台{% endblock %}
+{% block title %}视频管理{% endblock %}
 
 {% block content %}
 <style>
-  .search-bar { display:flex; gap:0.5rem; margin-bottom:1rem; }
-  .search-bar input { flex:1; padding:0.6rem 1rem; border:1px solid #ddd; border-radius:4px; font-size:1rem; }
-  .search-bar button { white-space:nowrap; }
+  .breadcrumb { font-size:0.88rem; color:#888; margin-bottom:1rem; }
+  .breadcrumb a { color:#3498db; text-decoration:none; }
 
-  .vid-id-input { width:80px; padding:0.3rem 0.5rem; border:1px solid #ddd; border-radius:4px; font-size:0.9rem; text-align:center; }
-  .vid-id-input.saved { border-color:#27ae60; }
-  .vid-id-input.unsaved { border-color:#f39c12; }
-
-  .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
-  .btn-danger { background:#e74c3c; }
-  .btn-danger:hover { background:#c0392b; }
-  .btn-secondary { background:#7f8c8d; }
-  .btn-secondary:hover { background:#636e72; }
-  .btn-info { background:#16a085; }
-  .btn-info:hover { background:#1abc9c; }
-
-  /* GT帧状态标签 */
-  .gt-status { font-size:0.75rem; padding:2px 8px; border-radius:10px; font-weight:600; }
-  .gt-status-pending { background:#fff3cd; color:#856404; }
-  .gt-status-processing { background:#cce5ff; color:#004085; }
-  .gt-status-done { background:#d4edda; color:#155724; }
-  .gt-status-failed { background:#f8d7da; color:#721c24; }
-
-  /* 标注面板 */
-  .annotate-panel { display:none; background:#f8f9fa; border:1px solid #e0e0e0; border-radius:6px; padding:1rem; margin-top:0.5rem; }
-  .annotate-panel.open { display:block; }
-  .annotate-panel h4 { margin-bottom:0.8rem; color:#2c3e50; font-size:0.95rem; }
-  .event-table { width:100%; font-size:0.88rem; margin-bottom:0.8rem; }
-  .event-table th { background:#ecf0f1; font-size:0.85rem; }
-  .add-event-form { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.8rem; }
-  .add-event-form select, .add-event-form input { padding:0.35rem 0.6rem; border:1px solid #ddd; border-radius:4px; font-size:0.88rem; }
-  .add-event-form input[type=number] { width:90px; }
-  .json-actions { display:flex; gap:0.5rem; }
-
-  /* JSON 查看 */
-  .json-viewer { display:none; background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:4px; font-family:monospace; font-size:0.82rem; white-space:pre; overflow:auto; max-height:300px; margin-top:0.5rem; }
-  .json-viewer.open { display:block; }
-
-  /* 重命名内联输入 */
-  .rename-form { display:none; gap:0.4rem; align-items:center; }
-  .rename-form.open { display:flex; }
-  .rename-input { padding:0.3rem 0.5rem; border:1px solid #3498db; border-radius:4px; font-size:0.9rem; width:200px; }
-
-  .filename-cell { display:flex; align-items:center; gap:0.4rem; }
-  .filename-text { font-weight:500; }
-
-  .actions-cell { white-space:nowrap; display:flex; gap:0.3rem; flex-wrap:wrap; }
-
-  #empty-msg { text-align:center; color:#999; padding:2rem; display:none; }
-
-  /* 复选框列 */
-  .cb-col { width:36px; text-align:center; }
-  input[type=checkbox] { width:16px; height:16px; cursor:pointer; }
-
-  /* 批量操作栏 */
-  #batch-bar {
-    display:none; align-items:center; gap:0.75rem; flex-wrap:wrap;
-    background:#eaf4ff; border:1px solid #b3d4f5; border-radius:6px;
-    padding:0.6rem 1rem; margin-bottom:0.8rem;
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
-  #batch-bar.visible { display:flex; }
-  #batch-bar span { font-size:0.9rem; color:#2c3e50; }
 
-  /* 下载下拉 */
-  .dl-group { position:relative; display:inline-flex; }
-  .dl-group .btn-sm { border-radius:4px 0 0 4px; }
-  .dl-arrow { padding:0.3rem 0.5rem; font-size:0.85rem; background:#16a085; color:white; border:none; border-left:1px solid rgba(255,255,255,.3); border-radius:0 4px 4px 0; cursor:pointer; }
-  .dl-arrow:hover { background:#1abc9c; }
-  .dl-menu { display:none; position:absolute; top:100%; left:0; min-width:130px; background:white; border:1px solid #ddd; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,.12); z-index:200; }
-  .dl-menu.open { display:block; }
-  .dl-menu button { display:block; width:100%; padding:0.5rem 0.8rem; background:none; border:none; text-align:left; cursor:pointer; font-size:0.85rem; }
-  .dl-menu button:hover { background:#f0f0f0; }
+  .toolbar {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:0.5rem;
+    margin-bottom:1rem;
+    padding:0.8rem;
+    background:#f8f9fa;
+    border-radius:6px;
+  }
+  .batch-actions { display:flex; gap:0.5rem; align-items:center; }
+
+  .video-grid {
+    display:grid;
+    grid-template-columns:repeat(6, 1fr);
+    gap:1rem;
+  }
+  @media (max-width:1400px) { .video-grid { grid-template-columns:repeat(5, 1fr); } }
+  @media (max-width:1200px) { .video-grid { grid-template-columns:repeat(4, 1fr); } }
+  @media (max-width:900px) { .video-grid { grid-template-columns:repeat(3, 1fr); } }
+  @media (max-width:600px) { .video-grid { grid-template-columns:repeat(2, 1fr); } }
+
+  .video-card {
+    border:1px solid #eee;
+    border-radius:8px;
+    overflow:hidden;
+    background:white;
+    transition:box-shadow 0.2s;
+    position:relative;
+  }
+  .video-card:hover { box-shadow:0 4px 12px rgba(0,0,0,0.1); }
+  .video-card.selected { border-color:#3498db; box-shadow:0 0 0 2px rgba(52,152,219,0.3); }
+
+  .card-checkbox {
+    position:absolute;
+    top:8px;
+    left:8px;
+    width:18px;
+    height:18px;
+    z-index:5;
+  }
+
+  .card-thumbnail {
+    width:100%;
+    aspect-ratio:16/9;
+    object-fit:cover;
+    display:block;
+    background:#f0f0f0;
+  }
+
+  .card-info { padding:0.7rem; }
+  .card-video-id {
+    font-weight:600;
+    font-size:0.95rem;
+    margin-bottom:0.3rem;
+    color:#333;
+  }
+  .card-meta {
+    font-size:0.8rem;
+    color:#888;
+    margin-bottom:0.4rem;
+  }
+  .card-tags {
+    display:flex;
+    flex-wrap:wrap;
+    gap:0.3rem;
+  }
+  .tag {
+    font-size:0.7rem;
+    padding:0.15rem 0.4rem;
+    background:#e8f4f8;
+    color:#3498db;
+    border-radius:10px;
+  }
+
+  .card-actions {
+    display:flex;
+    gap:0.3rem;
+    padding:0.5rem 0.7rem;
+    border-top:1px solid #f0f0f0;
+  }
+  .card-actions .btn-sm {
+    flex:1;
+    padding:0.3rem;
+    font-size:0.8rem;
+  }
+
+  .download-dropdown {
+    position:relative;
+    display:inline-block;
+  }
+  .download-dropdown-content {
+    display:none;
+    position:absolute;
+    bottom:100%;
+    left:0;
+    background:white;
+    min-width:100px;
+    box-shadow:0 -4px 8px rgba(0,0,0,0.15);
+    border-radius:4px;
+    z-index:10;
+  }
+  .download-dropdown:hover .download-dropdown-content { display:block; }
+  .download-dropdown-content a {
+    display:block;
+    padding:0.4rem 0.6rem;
+    color:#333;
+    text-decoration:none;
+    font-size:0.8rem;
+  }
+  .download-dropdown-content a:hover { background:#f5f5f5; }
+
+  .empty-state { text-align:center; padding:3rem; color:#888; grid-column:1/-1; }
+
+  .modal-overlay {
+    display:none;
+    position:fixed;
+    top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.5);
+    z-index:100;
+    align-items:center;
+    justify-content:center;
+  }
+  .modal-overlay.visible { display:flex; }
+  .modal-content {
+    background:white;
+    padding:1.5rem;
+    border-radius:8px;
+    min-width:320px;
+    max-width:90vw;
+  }
 </style>
 
-<div class="card">
-  <h2>上传视频</h2>
-  <div class="upload-area" id="video-upload-area">
-    <p>拖拽视频文件到这里，或 <strong>点击选择文件</strong></p>
-    <input type="file" id="video-file-input" accept=".mp4,.avi,.mov,.mkv" class="hidden" multiple>
-  </div>
-  <div id="upload-message"></div>
+<div class="breadcrumb">
+  <a href="/">首页</a> &rsaquo; 视频管理
 </div>
 
 <div class="card">
-  <h2>视频列表</h2>
+  <h2 style="margin-bottom:1rem;">视频管理 <span style="font-size:0.85rem;font-weight:400;color:#888;">(只显示已打水印的视频)</span></h2>
 
-  <div class="search-bar">
-    <input type="text" id="search-input" placeholder="搜索文件名、视频ID或事件类型…">
-    <button class="btn btn-secondary btn-sm" onclick="clearSearch()">清空</button>
-  </div>
-  <div style="margin-bottom:1rem;">
-    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-      <input type="checkbox" id="filter-eligible" onchange="toggleFilter()">
-      <span style="font-size:0.9rem;">只显示「已打水印且视频ID为10位」的视频</span>
-    </label>
+  <div class="toolbar">
+    <div class="batch-actions">
+      <label style="font-size:0.9rem;">
+        <input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> 全选
+      </label>
+      <span id="selectedCount" style="font-size:0.85rem;color:#666;"></span>
+      <select id="evalSetSelect">
+        <option value="">选择评测集...</option>
+      </select>
+      <button class="btn btn-sm" onclick="addToEvalSet()">添加到评测集</button>
+      <button class="btn btn-sm btn-secondary" onclick="showCreateEvalSetModal()">新建评测集</button>
+      <button class="btn btn-sm" onclick="concatSelected()" id="concatBtn" disabled>拼接视频</button>
+      <button class="btn btn-sm" onclick="packageSelected()" id="packageBtn" disabled>打包下载</button>
+    </div>
+    <div>
+      <a href="/videos/upload/" class="btn">上传视频</a>
+    </div>
   </div>
 
-  <!-- 批量操作栏 -->
-  <div id="batch-bar">
-    <span id="batch-count">已选 0 个</span>
-    <button class="btn btn-sm btn-info" onclick="batchDownload('original')">批量下载原视频</button>
-    <button class="btn btn-sm btn-warning" onclick="batchDownload('watermarked')">批量下载水印版</button>
-    <button class="btn btn-sm btn-secondary" onclick="clearSelection()">取消选择</button>
+  <div style="display:flex;gap:1rem;margin-bottom:1rem;align-items:center;">
+    <div class="eval-set-filter" style="display:flex;gap:0.5rem;align-items:center;">
+      <label style="font-size:0.9rem;color:#666;">评测集筛选:</label>
+      <select id="evalSetFilter" onchange="filterByEvalSet()" style="padding:0.4rem;border:1px solid #ddd;border-radius:4px;">
+        <option value="">全部视频</option>
+      </select>
+      <button class="btn btn-sm" onclick="editEvalSetName()">修改名称</button>
+      <button class="btn btn-sm btn-danger" onclick="deleteEvalSet()">删除评测集</button>
+    </div>
   </div>
 
-  <div id="video-list">
-    <table id="video-table">
-      <thead>
-        <tr>
-          <th class="cb-col"><input type="checkbox" id="check-all" title="全选" onchange="toggleAll(this)"></th>
-          <th>文件名</th>
-          <th>视频ID</th>
-          <th>大小</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="video-tbody"></tbody>
-    </table>
-    <div id="empty-msg">暂无视频</div>
-    <p id="loading-msg">加载中…</p>
+  <div class="video-grid" id="videoGrid">
+    <div class="empty-state">加载中...</div>
+  </div>
+
+  <!-- 处理中任务区域 -->
+  <div class="processing-section" style="margin-top:2rem;padding-top:1.5rem;border-top:2px solid #eee;">
+    <h3 style="margin-bottom:1rem;">处理中的任务</h3>
+    <div class="processing-list" id="processingList">
+      <div style="color:#888;font-size:0.9rem;">暂无进行中的任务</div>
+    </div>
+  </div>
+
+  <!-- 生成的视频区域 -->
+  <div class="generated-section" style="margin-top:2rem;padding-top:1.5rem;border-top:2px solid #eee;">
+    <h3 style="margin-bottom:1rem;">生成的视频</h3>
+    <div class="generated-list" id="generatedList">
+      <div style="color:#888;font-size:0.9rem;">暂无生成的视频</div>
+    </div>
   </div>
 </div>
 
-<!-- 重命名 Modal -->
-<div id="rename-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:white;border-radius:8px;padding:1.5rem;width:380px;box-shadow:0 8px 24px rgba(0,0,0,.2);">
-    <h3 style="margin-bottom:1rem;">重命名视频</h3>
-    <input type="text" id="rename-input" style="width:100%;padding:0.6rem;border:1px solid #ddd;border-radius:4px;font-size:1rem;margin-bottom:1rem;">
+<!-- 创建评测集弹窗 -->
+<div class="modal-overlay" id="createSetModal">
+  <div class="modal-content">
+    <h3 style="margin-top:0;">新建评测集</h3>
+    <div style="margin-bottom:0.8rem;">
+      <label>名称</label>
+      <input type="text" id="newSetName" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+    </div>
+    <div style="margin-bottom:1rem;">
+      <label>备注（可选）</label>
+      <input type="text" id="newSetNotes" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+    </div>
     <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
-      <button class="btn btn-secondary" onclick="closeRenameModal()">取消</button>
-      <button class="btn" onclick="confirmRename()">确认</button>
+      <button class="btn btn-secondary" onclick="closeCreateModal()">取消</button>
+      <button class="btn" onclick="createAndAddToSet()">创建并添加</button>
     </div>
-  </div>
-</div>
-
-<!-- JSON 查看 Modal -->
-<div id="json-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:white;border-radius:8px;padding:1.5rem;width:560px;max-height:80vh;overflow:auto;box-shadow:0 8px 24px rgba(0,0,0,.2);">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-      <h3>Ground Truth JSON</h3>
-      <button class="btn btn-secondary btn-sm" onclick="closeJsonModal()">关闭</button>
-    </div>
-    <pre id="json-modal-content" style="background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:4px;font-size:0.82rem;overflow:auto;white-space:pre;"></pre>
   </div>
 </div>
 
 <script>
-const EVENT_TYPES = ['rat','smoke','use_phone','call_phone','chef','trash','mask','flame'];
-
 let allVideos = [];
-let renameTargetId = null;
-let searchTimer = null;
+let selectedIds = new Set();
+let evalSets = [];
+let processingTasks = new Map(); // task_id -> { type, title, progress, status }
 
-// ── 初始化 ──────────────────────────────────────────────────────────────────
-async function loadVideos(q = '') {
-  const url = q ? `/videos/api/search?q=${encodeURIComponent(q)}` : '/videos/api';
-  const res = await fetch(url);
+async function loadVideos() {
+  const res = await fetch('/videos/api/watermarked');
   allVideos = await res.json();
-  renderTable(allVideos);
+  renderGrid();
 }
 
-let filterEligible = false;
+async function loadEvalSets() {
+  const res = await fetch('/videos/api/eval-sets');
+  const data = await res.json();
+  evalSets = data.sets || [];
+  const select = document.getElementById('evalSetSelect');
+  select.innerHTML = '<option value="">选择评测集...</option>' +
+    evalSets.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
 
-function isEligible(v) {
-  const hasWatermark = v.watermarked_videos && v.watermarked_videos.length > 0;
-  const has10DigitId = v.video_id && v.video_id.length === 10 && /^\d{10}$/.test(v.video_id);
-  return hasWatermark && has10DigitId;
+  // 同时更新筛选下拉框
+  const filterSelect = document.getElementById('evalSetFilter');
+  const currentFilter = filterSelect.value;
+  filterSelect.innerHTML = '<option value="">全部视频</option>' +
+    evalSets.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
+  filterSelect.value = currentFilter; // 保持当前选择
 }
 
-function renderTable(videos) {
-  const tbody = document.getElementById('video-tbody');
-  const emptyMsg = document.getElementById('empty-msg');
-  const loadingMsg = document.getElementById('loading-msg');
-  loadingMsg.style.display = 'none';
-
-  tbody.innerHTML = '';
-  // 重置全选和批量栏
-  const checkAll = document.getElementById('check-all');
-  if (checkAll) { checkAll.checked = false; checkAll.indeterminate = false; }
-  document.getElementById('batch-bar').classList.remove('visible');
-
-  // 应用筛选
-  const displayVideos = filterEligible ? videos.filter(isEligible) : videos;
-
-  if (!displayVideos.length) {
-    emptyMsg.style.display = 'block';
-    emptyMsg.textContent = filterEligible ? '暂无符合条件的视频（需要已打水印且视频ID为10位数字）' : '暂无视频';
-    return;
-  }
-  emptyMsg.style.display = 'none';
-
-  for (const v of displayVideos) {
-    const hasWatermark = v.watermarked_videos && v.watermarked_videos.length > 0;
-    const sizeStr = v.file_size ? (v.file_size / 1024 / 1024).toFixed(1) + ' MB' : '-';
-    const eligible = isEligible(v);
-
-    const tr = document.createElement('tr');
-    tr.id = `row-${v.id}`;
-    tr.innerHTML = `
-      <td class="cb-col">
-        <input type="checkbox" class="row-cb" data-id="${v.id}" onchange="onCheckChange()">
-      </td>
-      <td>
-        <div class="filename-cell">
-          <span class="filename-text" id="fname-${v.id}">${escHtml(v.filename)}</span>
-        </div>
-        ${hasWatermark ? `<div style="font-size:0.78rem;color:#27ae60;margin-top:2px;">✔ 已打水印</div>` : ''}
-      </td>
-      <td>
-        <input class="vid-id-input" id="vidid-${v.id}"
-          value="${escHtml(v.video_id || '')}"
-          placeholder="10位数字"
-          maxlength="10"
-          pattern="\\d{10}"
-          title="必须为恰好10位数字"
-          onblur="saveVideoId(${v.id})"
-          onkeydown="if(event.key==='Enter')saveVideoId(${v.id})">
-      </td>
-      <td>${sizeStr}</td>
-      <td>
-        <div class="actions-cell">
-          <button class="btn btn-sm btn-secondary" onclick="openRenameModal(${v.id}, '${escJs(v.filename)}')">重命名</button>
-          <div class="dl-group" id="dlgroup-${v.id}">
-            <button class="btn btn-sm btn-info" onclick="downloadVideo(${v.id}, 'original')">下载原版</button>
-            <button class="dl-arrow" onclick="toggleDlMenu(${v.id})" title="更多下载选项">▾</button>
-            <div class="dl-menu" id="dlmenu-${v.id}">
-              <button onclick="downloadVideo(${v.id},'original');toggleDlMenu(${v.id})">下载原视频</button>
-              <button onclick="downloadVideo(${v.id},'watermarked');toggleDlMenu(${v.id})"${hasWatermark ? '' : ' style="color:#aaa"'}>下载水印版${hasWatermark ? '' : '（未生成）'}</button>
-            </div>
-          </div>
-          <button class="btn btn-sm btn-warning" onclick="applyWatermark(${v.id}, this)">${hasWatermark ? '重新打水印' : '打水印'}</button>
-          <button class="btn btn-sm" onclick="toggleAnnotate(${v.id})">标注事件</button>
-          ${eligible ? `<button class="btn btn-sm btn-success" onclick="addToEvalSet(${v.id})">加入评测集</button>` : ''}
-        </div>
-        <div class="annotate-panel" id="annotate-${v.id}">
-          <h4>事件标注</h4>
-          <table class="event-table">
-            <thead><tr><th>事件类型</th><th>开始(秒)</th><th>结束(秒)</th><th>GT帧状态</th><th></th></tr></thead>
-            <tbody id="events-tbody-${v.id}"></tbody>
-          </table>
-          <div class="add-event-form">
-            <select id="etype-${v.id}">
-              ${EVENT_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
-            </select>
-            <input type="number" id="estart-${v.id}" placeholder="开始(秒)" min="0" step="0.1">
-            <input type="number" id="eend-${v.id}" placeholder="结束(秒)" min="0" step="0.1">
-            <button class="btn btn-sm btn-success" onclick="addEvent(${v.id})">添加</button>
-          </div>
-          <div class="json-actions">
-            <button class="btn btn-sm" onclick="generateJson(${v.id})">生成 JSON</button>
-            <button class="btn btn-sm btn-secondary" onclick="viewJson(${v.id})">查看 JSON</button>
-          </div>
-        </div>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-// ── 搜索 ─────────────────────────────────────────────────────────────────────
-document.getElementById('search-input').addEventListener('input', function() {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => loadVideos(this.value.trim()), 300);
-});
-
-function clearSearch() {
-  document.getElementById('search-input').value = '';
-  loadVideos();
-}
-
-function toggleFilter() {
-  filterEligible = document.getElementById('filter-eligible').checked;
-  renderTable(allVideos);
-}
-
-// ── 视频ID ───────────────────────────────────────────────────────────────────
-async function saveVideoId(id) {
-  const input = document.getElementById(`vidid-${id}`);
-  const value = input.value.trim();
-  if (!value) { input.classList.remove('saved'); input.classList.add('unsaved'); return; }
-  if (!/^\d{10}$/.test(value)) {
-    input.classList.remove('saved');
-    input.classList.add('unsaved');
-    input.title = '必须为恰好10位数字';
+function renderGrid() {
+  const grid = document.getElementById('videoGrid');
+  if (!allVideos.length) {
+    grid.innerHTML = '<div class="empty-state">暂无已打水印的视频，请先去<a href="/videos/upload/">上传页</a>打水印</div>';
     return;
   }
 
-  const res = await fetch(`/videos/api/${id}/video-id`, {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({video_id: value})
-  });
-  if (res.ok) {
-    input.classList.remove('unsaved');
-    input.classList.add('saved');
-    // 更新本地数据
-    const v = allVideos.find(v => v.id === id);
-    if (v) v.video_id = value;
+  grid.innerHTML = allVideos.map(v => `
+    <div class="video-card ${selectedIds.has(v.video_db_id) ? 'selected' : ''}" data-id="${v.video_db_id}">
+      <input type="checkbox" class="card-checkbox"
+             ${selectedIds.has(v.video_db_id) ? 'checked' : ''}
+             onchange="toggleSelect(${v.video_db_id}, this.checked)">
+      <a href="/videos/${v.video_db_id}/annotate/">
+        <img src="/videos/api/${v.id}/thumbnail" class="card-thumbnail" alt="${escHtml(v.video_id)}"
+             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <div style="display:none; width:100%; aspect-ratio:16/9; background:#e0e0e0; align-items:center; justify-content:center; color:#999; font-size:0.85rem;">
+          ${escHtml(v.video_id)}
+        </div>
+      </a>
+      <div class="card-info">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.3rem;">
+          <div class="card-video-id" style="margin-bottom:0;">${escHtml(v.video_id)}</div>
+          <div class="card-icons" style="display:flex;gap:0.4rem;">
+            <a href="/videos/api/${v.video_db_id}/download?type=watermarked" download title="下载" style="color:#888;text-decoration:none;font-size:0.9rem;padding:2px 6px;border-radius:3px;background:#f0f0f0;" onmouseover="this.style.color='#3498db'" onmouseout="this.style.color='#888'">↓</a>
+            <a href="/videos/${v.video_db_id}/annotate/" title="标注" style="color:#888;text-decoration:none;font-size:0.9rem;padding:2px 6px;border-radius:3px;background:#f0f0f0;" onmouseover="this.style.color='#3498db'" onmouseout="this.style.color='#888'">✎</a>
+            <a href="#" onclick="deleteVideo(${v.video_db_id}, event);return false;" title="删除" style="color:#888;text-decoration:none;font-size:0.9rem;padding:2px 6px;border-radius:3px;background:#f0f0f0;" onmouseover="this.style.color='#e74c3c'" onmouseout="this.style.color='#888'">✕</a>
+          </div>
+        </div>
+        <div class="card-meta">
+          ${formatDuration(v.duration)} · ${formatFileSize(v.file_size)}
+          ${v.resolution ? '· ' + v.resolution : ''}
+        </div>
+        <div class="card-tags">
+          ${v.event_types.map(t => `<span class="tag">${escHtml(t)}</span>`).join('')}
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  updateSelectedCount();
+}
+
+function toggleSelect(videoId, checked) {
+  if (checked) {
+    selectedIds.add(videoId);
   } else {
-    const err = await res.json();
-    showMsg('upload-message', '错误: ' + (err.error || '保存失败'), 'error');
+    selectedIds.delete(videoId);
   }
+  const card = document.querySelector(`.video-card[data-id="${videoId}"]`);
+  if (card) card.classList.toggle('selected', checked);
+  updateSelectedCount();
+  updateActionButtons();
 }
 
-// ── 重命名 ───────────────────────────────────────────────────────────────────
-function openRenameModal(id, currentName) {
-  renameTargetId = id;
-  document.getElementById('rename-input').value = currentName;
-  document.getElementById('rename-modal').style.display = 'flex';
-  setTimeout(() => document.getElementById('rename-input').select(), 50);
+function updateActionButtons() {
+  const count = selectedIds.size;
+  const concatBtn = document.getElementById('concatBtn');
+  const packageBtn = document.getElementById('packageBtn');
+  concatBtn.disabled = count < 2 || count > 10;
+  packageBtn.disabled = count < 1 || count > 10;
 }
 
-function closeRenameModal() {
-  document.getElementById('rename-modal').style.display = 'none';
-  renameTargetId = null;
+function toggleSelectAll() {
+  const checked = document.getElementById('selectAll').checked;
+  if (checked) {
+    allVideos.forEach(v => selectedIds.add(v.video_db_id));
+  } else {
+    selectedIds.clear();
+  }
+  renderGrid();
+  updateActionButtons();
 }
 
-async function confirmRename() {
-  const newName = document.getElementById('rename-input').value.trim();
-  if (!newName) return;
+function updateSelectedCount() {
+  const count = selectedIds.size;
+  document.getElementById('selectedCount').textContent = count ? `已选 ${count} 个` : '';
+}
 
-  const res = await fetch(`/videos/api/${renameTargetId}/rename`, {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({filename: newName})
+async function addToEvalSet() {
+  const setId = document.getElementById('evalSetSelect').value;
+  if (!setId) {
+    alert('请选择评测集');
+    return;
+  }
+  if (!selectedIds.size) {
+    alert('请至少选择一个视频');
+    return;
+  }
+
+  const res = await fetch('/videos/api/eval-sets/batch-add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({set_id: parseInt(setId), video_ids: Array.from(selectedIds)})
   });
   const data = await res.json();
   if (res.ok) {
-    closeRenameModal();
-    loadVideos(document.getElementById('search-input').value.trim());
+    alert(`成功添加 ${data.added_count} 个视频到评测集`);
+    selectedIds.clear();
+    document.getElementById('selectAll').checked = false;
+    renderGrid();
   } else {
-    alert('重命名失败: ' + (data.error || '未知错误'));
+    alert(data.error || '添加失败');
   }
 }
 
-document.getElementById('rename-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') confirmRename();
-  if (e.key === 'Escape') closeRenameModal();
-});
-
-// ── 下载 ─────────────────────────────────────────────────────────────────────
-function downloadVideo(id, type = 'original') {
-  window.location.href = `/videos/api/${id}/download?type=${type}`;
-}
-
-function toggleDlMenu(id) {
-  const menu = document.getElementById(`dlmenu-${id}`);
-  // 关闭其他打开的菜单
-  document.querySelectorAll('.dl-menu.open').forEach(m => { if (m !== menu) m.classList.remove('open'); });
-  menu.classList.toggle('open');
-}
-
-// 点击页面其他地方关闭下载菜单
-document.addEventListener('click', e => {
-  if (!e.target.closest('.dl-group')) {
-    document.querySelectorAll('.dl-menu.open').forEach(m => m.classList.remove('open'));
+function showCreateEvalSetModal() {
+  if (!selectedIds.size) {
+    alert('请至少选择一个视频');
+    return;
   }
-});
-
-// ── 复选框 & 批量下载 ─────────────────────────────────────────────────────────
-function getSelectedIds() {
-  return [...document.querySelectorAll('.row-cb:checked')].map(cb => parseInt(cb.dataset.id));
+  document.getElementById('createSetModal').classList.add('visible');
 }
 
-function onCheckChange() {
-  const ids = getSelectedIds();
-  const total = document.querySelectorAll('.row-cb').length;
-  const bar = document.getElementById('batch-bar');
-  const checkAll = document.getElementById('check-all');
-
-  document.getElementById('batch-count').textContent = `已选 ${ids.length} 个`;
-  bar.classList.toggle('visible', ids.length > 0);
-  checkAll.indeterminate = ids.length > 0 && ids.length < total;
-  checkAll.checked = ids.length === total && total > 0;
+function closeCreateModal() {
+  document.getElementById('createSetModal').classList.remove('visible');
+  document.getElementById('newSetName').value = '';
+  document.getElementById('newSetNotes').value = '';
 }
 
-function toggleAll(cb) {
-  document.querySelectorAll('.row-cb').forEach(c => { c.checked = cb.checked; });
-  onCheckChange();
+async function deleteVideo(videoId, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!confirm('确定要删除此视频吗？这将删除原始视频、水印视频、所有事件标注和GT帧。此操作不可恢复！')) {
+    return;
+  }
+  const res = await fetch(`/videos/api/${videoId}`, {method: 'DELETE'});
+  if (res.ok) {
+    selectedIds.delete(videoId);
+    loadVideos();
+  } else {
+    const data = await res.json();
+    alert(data.error || '删除失败');
+  }
 }
 
-function clearSelection() {
-  document.querySelectorAll('.row-cb').forEach(c => { c.checked = false; });
-  document.getElementById('check-all').checked = false;
-  onCheckChange();
+async function createAndAddToSet() {
+  const name = document.getElementById('newSetName').value.trim();
+  const notes = document.getElementById('newSetNotes').value.trim();
+  if (!name) {
+    alert('请输入评测集名称');
+    return;
+  }
+
+  // 创建评测集
+  const createRes = await fetch('/videos/api/eval-sets', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, notes, video_ids: Array.from(selectedIds)})
+  });
+  const createData = await createRes.json();
+  if (!createRes.ok) {
+    alert(createData.error || '创建失败');
+    return;
+  }
+
+  alert('评测集创建成功，视频已添加');
+  closeCreateModal();
+  selectedIds.clear();
+  document.getElementById('selectAll').checked = false;
+  renderGrid();
+  loadEvalSets();
 }
 
-async function batchDownload(type) {
-  const ids = getSelectedIds();
-  if (!ids.length) return;
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
-  const typeLabel = type === 'watermarked' ? '水印版' : '原视频';
-  const btn = event.target;
-  btn.disabled = true;
-  btn.textContent = '打包中…';
+function formatDuration(sec) {
+  if (!sec) return '0:00';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+  return `${m}:${s.toString().padStart(2,'0')}`;
+}
 
-  try {
-    const res = await fetch('/videos/api/download/batch', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ids, type})
-    });
+function formatFileSize(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B','KB','MB','GB'];
+  let i = 0;
+  while (bytes >= 1024 && i < units.length - 1) {
+    bytes /= 1024;
+    i++;
+  }
+  return bytes.toFixed(1) + ' ' + units[i];
+}
 
+// 评测集筛选
+async function filterByEvalSet() {
+  const setId = document.getElementById('evalSetFilter').value;
+  const url = setId ? `/videos/api/watermarked?eval_set_id=${setId}` : '/videos/api/watermarked';
+  const res = await fetch(url);
+  allVideos = await res.json();
+  renderGrid();
+}
+
+// 修改评测集名称
+async function editEvalSetName() {
+  const setId = document.getElementById('evalSetFilter').value;
+  if (!setId) {
+    alert('请先选择要修改的评测集');
+    return;
+  }
+  const set = evalSets.find(s => s.id == setId);
+  const newName = prompt('请输入新的评测集名称:', set ? set.name : '');
+  if (!newName || newName.trim() === '') return;
+
+  const res = await fetch(`/videos/api/eval-sets/${setId}`, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: newName.trim()})
+  });
+  if (res.ok) {
+    alert('修改成功');
+    loadEvalSets();
+  } else {
+    const data = await res.json();
+    alert(data.error || '修改失败');
+  }
+}
+
+// 删除评测集
+async function deleteEvalSet() {
+  const setId = document.getElementById('evalSetFilter').value;
+  if (!setId) {
+    alert('请先选择要删除的评测集');
+    return;
+  }
+  const set = evalSets.find(s => s.id == setId);
+  if (!confirm(`确定要删除评测集 "${set ? set.name : ''}" 吗？\n注意：只会删除评测集本身，不会删除视频。`)) {
+    return;
+  }
+
+  const res = await fetch(`/videos/api/eval-sets/${setId}`, {method: 'DELETE'});
+  if (res.ok) {
+    alert('删除成功');
+    document.getElementById('evalSetFilter').value = '';
+    loadEvalSets();
+    filterByEvalSet();
+  } else {
+    const data = await res.json();
+    alert(data.error || '删除失败');
+  }
+}
+
+// 视频拼接
+async function concatSelected() {
+  if (selectedIds.size < 2) {
+    alert('请至少选择2个视频进行拼接');
+    return;
+  }
+  if (selectedIds.size > 10) {
+    alert('最多只能选择10个视频进行拼接');
+    return;
+  }
+  if (!confirm(`确定要拼接选中的 ${selectedIds.size} 个视频吗？`)) return;
+
+  const res = await fetch('/videos/api/concat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video_ids: Array.from(selectedIds)})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    startProcessingTask(data.task_id, 'concat', `视频拼接 (${selectedIds.size}个视频)`);
+  } else {
+    alert(data.error || '拼接失败');
+  }
+}
+
+// 视频打包
+async function packageSelected() {
+  if (selectedIds.size < 1) {
+    alert('请至少选择1个视频进行打包');
+    return;
+  }
+  if (selectedIds.size > 10) {
+    alert('最多只能选择10个视频进行打包');
+    return;
+  }
+  if (!confirm(`确定要打包选中的 ${selectedIds.size} 个视频吗？`)) return;
+
+  const res = await fetch('/videos/api/package', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video_ids: Array.from(selectedIds)})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    startProcessingTask(data.task_id, 'package', `视频打包 (${selectedIds.size}个视频)`);
+  } else {
+    alert(data.error || '打包失败');
+  }
+}
+
+// 开始处理任务
+function startProcessingTask(taskId, type, title) {
+  processingTasks.set(taskId, { type, title, progress: 10, status: 'processing' });
+  renderProcessingList();
+  pollTaskProgress(taskId);
+}
+
+// 渲染处理中任务列表
+function renderProcessingList() {
+  const container = document.getElementById('processingList');
+  if (!processingTasks.size) {
+    container.innerHTML = '<div style="color:#888;font-size:0.9rem;">暂无进行中的任务</div>';
+    return;
+  }
+
+  container.innerHTML = Array.from(processingTasks.entries()).map(([taskId, task]) => `
+    <div style="display:flex;align-items:center;gap:1rem;padding:0.8rem;background:#f8f9fa;border-radius:6px;margin-bottom:0.5rem;"
+    >
+      <span class="badge" style="padding:0.2rem 0.5rem;border-radius:4px;font-size:0.8rem;${task.type === 'concat' ? 'background:#d4edda;color:#155724;' : 'background:#cce5ff;color:#004085;'}"
+      >${task.type === 'concat' ? '拼接' : '打包'}</span>
+      <span style="flex:1;font-size:0.9rem;"
+      >${escHtml(task.title)}</span>
+      <div style="width:150px;"
+      >
+        <div style="font-size:0.8rem;color:#666;margin-bottom:0.2rem;"
+        >${task.status === 'processing' ? '<span style="animation:pulse 1.5s infinite;">⏳</span> ' : ''}${task.progress}%</div>
+        <div style="width:100%;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;"
+        >
+          <div style="height:100%;width:${task.progress}%;background:#3498db;transition:width 0.3s;"
+          ></div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// 轮询任务进度
+async function pollTaskProgress(taskId) {
+  const checkProgress = async () => {
+    const res = await fetch(`/videos/api/tasks/${taskId}/progress`);
+    const data = await res.json();
     if (!res.ok) {
-      const err = await res.json();
-      alert('下载失败: ' + (err.error || '未知错误'));
+      processingTasks.delete(taskId);
+      renderProcessingList();
+      alert('获取进度失败');
       return;
     }
 
-    // 触发浏览器下载
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `videos_${typeLabel}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = type === 'watermarked' ? '批量下载水印版' : '批量下载原视频';
-  }
-}
-
-// ── 打水印 ───────────────────────────────────────────────────────────────────
-async function applyWatermark(id, btn) {
-  const vid = document.getElementById(`vidid-${id}`).value.trim();
-  if (!vid) {
-    alert('请先设置视频ID后再添加水印');
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = '处理中…';
-
-  const res = await fetch(`/videos/api/${id}/watermark`, {method:'POST'});
-  const data = await res.json();
-  btn.disabled = false;
-  if (res.ok) {
-    btn.textContent = '重新打水印';
-    showMsg('upload-message', '水印添加成功！', 'success');
-    loadVideos(document.getElementById('search-input').value.trim());
-  } else {
-    btn.textContent = hasWatermark ? '重新打水印' : '打水印';
-    showMsg('upload-message', '错误: ' + (data.error || '失败'), 'error');
-  }
-}
-
-// ── 标注面板 ─────────────────────────────────────────────────────────────────
-async function toggleAnnotate(id) {
-  const panel = document.getElementById(`annotate-${id}`);
-  if (panel.classList.contains('open')) {
-    panel.classList.remove('open');
-    return;
-  }
-  panel.classList.add('open');
-  await loadEvents(id);
-}
-
-async function loadEvents(id) {
-  const res = await fetch(`/videos/api/${id}/events`);
-  const events = await res.json();
-  renderEvents(id, events);
-}
-
-let eventsPollingTimers = {};
-
-function renderEvents(id, events) {
-  const tbody = document.getElementById(`events-tbody-${id}`);
-  tbody.innerHTML = '';
-  if (!events.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:#999;text-align:center;">暂无事件</td></tr>';
-    return;
-  }
-  for (const e of events) {
-    const gtStatus = e.gt_frames_status || 'pending';
-    const gtStatusText = {
-      'pending': '等待生成',
-      'processing': '生成中…',
-      'done': '已生成',
-      'failed': '生成失败'
-    }[gtStatus] || gtStatus;
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${escHtml(e.event_type)}</td>
-      <td>${e.start_seconds}</td>
-      <td>${e.end_seconds}</td>
-      <td><span class="gt-status gt-status-${gtStatus}" data-event-id="${e.id}">${gtStatusText}</span></td>
-      <td><button class="btn btn-sm btn-danger" onclick="deleteEvent(${id}, ${e.id}, this)">删除</button></td>
-    `;
-    tbody.appendChild(tr);
-  }
-
-  // 如果有pending或processing的状态，启动轮询
-  const hasPending = events.some(e => !e.gt_frames_status || e.gt_frames_status === 'pending' || e.gt_frames_status === 'processing');
-  if (hasPending) {
-    startEventsPolling(id);
-  }
-}
-
-function startEventsPolling(videoId) {
-  // 清除旧的定时器
-  if (eventsPollingTimers[videoId]) {
-    clearInterval(eventsPollingTimers[videoId]);
-  }
-  eventsPollingTimers[videoId] = setInterval(async () => {
-    await loadEvents(videoId);
-    // 检查是否还有需要轮询的
-    const res = await fetch(`/videos/api/${videoId}/events`);
-    const events = await res.json();
-    const hasPending = events.some(e => !e.gt_frames_status || e.gt_frames_status === 'pending' || e.gt_frames_status === 'processing');
-    if (!hasPending) {
-      clearInterval(eventsPollingTimers[videoId]);
-      delete eventsPollingTimers[videoId];
+    // 更新进度
+    if (processingTasks.has(taskId)) {
+      const task = processingTasks.get(taskId);
+      task.progress = data.progress;
+      task.status = data.status;
+      renderProcessingList();
     }
-  }, 1500);
+
+    if (data.status === 'processing') {
+      setTimeout(checkProgress, 500);
+    } else if (data.status === 'done') {
+      processingTasks.delete(taskId);
+      renderProcessingList();
+      alert('处理完成！');
+      loadGeneratedVideos();
+      selectedIds.clear();
+      document.getElementById('selectAll').checked = false;
+      updateSelectedCount();
+      updateActionButtons();
+      renderGrid();
+    } else if (data.status === 'failed') {
+      processingTasks.delete(taskId);
+      renderProcessingList();
+      alert('处理失败: ' + (data.error || '未知错误'));
+    }
+  };
+  checkProgress();
 }
 
-async function addEvent(id) {
-  const etype = document.getElementById(`etype-${id}`).value;
-  const start = parseFloat(document.getElementById(`estart-${id}`).value);
-  const end = parseFloat(document.getElementById(`eend-${id}`).value);
+// 加载生成的视频列表
+async function loadGeneratedVideos() {
+  const res = await fetch('/videos/api/generated');
+  const videos = await res.json();
+  const container = document.getElementById('generatedList');
 
-  if (isNaN(start) || isNaN(end)) { alert('请填写开始和结束时间'); return; }
-  if (start >= end) { alert('开始时间必须小于结束时间'); return; }
-
-  const res = await fetch(`/videos/api/${id}/events`, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({event_type: etype, start_seconds: start, end_seconds: end})
-  });
-  const data = await res.json();
-  if (res.ok) {
-    document.getElementById(`estart-${id}`).value = '';
-    document.getElementById(`eend-${id}`).value = '';
-    await loadEvents(id);
-  } else {
-    alert('添加失败: ' + (data.error || '未知'));
+  if (!videos.length) {
+    container.innerHTML = '<div style="color:#888;font-size:0.9rem;">暂无生成的视频</div>';
+    return;
   }
+
+  container.innerHTML = videos.map(v => `
+    <div class="generated-item" style="display:flex;align-items:center;gap:1rem;padding:0.8rem;background:#f8f9fa;border-radius:6px;margin-bottom:0.5rem;">
+      <span class="badge" style="padding:0.2rem 0.5rem;border-radius:4px;font-size:0.8rem;${v.type === 'concat' ? 'background:#d4edda;color:#155724;' : 'background:#cce5ff;color:#004085;'}">${v.type === 'concat' ? '拼接' : '打包'}</span>
+      <span style="flex:1;font-size:0.9rem;">${escHtml(v.name)}</span>
+      <span style="font-size:0.85rem;color:#888;">${formatFileSize(v.file_size)} · ${new Date(v.created_at).toLocaleString()}</span>
+      <a href="/videos/api/generated/${v.id}/download" class="btn btn-sm" download>下载</a>
+      <button class="btn btn-sm btn-danger" onclick="deleteGeneratedVideo(${v.id})">删除</button>
+    </div>
+  `).join('');
 }
 
-async function deleteEvent(videoId, eventId, btn) {
-  btn.disabled = true;
-  const res = await fetch(`/videos/api/${videoId}/events/${eventId}`, {method:'DELETE'});
+// 删除生成的视频
+async function deleteGeneratedVideo(id) {
+  if (!confirm('确定要删除这个生成的视频吗？')) return;
+  const res = await fetch(`/videos/api/generated/${id}`, {method: 'DELETE'});
   if (res.ok) {
-    await loadEvents(videoId);
+    loadGeneratedVideos();
   } else {
-    btn.disabled = false;
     alert('删除失败');
   }
 }
 
-// ── Ground Truth JSON ─────────────────────────────────────────────────────────
-async function generateJson(id) {
-  const vid = document.getElementById(`vidid-${id}`).value.trim();
-  if (!vid) { alert('请先设置视频ID'); return; }
-
-  const res = await fetch(`/videos/api/${id}/ground-truth/generate`, {method:'POST'});
-  const data = await res.json();
-  if (res.ok) {
-    showMsg('upload-message', `JSON 已生成: ${data.path}`, 'success');
-  } else {
-    alert('生成失败: ' + (data.error || '未知'));
-  }
-}
-
-async function viewJson(id) {
-  const res = await fetch(`/videos/api/${id}/ground-truth`);
-  const data = await res.json();
-  if (!res.ok) { alert(data.error || '获取失败'); return; }
-
-  document.getElementById('json-modal-content').textContent = JSON.stringify(data, null, 2);
-  document.getElementById('json-modal').style.display = 'flex';
-}
-
-function closeJsonModal() {
-  document.getElementById('json-modal').style.display = 'none';
-}
-
-// ── 加入评测集 ─────────────────────────────────────────────────────────────
-async function addToEvalSet(videoId) {
-  // 先获取现有的评测集列表
-  const res = await fetch('/videos/api/eval-sets');
-  const data = await res.json();
-  const sets = data.sets || [];
-
-  if (sets.length === 0) {
-    // 创建新的评测集
-    const name = prompt('请输入评测集名称：', '默认评测集');
-    if (!name) return;
-
-    const createRes = await fetch('/videos/api/eval-sets', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name, video_ids: [videoId]})
-    });
-
-    if (createRes.ok) {
-      showMsg('upload-message', '已创建评测集并添加视频！', 'success');
-    } else {
-      const err = await createRes.json();
-      alert('创建失败: ' + (err.error || '未知'));
-    }
-  } else {
-    // 让用户选择添加到哪个评测集
-    const setOptions = sets.map((s, i) => `${i+1}. ${s.name}`).join('\\n');
-    const choice = prompt(`请选择要添加到的评测集（输入序号）：\\n${setOptions}\\n\\n输入 0 创建新评测集`, '1');
-
-    if (choice === null) return;
-
-    if (choice === '0') {
-      const name = prompt('请输入评测集名称：', '新评测集');
-      if (!name) return;
-
-      const createRes = await fetch('/videos/api/eval-sets', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name, video_ids: [videoId]})
-      });
-
-      if (createRes.ok) {
-        showMsg('upload-message', '已创建评测集并添加视频！', 'success');
-      } else {
-        const err = await createRes.json();
-        alert('创建失败: ' + (err.error || '未知'));
-      }
-    } else {
-      const idx = parseInt(choice) - 1;
-      if (idx >= 0 && idx < sets.length) {
-        const addRes = await fetch(`/videos/api/eval-sets/${sets[idx].id}/add`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({video_id: videoId})
-        });
-
-        if (addRes.ok) {
-          showMsg('upload-message', `已添加到评测集「${sets[idx].name}」！`, 'success');
-        } else {
-          const err = await addRes.json();
-          alert('添加失败: ' + (err.error || '未知'));
-        }
-      }
-    }
-  }
-}
-
-// ── 上传 ─────────────────────────────────────────────────────────────────────
-const uploadArea = document.getElementById('video-upload-area');
-const fileInput = document.getElementById('video-file-input');
-
-uploadArea.addEventListener('click', () => fileInput.click());
-uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
-uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
-uploadArea.addEventListener('drop', e => {
-  e.preventDefault();
-  uploadArea.classList.remove('dragover');
-  uploadFiles(e.dataTransfer.files);
-});
-fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
-
-async function uploadFiles(files) {
-  for (const file of files) {
-    await uploadSingle(file);
-  }
-  loadVideos(document.getElementById('search-input').value.trim());
-}
-
-async function uploadSingle(file) {
-  const form = new FormData();
-  form.append('video', file);
-  showMsg('upload-message', `正在上传 ${file.name}…`, 'info');
-
-  const res = await fetch('/videos/api/upload', {method:'POST', body: form});
-  const data = await res.json();
-  if (res.ok) {
-    showMsg('upload-message', `✔ ${file.name} 上传成功`, 'success');
-  } else {
-    showMsg('upload-message', `✘ ${file.name}: ${data.error || '上传失败'}`, 'error');
-  }
-}
-
-// ── 工具函数 ──────────────────────────────────────────────────────────────────
-function showMsg(containerId, text, type) {
-  const el = document.getElementById(containerId);
-  el.innerHTML = `<div class="message message-${type === 'error' ? 'error' : 'success'}" style="${type==='info'?'background:#d1ecf1;color:#0c5460;':''}">${text}</div>`;
-  if (type !== 'error') setTimeout(() => { el.innerHTML = ''; }, 4000);
-}
-
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function escJs(s) {
-  return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-}
-
-// 关闭 modal（点击背景）
-document.getElementById('rename-modal').addEventListener('click', function(e) {
-  if (e.target === this) closeRenameModal();
-});
-document.getElementById('json-modal').addEventListener('click', function(e) {
-  if (e.target === this) closeJsonModal();
+// 点击空白处关闭弹窗
+document.getElementById('createSetModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeCreateModal();
 });
 
-// 初始加载
 loadVideos();
+loadEvalSets();
+loadGeneratedVideos();
 </script>
 {% endblock %}

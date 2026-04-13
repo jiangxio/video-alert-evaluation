@@ -24,7 +24,15 @@ class Config:
     OUTPUT_DIR = str(BASE_DIR / 'output')
     GROUND_TRUTH_DIR = str(BASE_DIR / 'ground_truth')
     REPORT_DIR = str(BASE_DIR / 'report')
+    THUMBNAILS_DIR = str(BASE_DIR / 'thumbnails')
+    GENERATED_VIDEOS_DIR = str(BASE_DIR / 'generated_videos')
 
     # 允许的文件扩展名
     ALLOWED_VIDEO_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv'}
     ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
+
+    @classmethod
+    def init_app(cls, app):
+        # 确保必要的目录存在
+        Path(cls.THUMBNAILS_DIR).mkdir(parents=True, exist_ok=True)
+        Path(cls.GENERATED_VIDEOS_DIR).mkdir(parents=True, exist_ok=True)

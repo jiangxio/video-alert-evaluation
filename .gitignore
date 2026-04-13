@@ -1,0 +1,28 @@
+# 数据和媒体文件
+video1/
+video2/
+output/
+uploads/
+report/
+ground_truth/
+
+# 数据库
+*.db
+*.sqlite
+*.sqlite3
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# 临时文件
+*.tmp
+*.temp

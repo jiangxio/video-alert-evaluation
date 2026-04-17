@@ -99,6 +99,21 @@
     background:#e8f4f8;
     color:#3498db;
     border-radius:4px;
+    display:inline-flex;
+    align-items:center;
+    gap:0.3rem;
+  }
+  .eval-set-tag button {
+    background:none;
+    border:none;
+    color:#3498db;
+    cursor:pointer;
+    font-size:0.9rem;
+    line-height:1;
+    padding:0 0.1rem;
+  }
+  .eval-set-tag button:hover {
+    color:#e74c3c;
   }
 
   .event-table {
@@ -215,6 +230,12 @@
 
 <div class="breadcrumb">
   <a href="/">首页</a> &rsaquo; <a href="/videos/">视频管理</a> &rsaquo; <strong>视频标注</strong>
+</div>
+
+<div id="eval-return-bar" style="display:none; margin-bottom:1rem; padding:0.75rem 1rem; background:#eaf7ee; border-radius:6px; gap:0.8rem; align-items:center; flex-wrap:wrap;">
+  <span style="font-size:0.9rem; color:#155724;">从评测任务跳转而来</span>
+  <button class="btn btn-sm btn-secondary" onclick="returnToEval(false)">返回评测</button>
+  <button class="btn btn-sm btn-success" onclick="returnToEval(true)">返回并重新评测</button>
 </div>
 
 <div class="annotate-container">
@@ -391,8 +412,35 @@
 
 <script>
 const VIDEO_ID = {{ video.id }};
+const urlParams = new URLSearchParams(window.location.search);
+const FROM_EVAL_TASK = urlParams.get('from_eval_task');
 let videoData = null;
 let eventsPollingTimer = null;
+
+function initEvalReturnBar() {
+  const bar = document.getElementById('eval-return-bar');
+  if (FROM_EVAL_TASK && bar) {
+    bar.style.display = 'flex';
+  }
+}
+
+async function returnToEval(reExecute) {
+  if (!FROM_EVAL_TASK) return;
+  if (reExecute) {
+    try {
+      const res = await fetch('/evaluation/api/tasks/' + FROM_EVAL_TASK + '/execute', {method: 'POST'});
+      if (!res.ok) {
+        const data = await res.json();
+        alert('启动评测失败: ' + (data.error || '未知'));
+        return;
+      }
+    } catch (e) {
+      alert('请求失败: ' + e.message);
+      return;
+    }
+  }
+  window.location = '/evaluation/' + FROM_EVAL_TASK + '/';
+}
 
 async function loadData() {
   try {
@@ -434,7 +482,10 @@ function renderEvalSets() {
     return;
   }
   list.innerHTML = sets.map(s => `
-    <span class="eval-set-tag">${escHtml(s.name)}</span>
+    <span class="eval-set-tag">
+      ${escHtml(s.name)}
+      <button title="移出评测集" onclick="removeFromEvalSet(${s.id})">&times;</button>
+    </span>
   `).join('');
 }
 
@@ -516,7 +567,13 @@ function loadVideoPlayer() {
     // 使用inline=true参数让浏览器直接播放视频
     video.src = `/videos/api/${VIDEO_ID}/download?type=watermarked&inline=true`;
     video.onerror = () => {
-      console.error('视频加载失败:', video.src);
+      console.error('水印视频加载失败，尝试加载原始视频:', video.src);
+      // 降级：尝试加载原始视频
+      video.src = `/videos/api/${VIDEO_ID}/download?type=original&inline=true`;
+      video.onerror = () => {
+        console.error('原始视频也加载失败:', video.src);
+        alert('视频文件加载失败，请检查文件是否存在');
+      };
     };
   }
 }
@@ -620,6 +677,23 @@ async function addToEvalSet() {
   } else {
     const data = await res.json();
     alert(data.error || '添加失败');
+  }
+}
+
+async function removeFromEvalSet(setId) {
+  if (!confirm('确定要将此视频移出该评测集吗？')) return;
+
+  const res = await fetch(`/videos/api/eval-sets/${setId}/remove`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video_id: VIDEO_ID})
+  });
+
+  if (res.ok) {
+    loadData();
+  } else {
+    const data = await res.json();
+    alert(data.error || '移出失败');
   }
 }
 
@@ -851,6 +925,7 @@ document.getElementById('trimModal').addEventListener('click', (e) => {
 });
 
 // 页面加载时获取数据
+initEvalReturnBar();
 loadData();
 </script>
 {% endblock %}

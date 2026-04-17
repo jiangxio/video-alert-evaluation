@@ -1,0 +1,26 @@
+{
+  "skill_name": "git-uploader",
+  "evals": [
+    {
+      "id": 1,
+      "name": "basic-upload-request",
+      "prompt": "帮我把当前项目的代码上传到git仓库",
+      "expected_output": "分析git状态，分类文件（哪些应该提交、哪些应该忽略），向用户展示建议，等待用户确认后再执行提交",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "specific-files-upload",
+      "prompt": "只提交app目录下的Python文件，不要提交测试数据和临时文件",
+      "expected_output": "只分析app目录下的.py文件，过滤掉数据文件和临时文件，向用户确认后提交",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "commit-with-message",
+      "prompt": "git commit -m '新增视频评测功能'",
+      "expected_output": "展示变更文件列表，让用户确认提交信息，然后执行提交和推送",
+      "files": []
+    }
+  ]
+}

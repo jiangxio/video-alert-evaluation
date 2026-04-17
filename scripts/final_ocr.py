@@ -67,24 +67,30 @@ def parse_text(text):
     id_match = re.search(r'\b(\d{10})\b', cleaned)
     if id_match:
         result["video_id"] = id_match.group(1)
+        # 移除视频ID，防止其末尾数字被误识别为时间戳的一部分
+        cleaned = cleaned.replace(id_match.group(1), '', 1)
 
-    # 提取时间戳
-    time_match = re.search(r'(\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?)', cleaned)
+    # 提取时间戳（固定格式 MM:SS.ss，只有分秒，无小时）
+    time_match = re.search(r'(\d{1,2}:\d{2}(?:\.\d+)?)', cleaned)
     if time_match:
         result["timestamp"] = time_match.group(1)
         try:
             t_str = time_match.group(1).replace(',', '.')
             if '.' in t_str:
-                hms, ms = t_str.split('.', 1)
+                ms_part, frac = t_str.split('.', 1)
+                ms = frac
             else:
-                hms, ms = t_str, '0'
-            hms_parts = hms.split(':')
-            while len(hms_parts) < 3:
-                hms_parts = ['0'] + hms_parts
-            h, m, s = map(int, hms_parts)
-            result["timestamp_seconds"] = round(h * 3600 + m * 60 + s + float(f"0.{ms:<03}"), 3)
+                ms_part, ms = t_str, '0'
+            m, s = map(int, ms_part.split(':'))
+            result["timestamp_seconds"] = round(m * 60 + s + float(f"0.{ms:<03}"), 3)
         except Exception:
             pass
+
+    # 校验：时间必须小于1小时
+    if result["timestamp_seconds"] is not None and result["timestamp_seconds"] >= 3600:
+        result["timestamp"] = None
+        result["timestamp_seconds"] = None
+        result["error"] = "时间超出范围（应小于1小时），请手动标注"
 
     result["success"] = (result["video_id"] is not None or result["timestamp"] is not None)
     return result

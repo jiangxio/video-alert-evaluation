@@ -89,3 +89,29 @@ Three separate requirements files — install only what you need:
 - `requirements-ocr.txt` — OCR backend (choose PaddleOCR **or** EasyOCR **or** Tesseract)
 
 External: FFmpeg must be installed for watermarking. `process.sh --install` handles Python deps.
+
+## Important Notes
+
+### sqlite3.Row 对象没有 .get() 方法
+
+**问题**：代码中多次出现 `'sqlite3.Row' object has no attribute 'get'` 错误。
+
+**原因**：数据库连接使用 `row_factory = sqlite3.Row`（见 [app/database.py:16](app/database.py#L16)），`sqlite3.Row` 对象支持字典式索引访问（`row['key']`），但**不支持** `.get()` 方法。
+
+**正确写法**：
+```python
+# 错误 ❌
+value = row.get('key', default)
+
+# 正确 ✅
+value = row['key'] if row['key'] is not None else default
+
+# 或者先转换为字典 ✅
+row_dict = dict(row)
+value = row_dict.get('key', default)
+```
+
+**常见场景**：
+- 从 `eval_tasks` 表读取任务参数时
+- 从 `events`、`videos` 等表读取数据时
+- 任何使用 `cursor.fetchone()` 或 `cursor.fetchall()` 获取 `sqlite3.Row` 对象的地方

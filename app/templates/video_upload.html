@@ -107,7 +107,7 @@
     <input type="file" id="fileInput" multiple accept=".mp4,.avi,.mov,.mkv">
     <div style="font-size:2rem;color:#ccc;margin-bottom:0.5rem;">📁</div>
     <div>点击或拖拽视频文件到此处上传</div>
-    <div style="font-size:0.85rem;color:#888;margin-top:0.5rem;">支持 MP4, AVI, MOV, MKV 格式</div>
+    <div style="font-size:0.85rem;color:#888;margin-top:0.5rem;">支持 MP4, AVI, MOV, MKV 格式，单个文件最大 800MB</div>
   </div>
 
   <div class="search-bar">
@@ -153,14 +153,31 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
 });
 
 async function uploadFiles(files) {
+  const MAX_SIZE = 800 * 1024 * 1024; // 800MB
   for (const file of files) {
+    // 前端检查文件大小
+    if (file.size > MAX_SIZE) {
+      alert(`文件 "${file.name}" 超过大小限制 (最大800MB)`);
+      continue;
+    }
     const formData = new FormData();
     formData.append('video', file);
     try {
       const res = await fetch('/videos/api/upload', {method:'POST', body:formData});
-      const data = await res.json();
       if (!res.ok) {
-        alert('上传失败: ' + (data.error || '未知错误'));
+        if (res.status === 413) {
+          alert(`文件 "${file.name}" 超过大小限制 (最大800MB)`);
+        } else {
+          let errorMsg = '未知错误';
+          try {
+            const data = await res.json();
+            errorMsg = data.error || errorMsg;
+          } catch(e) {
+            // 解析JSON失败时使用状态文本
+            errorMsg = res.statusText || errorMsg;
+          }
+          alert('上传失败: ' + errorMsg);
+        }
       }
     } catch(e) {
       alert('上传失败: ' + e.message);
@@ -292,17 +309,35 @@ async function confirmVideoId(videoId, videoIdValue) {
 }
 
 async function applyWatermark(videoId) {
-  const res = await fetch(`/videos/api/${videoId}/watermark`, {method:'POST'});
-  const data = await res.json();
-  if (!res.ok) {
-    alert(data.error || '打水印失败');
-    return;
-  }
-
-  // 开始跟踪进度
-  watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0 });
+  // 立即标记为处理中并禁用按钮，防止重复提交
+  watermarkingVideos.set(videoId, { task_id: null, progress: 0 });
   renderTable(allVideos);
-  pollWatermarkProgress(videoId, data.task_id);
+
+  try {
+    const res = await fetch(`/videos/api/${videoId}/watermark`, {method:'POST'});
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 429 && data.task_id) {
+        // 已有正在进行的任务，直接跟踪其进度
+        watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0 });
+        pollWatermarkProgress(videoId, data.task_id);
+        return;
+      }
+      // 其他错误：恢复按钮状态并提示
+      watermarkingVideos.delete(videoId);
+      renderTable(allVideos);
+      alert(data.error || '打水印失败');
+      return;
+    }
+
+    // 开始跟踪进度
+    watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0 });
+    pollWatermarkProgress(videoId, data.task_id);
+  } catch (e) {
+    watermarkingVideos.delete(videoId);
+    renderTable(allVideos);
+    alert('网络错误，请稍后重试');
+  }
 }
 
 function startRename(videoId) {

@@ -163,9 +163,11 @@
         <option value="">选择评测集...</option>
       </select>
       <button class="btn btn-sm" onclick="addToEvalSet()">添加到评测集</button>
+      <button class="btn btn-sm btn-secondary" onclick="batchRemoveFromEvalSet()">移出评测集</button>
       <button class="btn btn-sm btn-secondary" onclick="showCreateEvalSetModal()">新建评测集</button>
       <button class="btn btn-sm" onclick="concatSelected()" id="concatBtn" disabled>拼接视频</button>
       <button class="btn btn-sm" onclick="packageSelected()" id="packageBtn" disabled>打包下载</button>
+      <button class="btn btn-sm btn-danger" onclick="batchDeleteVideos()">删除</button>
     </div>
     <div>
       <a href="/videos/upload/" class="btn">上传视频</a>
@@ -273,11 +275,7 @@ function renderGrid() {
       <div class="card-info">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.3rem;">
           <div class="card-video-id" style="margin-bottom:0;">${escHtml(v.video_id)}</div>
-          <div class="card-icons" style="display:flex;gap:0.4rem;">
-            <a href="/videos/api/${v.video_db_id}/download?type=watermarked" download title="下载" style="color:#888;text-decoration:none;font-size:0.9rem;padding:2px 6px;border-radius:3px;background:#f0f0f0;" onmouseover="this.style.color='#3498db'" onmouseout="this.style.color='#888'">↓</a>
-            <a href="/videos/${v.video_db_id}/annotate/" title="标注" style="color:#888;text-decoration:none;font-size:0.9rem;padding:2px 6px;border-radius:3px;background:#f0f0f0;" onmouseover="this.style.color='#3498db'" onmouseout="this.style.color='#888'">✎</a>
-            <a href="#" onclick="deleteVideo(${v.video_db_id}, event);return false;" title="删除" style="color:#888;text-decoration:none;font-size:0.9rem;padding:2px 6px;border-radius:3px;background:#f0f0f0;" onmouseover="this.style.color='#e74c3c'" onmouseout="this.style.color='#888'">✕</a>
-          </div>
+          <a href="/videos/${v.video_db_id}/annotate/" title="标注" style="color:#888;text-decoration:none;font-size:0.9rem;padding:2px 6px;border-radius:3px;background:#f0f0f0;" onmouseover="this.style.color='#3498db'" onmouseout="this.style.color='#888'"><img src="/static/svg/annotate.svg" alt="标注" style="width:16px;height:16px;"> </a>
         </div>
         <div class="card-meta">
           ${formatDuration(v.duration)} · ${formatFileSize(v.file_size)}
@@ -353,6 +351,54 @@ async function addToEvalSet() {
     renderGrid();
   } else {
     alert(data.error || '添加失败');
+  }
+}
+
+async function batchRemoveFromEvalSet() {
+  const setId = document.getElementById('evalSetSelect').value;
+  if (!setId) {
+    alert('请选择评测集');
+    return;
+  }
+  if (!selectedIds.size) {
+    alert('请至少选择一个视频');
+    return;
+  }
+
+  const res = await fetch('/videos/api/eval-sets/batch-remove', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({set_id: parseInt(setId), video_ids: Array.from(selectedIds)})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    alert(`成功移出 ${data.removed_count} 个视频`);
+    selectedIds.clear();
+    document.getElementById('selectAll').checked = false;
+    renderGrid();
+  } else {
+    alert(data.error || '移出失败');
+  }
+}
+
+async function batchDeleteVideos() {
+  if (!selectedIds.size) {
+    alert('请至少选择一个视频');
+    return;
+  }
+  if (!confirm(`确定要删除选中的 ${selectedIds.size} 个视频吗？这将删除原始视频、水印视频、所有事件标注和GT帧。此操作不可恢复！`)) {
+    return;
+  }
+  let failed = 0;
+  for (const videoId of selectedIds) {
+    const res = await fetch(`/videos/api/${videoId}`, {method: 'DELETE'});
+    if (!res.ok) failed++;
+  }
+  selectedIds.clear();
+  document.getElementById('selectAll').checked = false;
+  loadVideos();
+  if (failed) {
+    alert(`${failed} 个视频删除失败`);
   }
 }
 

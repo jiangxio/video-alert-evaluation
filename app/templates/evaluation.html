@@ -36,12 +36,31 @@
   }
   .form-group textarea { resize:vertical; min-height:70px; }
   .modal-footer { display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem; }
+
+  .help-box {
+    background: #f0f7ff;
+    border-left: 4px solid #3498db;
+    padding: 0.8rem 1rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+    font-size: 0.88rem;
+    color: #444;
+  }
+  .help-box summary { font-weight: 600; color: #2c3e50; cursor: pointer; }
+  .help-box ul { margin: 0.5rem 0 0; padding-left: 1.2rem; }
+  .help-box li { margin-bottom: 0.3rem; }
+
+  .param-hint { font-size: 0.8rem; color: #888; margin-top: 0.25rem; line-height: 1.3; }
 </style>
 
 <div class="card">
   <div class="page-header">
     <h2>评测任务</h2>
     <button class="btn" onclick="openCreateModal()">+ 新建任务</button>
+  </div>
+
+  <div class="help-box">
+    <strong>评测流程：</strong>1. 参数设置 → 2. 二次确认 → 3. 执行评测 → 4. 查看结果。评测任务用于对比告警图片与视频标注的 Ground Truth，计算精确率、召回率等指标。
   </div>
 
   <div id="task-container">
@@ -81,6 +100,7 @@
       <div class="form-group">
         <label>同一事件合并间隔（秒）</label>
         <input type="number" id="new-merge-interval" min="0" step="0.5" value="5.0">
+        <div class="param-hint">时间差小于该值的连续告警图片会被合并为一个事件组</div>
       </div>
     </div>
 
@@ -88,10 +108,20 @@
       <div class="form-group">
         <label>事件间隔（秒）</label>
         <input type="number" id="new-ev-interval" min="0.1" step="0.5" value="10.0">
+        <div class="param-hint">计算 GT 事件预期触发次数的间隔参数</div>
       </div>
       <div class="form-group">
         <label>触发率（0-1）</label>
         <input type="number" id="new-trigger-rate" min="0" max="1" step="0.01" value="0.5">
+        <div class="param-hint">预期触发次数 = 事件时长 / 事件间隔 × 触发率</div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>最小事件时长（秒）</label>
+        <input type="number" id="new-min-duration" min="0" step="0.5" value="0">
+        <div class="param-hint">若 GT 事件时长小于该值，则预期触发次数强制为 0</div>
       </div>
     </div>
 
@@ -149,13 +179,15 @@ async function loadTasks() {
     'created': '待分析',
     'confirming': '待确认',
     'evaluating': '评测中',
-    'done': '已完成',
+    'done': '评测中',          // 评测完成但未确认结果，仍显示评测中
+    'finalized': '已完成',     // 已确认结果才算完成
   };
   const statusClass = {
     'created': 'status-created',
     'confirming': 'status-confirming',
     'evaluating': 'status-evaluating',
-    'done': 'status-done',
+    'done': 'status-evaluating',
+    'finalized': 'status-done',
   };
 
   for (const t of tasks) {
@@ -164,7 +196,10 @@ async function loadTasks() {
     const date = t.created_at ? new Date(t.created_at).toLocaleDateString('zh-CN') : '-';
     const dsName = t.dataset_name || '-';
     const esName = t.eval_set_name || '-';
-    const st = t.status || 'created';
+    let st = t.status || 'created';
+    if (st === 'done' && t.finalized) {
+      st = 'finalized';
+    }
     card.innerHTML = `
       <h3>${escHtml(t.name)}</h3>
       <div class="task-meta">${date} · 告警数据集：${escHtml(dsName)}<br>评测集：${escHtml(esName)}</div>
@@ -229,6 +264,7 @@ async function createTask() {
     merge_interval_sec: parseFloat(document.getElementById('new-merge-interval').value),
     event_interval_sec: parseFloat(document.getElementById('new-ev-interval').value),
     trigger_rate: parseFloat(document.getElementById('new-trigger-rate').value),
+    min_event_duration_sec: parseFloat(document.getElementById('new-min-duration').value),
   };
 
   const res = await fetch('/evaluation/api/tasks', {

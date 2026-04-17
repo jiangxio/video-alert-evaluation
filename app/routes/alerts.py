@@ -326,12 +326,25 @@ def get_image_detail(image_id):
 
     result = dict(img)
     cursor.execute('''
-        SELECT video_id, timestamp, timestamp_seconds, success
+        SELECT video_id, timestamp, timestamp_seconds, success, full_result, raw_ocr_text
         FROM ocr_results WHERE alert_image_id = ?
         ORDER BY created_at DESC LIMIT 1
     ''', (image_id,))
-    ocr = cursor.fetchone()
-    result['ocr'] = dict(ocr) if ocr else None
+    ocr_row = cursor.fetchone()
+    if ocr_row:
+        ocr = dict(ocr_row)
+        # 如果有 full_result，优先使用它
+        if ocr.get('full_result'):
+            try:
+                full_result = json.loads(ocr['full_result'])
+                for key, value in full_result.items():
+                    if key not in ocr or ocr[key] is None:
+                        ocr[key] = value
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result['ocr'] = ocr
+    else:
+        result['ocr'] = None
     return jsonify(result)
 
 
@@ -418,6 +431,48 @@ def ocr_single(image_id):
     return jsonify({'success': 'error' not in ocr_result, 'ocr': ocr_result})
 
 
+@bp.route('/api/images/<int:image_id>/ocr/manual', methods=['POST'])
+def ocr_save_manual(image_id):
+    """手动保存OCR结果"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM alert_images WHERE id = ?', (image_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '图片不存在'}), 404
+
+    data = request.get_json() or {}
+    video_id = data.get('video_id')
+    timestamp = data.get('timestamp')
+    timestamp_seconds = data.get('timestamp_seconds')
+    success = data.get('success', False)
+
+    # 构建完整结果对象
+    ocr_result = {
+        'raw_ocr_text': '手动输入',
+        'video_id': video_id,
+        'timestamp': timestamp,
+        'timestamp_seconds': timestamp_seconds,
+        'success': success
+    }
+
+    cursor.execute('''
+        INSERT INTO ocr_results
+        (alert_image_id, raw_ocr_text, video_id, timestamp, timestamp_seconds, success, full_result)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        image_id,
+        '手动输入',
+        video_id,
+        timestamp,
+        timestamp_seconds,
+        success,
+        json.dumps(ocr_result, ensure_ascii=False)
+    ))
+    db.commit()
+
+    return jsonify({'success': True, 'ocr': ocr_result})
+
+
 @bp.route('/api/datasets/<int:dataset_id>/ocr/batch', methods=['POST'])
 def ocr_batch(dataset_id):
     """批量 OCR：后台线程逐张处理，可通过 /ocr/status 查询进度"""
@@ -435,6 +490,12 @@ def ocr_batch(dataset_id):
     if not images:
         return jsonify({'error': '数据集内没有图片'}), 400
 
+    # 获取 stop_on_failure 参数，默认为 False
+    stop_on_failure = False
+    if request.is_json:
+        data = request.get_json() or {}
+        stop_on_failure = data.get('stop_on_failure', False)
+
     with _ocr_lock:
         if _ocr_progress.get(dataset_id, {}).get('running'):
             return jsonify({'error': 'OCR 正在运行中'}), 409
@@ -442,6 +503,8 @@ def ocr_batch(dataset_id):
             'total': len(images),
             'done': 0,
             'running': True,
+            'cancelled': False,
+            'stopped': False,
             'results': [],
         }
 
@@ -452,26 +515,45 @@ def ocr_batch(dataset_id):
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
+        has_stopped = False
         for img in images:
-            ocr_result = run_ocr(img['file_path'])
-            success = 'error' not in ocr_result and ocr_result.get('success', False)
+            # 检查是否需要取消或停止
+            with _ocr_lock:
+                if _ocr_progress[dataset_id].get('cancelled'):
+                    break
+                if _ocr_progress[dataset_id].get('stopped'):
+                    has_stopped = True
 
-            if 'error' not in ocr_result:
-                cur.execute('''
-                    INSERT INTO ocr_results
-                    (alert_image_id, raw_ocr_text, video_id, timestamp,
-                     timestamp_seconds, success, full_result)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    img['id'],
-                    ocr_result.get('raw_ocr_text'),
-                    ocr_result.get('video_id'),
-                    ocr_result.get('timestamp'),
-                    ocr_result.get('timestamp_seconds'),
-                    ocr_result.get('success', False),
-                    json.dumps(ocr_result, ensure_ascii=False)
-                ))
-                conn.commit()
+            skipped = has_stopped
+            ocr_result = {}
+            success = False
+
+            if not skipped:
+                ocr_result = run_ocr(img['file_path'])
+                success = 'error' not in ocr_result and ocr_result.get('success', False)
+
+                if 'error' not in ocr_result:
+                    cur.execute('''
+                        INSERT INTO ocr_results
+                        (alert_image_id, raw_ocr_text, video_id, timestamp,
+                         timestamp_seconds, success, full_result)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        img['id'],
+                        ocr_result.get('raw_ocr_text'),
+                        ocr_result.get('video_id'),
+                        ocr_result.get('timestamp'),
+                        ocr_result.get('timestamp_seconds'),
+                        ocr_result.get('success', False),
+                        json.dumps(ocr_result, ensure_ascii=False)
+                    ))
+                    conn.commit()
+
+                # 如果启用了 stop_on_failure 且识别失败，停止后续处理
+                if stop_on_failure and not success:
+                    with _ocr_lock:
+                        _ocr_progress[dataset_id]['stopped'] = True
+                    has_stopped = True
 
             with _ocr_lock:
                 prog = _ocr_progress[dataset_id]
@@ -479,10 +561,12 @@ def ocr_batch(dataset_id):
                 prog['results'].append({
                     'image_id': img['id'],
                     'success': success,
-                    'video_id': ocr_result.get('video_id'),
-                    'timestamp': ocr_result.get('timestamp'),
-                    'timestamp_seconds': ocr_result.get('timestamp_seconds'),
-                    'error': ocr_result.get('error'),
+                    'skipped': skipped,
+                    'video_id': ocr_result.get('video_id') if not skipped else None,
+                    'timestamp': ocr_result.get('timestamp') if not skipped else None,
+                    'timestamp_seconds': ocr_result.get('timestamp_seconds') if not skipped else None,
+                    'raw_ocr_text': ocr_result.get('raw_ocr_text') if not skipped else None,
+                    'error': ocr_result.get('error') if not skipped else ('跳过' if skipped else None),
                 })
 
         conn.close()
@@ -493,6 +577,16 @@ def ocr_batch(dataset_id):
     thread.start()
 
     return jsonify({'success': True, 'total': len(images)})
+
+
+@bp.route('/api/datasets/<int:dataset_id>/ocr/cancel', methods=['POST'])
+def ocr_cancel(dataset_id):
+    """中断批量 OCR（已成功的保留）"""
+    with _ocr_lock:
+        prog = _ocr_progress.get(dataset_id)
+        if prog and prog.get('running'):
+            prog['cancelled'] = True
+    return jsonify({'success': True})
 
 
 @bp.route('/api/datasets/<int:dataset_id>/ocr/status', methods=['GET'])
@@ -506,5 +600,7 @@ def ocr_status(dataset_id):
         'total': prog['total'],
         'done': prog['done'],
         'running': prog['running'],
+        'cancelled': prog.get('cancelled', False),
+        'stopped': prog.get('stopped', False),
         'results': prog['results'],
     })

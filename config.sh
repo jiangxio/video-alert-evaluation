@@ -21,7 +21,7 @@ OUTPUT_DIR="/data/41-benchmark/output"
 # FFmpeg 编码参数
 VIDEO_CODEC="libx264"
 CRF=23
-PRESET="medium"
+PRESET="medium"     # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
 AUDIO_CODEC="copy"
 
 # 并行处理

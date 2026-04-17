@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import threading
 import subprocess
+import io
 
 from app.database import get_db, DATABASE_PATH
 
@@ -14,10 +15,42 @@ _eval_progress = {}
 _eval_lock = threading.Lock()
 
 
-def calc_expected_count(start_sec, end_sec, interval_sec, trigger_rate):
+def calc_expected_count(start_sec, end_sec, interval_sec, trigger_rate, min_event_duration_sec=0):
     """计算预期触发次数"""
+    if end_sec - start_sec < min_event_duration_sec:
+        return 0
     raw = (end_sec - start_sec - 1) / interval_sec * trigger_rate
     return max(1, round(raw))
+
+
+def _get_all_event_types():
+    """从 report/config.json 读取所有事件类型列表（按配置顺序）"""
+    config_path = Path(current_app.config['REPORT_DIR']) / 'config.json'
+    event_types = []
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(maxsplit=1)
+                if len(parts) == 2:
+                    event_types.append(parts[1])
+    return event_types
+
+
+def _get_effective_status(row):
+    """根据 manual_status 解析有效状态"""
+    manual = row.get('manual_status') if isinstance(row, dict) else row['manual_status']
+    if manual == 'correct':
+        return 'correct'
+    if manual == 'false_positive':
+        return 'false_positive'
+    if manual == 'ignored':
+        return 'ignored'
+    # auto 或未设置时，以 is_false_positive 字段为准
+    is_fp = row.get('is_false_positive') if isinstance(row, dict) else row['is_false_positive']
+    return 'false_positive' if is_fp else 'correct'
 
 
 # ── 页面路由 ──────────────────────────────────────────────────────────────────
@@ -147,8 +180,8 @@ def create_task():
     cursor.execute('''
         INSERT INTO eval_tasks
         (name, notes, dataset_id, eval_set_id, merge_interval_sec, event_start_sec,
-         event_end_sec, event_interval_sec, trigger_rate, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         name,
         data.get('notes', ''),
@@ -159,6 +192,7 @@ def create_task():
         0,
         data.get('event_interval_sec', 10.0),
         data.get('trigger_rate', 0.5),
+        data.get('min_event_duration_sec', 0),
         'created',
     ))
     db.commit()
@@ -178,6 +212,45 @@ def get_task(task_id):
     if not task:
         return jsonify({'error': '任务不存在'}), 404
     return jsonify(dict(task))
+
+
+@bp.route('/api/tasks/<int:task_id>', methods=['PUT'])
+def update_task(task_id):
+    """更新任务参数"""
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+
+    # 更新参数
+    update_fields = []
+    update_values = []
+
+    if 'merge_interval_sec' in data:
+        update_fields.append('merge_interval_sec = ?')
+        update_values.append(data['merge_interval_sec'])
+    if 'event_interval_sec' in data:
+        update_fields.append('event_interval_sec = ?')
+        update_values.append(data['event_interval_sec'])
+    if 'trigger_rate' in data:
+        update_fields.append('trigger_rate = ?')
+        update_values.append(data['trigger_rate'])
+    if 'min_event_duration_sec' in data:
+        update_fields.append('min_event_duration_sec = ?')
+        update_values.append(data['min_event_duration_sec'])
+
+    if update_fields:
+        update_values.append(task_id)
+        cursor.execute(
+            f'UPDATE eval_tasks SET {", ".join(update_fields)} WHERE id = ?',
+            update_values
+        )
+        db.commit()
+
+    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    return jsonify({'success': True, 'task': dict(cursor.fetchone())})
 
 
 def _analyze_merged_events(task_id):
@@ -203,6 +276,7 @@ def _analyze_merged_events(task_id):
     merge_interval = task['merge_interval_sec']
     ev_interval = task['event_interval_sec']
     trigger_rate = task['trigger_rate']
+    min_event_duration_sec = task['min_event_duration_sec'] if task['min_event_duration_sec'] is not None else 0
 
     # ── 获取评测视频集的 video db_id 列表 ─────────────────────────────────────
     cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
@@ -285,7 +359,7 @@ def _analyze_merged_events(task_id):
         end_sec = ev.get('end_seconds', 0)
         mid_ts = (start_sec + end_sec) / 2
 
-        expected = calc_expected_count(start_sec, end_sec, ev_interval, trigger_rate)
+        expected = calc_expected_count(start_sec, end_sec, ev_interval, trigger_rate, min_event_duration_sec)
 
         # 找中间帧
         mid_frame_id = None
@@ -312,23 +386,36 @@ def _analyze_merged_events(task_id):
             'mid_frame_path': mid_frame_path,
         })
 
+    # 按时间戳对合并告警组排序
+    merged_alerts.sort(key=lambda x: x['ts_start'])
     return {'merged_alerts': merged_alerts, 'gt_events': gt_events}
 
 
 def _emit_group(merged_alerts, vid, etype, group):
-    """将一组告警图片合并为一条记录"""
+    """将一组告警图片合并/保留为一条记录（单张也保留）"""
     image_ids = [img['id'] for img in group]
     rep_idx = len(image_ids) // 2
     representative_image_id = image_ids[rep_idx]
     ts_start = group[0]['timestamp_seconds']
     ts_end = group[-1]['timestamp_seconds']
+    # 保存所有图片的详细信息供前端显示
+    all_images = []
+    for img in group:
+        all_images.append({
+            'id': img['id'],
+            'filename': img.get('filename'),
+            'file_path': img.get('file_path'),
+            'timestamp_seconds': img.get('timestamp_seconds')
+        })
     merged_alerts.append({
         'video_id': vid,
         'event_type': etype,
         'image_ids': image_ids,
+        'all_images': all_images,
         'representative_image_id': representative_image_id,
         'ts_start': ts_start,
         'ts_end': ts_end,
+        'is_single': len(image_ids) == 1,
     })
 
 
@@ -466,8 +553,10 @@ def execute_task(task_id):
 
             for g in gt_list:
                 if g['video_id'] == vid and g['event_type'] == etype:
-                    g_start = g['start_sec']
-                    g_end = g['end_sec']
+                    # 评测容差 ±5 秒
+                    tolerance = 5
+                    g_start = g['start_sec'] - tolerance
+                    g_end = g['end_sec'] + tolerance
                     # 告警时间窗口与 GT 事件有重叠
                     overlaps = (
                         ts_start is not None and g_start <= ts_start <= g_end
@@ -517,7 +606,11 @@ def execute_task(task_id):
             with _eval_lock:
                 _eval_progress[task_id]['done'] += 1
 
-        cur.execute('UPDATE eval_tasks SET status = ? WHERE id = ?', ('done', task_id))
+        try:
+            cur.execute('UPDATE eval_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ('done', task_id))
+        except Exception:
+            # 兼容旧数据库（没有 updated_at 列）
+            cur.execute('UPDATE eval_tasks SET status = ? WHERE id = ?', ('done', task_id))
         conn.commit()
         conn.close()
         with _eval_lock:
@@ -559,10 +652,19 @@ def get_results(task_id):
     cursor.execute('''
         SELECT m.id, m.video_id, m.event_type, m.image_ids,
                m.representative_image_id, m.ts_start, m.ts_end,
-               m.is_false_positive, m.matched_gt_event_id,
-               a.filename, a.file_path
+               m.is_false_positive, m.matched_gt_event_id, m.manual_status,
+               a.filename, a.file_path, v.id as video_db_id,
+               o.timestamp_seconds
         FROM eval_merged_events m
         LEFT JOIN alert_images a ON a.id = m.representative_image_id
+        LEFT JOIN videos v ON v.video_id = m.video_id
+        LEFT JOIN (
+            SELECT alert_image_id, timestamp_seconds
+            FROM ocr_results
+            WHERE id IN (
+                SELECT MAX(id) FROM ocr_results GROUP BY alert_image_id
+            )
+        ) o ON o.alert_image_id = m.representative_image_id
         WHERE m.task_id = ?
         ORDER BY m.video_id, m.event_type, m.ts_start
     ''', (task_id,))
@@ -570,20 +672,159 @@ def get_results(task_id):
 
     for r in alert_results:
         r['image_ids'] = json.loads(r.get('image_ids') or '[]')
+        r['effective_status'] = _get_effective_status(r)
 
     # ── GT 事件得分 ────────────────────────────────────────────────────────────
     cursor.execute('''
-        SELECT * FROM eval_gt_events
-        WHERE task_id = ?
-        ORDER BY video_id, event_type, start_sec
+        SELECT g.*, v.id as video_db_id
+        FROM eval_gt_events g
+        LEFT JOIN videos v ON v.video_id = g.video_id
+        WHERE g.task_id = ?
+        ORDER BY g.video_id, g.event_type, g.start_sec
     ''', (task_id,))
     gt_results = [dict(r) for r in cursor.fetchall()]
+
+    # ── 统计评测视频集总时长 ────────────────────────────────────────────────────
+    total_duration = 0
+    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (task['eval_set_id'],))
+    eval_set = cursor.fetchone()
+    if eval_set and eval_set['video_ids']:
+        try:
+            video_db_ids = json.loads(eval_set['video_ids'])
+            if video_db_ids:
+                placeholders = ','.join('?' for _ in video_db_ids)
+                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                row = cursor.fetchone()
+                total_duration = row['total'] or 0
+        except Exception:
+            pass
+
+    # 计算平均误检数/小时（排除被忽略的记录）
+    fp_count = sum(1 for r in alert_results if _get_effective_status(r) == 'false_positive')
+    total_count = sum(1 for r in alert_results if _get_effective_status(r) != 'ignored')
+    total_duration_hours = total_duration / 3600 if total_duration else 0
+    avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+    accuracy = (total_count - fp_count) / total_count if total_count > 0 else None
+
+    # 计算整体召回率 = gt_count > 0 的事件类型召回率的算术平均
+    # 与 finalize_task 保持一致：对每个事件类型，分别累加 min(actual, confirmed) 和 confirmed
+    from collections import defaultdict
+    gt_by_type = defaultdict(lambda: {'confirmed': 0, 'hit': 0})
+    for g in gt_results:
+        confirmed = g.get('confirmed_count') or 0
+        actual = g.get('actual_count') or 0
+        et = g.get('event_type')
+        if not et:
+            continue
+        if confirmed == 0:
+            if actual > 0:
+                gt_by_type[et]['confirmed'] += 1
+                gt_by_type[et]['hit'] += 1
+        else:
+            gt_by_type[et]['confirmed'] += confirmed
+            gt_by_type[et]['hit'] += min(actual, confirmed)
+
+    type_recalls = []
+    for vals in gt_by_type.values():
+        confirmed = vals['confirmed']
+        hit = vals['hit']
+        if confirmed > 0:
+            type_recalls.append(hit / confirmed)
+    recall = sum(type_recalls) / len(type_recalls) if type_recalls else None
+
+    try:
+        evaluated_at = task['updated_at']
+    except Exception:
+        evaluated_at = None
 
     return jsonify({
         'success': True,
         'alert_results': alert_results,
         'gt_results': gt_results,
+        'evaluated_at': evaluated_at,
+        'total_duration': round(total_duration, 2),
+        'avg_fp_per_hour': avg_fp_per_hour,
+        'accuracy': accuracy,
+        'recall': recall
     })
+
+
+@bp.route('/api/tasks/<int:task_id>/merged-events/<int:merged_id>/status', methods=['PUT'])
+def update_manual_status(task_id, merged_id):
+    """更新合并告警的人工修正状态"""
+    data = request.get_json() or {}
+    manual_status = data.get('manual_status')
+    if manual_status not in ('auto', 'correct', 'false_positive', 'ignored'):
+        return jsonify({'error': '无效的状态值'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+
+    cursor.execute('''
+        UPDATE eval_merged_events SET manual_status = ? WHERE id = ? AND task_id = ?
+    ''', (manual_status, merged_id, task_id))
+    db.commit()
+
+    if cursor.rowcount == 0:
+        return jsonify({'error': '记录不存在'}), 404
+
+    return jsonify({'success': True, 'manual_status': manual_status})
+
+
+@bp.route('/api/tasks/<int:task_id>/check-updates', methods=['GET'])
+def check_updates(task_id):
+    """检查该任务涉及的视频标注是否有更新"""
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute('SELECT updated_at FROM eval_tasks WHERE id = ?', (task_id,))
+    except Exception:
+        return jsonify({'has_updates': False})
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+
+    evaluated_at = task['updated_at']
+    if not evaluated_at:
+        return jsonify({'has_updates': False})
+
+    # 获取任务涉及的所有 video_db_id
+    cursor.execute('''
+        SELECT DISTINCT video_db_id FROM (
+            SELECT video_db_id FROM eval_merged_events WHERE task_id = ?
+            UNION
+            SELECT video_db_id FROM eval_gt_events WHERE task_id = ?
+        )
+        WHERE video_db_id IS NOT NULL
+    ''', (task_id, task_id))
+    video_ids = [row[0] for row in cursor.fetchall()]
+    if not video_ids:
+        return jsonify({'has_updates': False})
+
+    placeholders = ','.join('?' for _ in video_ids)
+
+    try:
+        # 检查 videos 表的更新时间
+        cursor.execute(f'''
+            SELECT MAX(updated_at) FROM videos WHERE id IN ({placeholders})
+        ''', video_ids)
+        video_max = cursor.fetchone()[0]
+
+        # 检查 events 表的更新时间
+        cursor.execute(f'''
+            SELECT MAX(updated_at) FROM events WHERE video_db_id IN ({placeholders})
+        ''', video_ids)
+        event_max = cursor.fetchone()[0]
+    except Exception:
+        return jsonify({'has_updates': False})
+
+    max_updated = max(
+        [evaluated_at] + [v for v in [video_max, event_max] if v]
+    )
+    return jsonify({'has_updates': max_updated > evaluated_at})
 
 
 @bp.route('/api/tasks/<int:task_id>/finalize', methods=['POST'])
@@ -598,92 +839,168 @@ def finalize_task(task_id):
     if task['status'] != 'done':
         return jsonify({'error': '只有已完成的任务才能确认结果'}), 400
 
-    # 计算整体准确率
+    # 计算整体准确率（尊重 manual_status）
     cursor.execute('''
-        SELECT COUNT(*) AS total,
-               SUM(CASE WHEN is_false_positive=0 THEN 1 ELSE 0 END) AS correct
+        SELECT is_false_positive, manual_status
         FROM eval_merged_events WHERE task_id=?
     ''', (task_id,))
-    row = cursor.fetchone()
-    total = row['total'] or 0
-    correct = row['correct'] or 0
+    total = 0
+    correct = 0
+    for row in cursor.fetchall():
+        status = _get_effective_status(row)
+        if status == 'ignored':
+            continue
+        total += 1
+        if status == 'correct':
+            correct += 1
     accuracy = correct / total if total > 0 else None
 
     # 计算整体召回率
     cursor.execute('''
-        SELECT SUM(confirmed_count) AS expected, SUM(actual_count) AS actual
+        SELECT confirmed_count, actual_count
         FROM eval_gt_events WHERE task_id=?
     ''', (task_id,))
-    row = cursor.fetchone()
-    expected = row['expected'] or 0
-    actual = row['actual'] or 0
-    recall = actual / expected if expected > 0 else None
+    gt_events = cursor.fetchall()
 
-    # 按事件类型计算指标
-    cursor.execute('''
-        SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
-        UNION
-        SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
-    ''', (task_id, task_id))
-    event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+    total_expected = 0
+    total_actual = 0
+    for ev in gt_events:
+        confirmed = ev['confirmed_count'] or 0
+        actual = ev['actual_count'] or 0
+        if confirmed == 0:
+            # 当confirmed_count为0时，如果有actual就按1算，否则忽略
+            if actual > 0:
+                total_expected += 1
+                total_actual += min(actual, 1)
+        else:
+            total_expected += confirmed
+            total_actual += min(actual, confirmed)
+
+    recall = total_actual / total_expected if total_expected > 0 else None
+
+    # 计算评测视频总时长
+    total_duration = 0
+    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (task['eval_set_id'],))
+    eval_set = cursor.fetchone()
+    if eval_set and eval_set['video_ids']:
+        try:
+            video_db_ids = json.loads(eval_set['video_ids'])
+            if video_db_ids:
+                placeholders = ','.join('?' for _ in video_db_ids)
+                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                row = cursor.fetchone()
+                total_duration = row['total'] or 0
+        except Exception:
+            pass
+    total_duration_hours = total_duration / 3600 if total_duration else 0
+
+    # 按事件类型计算指标（包含配置文件中所有事件类型）
+    all_event_types = _get_all_event_types()
+    # 如果配置文件为空， fallback 到数据库中已有的事件类型
+    if not all_event_types:
+        cursor.execute('''
+            SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
+            UNION
+            SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
+        ''', (task_id, task_id))
+        all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
 
     event_metrics = []
-    for etype in event_types:
-        # 告警相关指标
+    for etype in all_event_types:
+        # 告警相关指标（尊重 manual_status）
         cursor.execute('''
-            SELECT COUNT(*) AS alert_count,
-                   SUM(CASE WHEN is_false_positive=0 THEN 1 ELSE 0 END) AS correct_pred_count
+            SELECT is_false_positive, manual_status
             FROM eval_merged_events WHERE task_id=? AND event_type=?
         ''', (task_id, etype))
-        alert_row = cursor.fetchone()
-        alert_count = alert_row['alert_count'] or 0
-        correct_pred_count = alert_row['correct_pred_count'] or 0
+        alert_count = 0
+        correct_pred_count = 0
+        fp_count = 0
+        for row in cursor.fetchall():
+            status = _get_effective_status(row)
+            if status == 'ignored':
+                continue
+            alert_count += 1
+            if status == 'correct':
+                correct_pred_count += 1
+            elif status == 'false_positive':
+                fp_count += 1
 
-        # GT相关指标
+        # GT相关指标 - 按新逻辑计算
         cursor.execute('''
-            SELECT SUM(confirmed_count) AS gt_count,
-                   SUM(actual_count) AS hit_count
+            SELECT confirmed_count, actual_count
             FROM eval_gt_events WHERE task_id=? AND event_type=?
         ''', (task_id, etype))
-        gt_row = cursor.fetchone()
-        gt_count = gt_row['gt_count'] or 0
-        hit_count = gt_row['hit_count'] or 0
+        gt_events = cursor.fetchall()
 
-        # 计算精确率和召回率
+        gt_count = 0
+        hit_count = 0
+        missed_gt_count = 0
+
+        for ev in gt_events:
+            confirmed = ev['confirmed_count'] or 0
+            actual = ev['actual_count'] or 0
+
+            if confirmed == 0:
+                # 当confirmed_count为0时
+                if actual > 0:
+                    # 有actual就按1算，算作命中
+                    gt_count += 1
+                    hit_count += min(actual, 1)
+                else:
+                    # 没有actual就忽略这个事件
+                    pass
+            else:
+                gt_count += confirmed
+                hit_count += min(actual, confirmed)
+                if actual < confirmed:
+                    missed_gt_count += 1
+
+        # 计算精确率、召回率和平均误检数/小时
         precision = correct_pred_count / alert_count if alert_count > 0 else None
         event_recall = hit_count / gt_count if gt_count > 0 else None
-
-        # 漏检的GT事件数（actual_count < confirmed_count）
-        cursor.execute('''
-            SELECT COUNT(*) AS missed_gt_count
-            FROM eval_gt_events
-            WHERE task_id=? AND event_type=? AND actual_count < confirmed_count
-        ''', (task_id, etype))
-        missed_gt_count = cursor.fetchone()['missed_gt_count'] or 0
+        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
 
         event_metrics.append({
             'event_type': etype,
             'alert_count': alert_count,
             'gt_count': gt_count,
             'correct_pred_count': correct_pred_count,
+            'false_positive_count': fp_count,
             'hit_count': hit_count,
             'missed_gt_count': missed_gt_count,
             'precision': precision,
-            'recall': event_recall
+            'recall': event_recall,
+            'avg_fp_per_hour': avg_fp_per_hour
         })
+
+    # 整体召回率 = 所有 gt_count > 0 的事件类型的召回率的算术平均
+    recalls_with_gt = [em['recall'] for em in event_metrics if em['recall'] is not None and em['gt_count'] > 0]
+    recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
+
+    # 整体平均误检数/小时 = 总误检数 / 总时长（小时）
+    cursor.execute('''
+        SELECT is_false_positive, manual_status
+        FROM eval_merged_events WHERE task_id=?
+    ''', (task_id,))
+    fp_count = 0
+    for row in cursor.fetchall():
+        if _get_effective_status(row) == 'false_positive':
+            fp_count += 1
+    avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
 
     # 保存事件级别指标到JSON字段（可以扩展数据库表，这里先用JSON存储）
     event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
 
     cursor.execute('''
-        UPDATE eval_tasks SET finalized=1, accuracy=?, recall=?, event_metrics=? WHERE id=?
-    ''', (accuracy, recall, event_metrics_json, task_id))
+        UPDATE eval_tasks SET finalized=1, accuracy=?, recall=?, avg_fp_per_hour=?, event_metrics=? WHERE id=?
+    ''', (accuracy, recall, avg_fp_per_hour, event_metrics_json, task_id))
     db.commit()
 
     return jsonify({
         'success': True,
         'accuracy': accuracy,
         'recall': recall,
+        'avg_fp_per_hour': avg_fp_per_hour,
         'event_metrics': event_metrics
     })
 
@@ -707,59 +1024,419 @@ def get_event_metrics(task_id):
             pass
 
     # 否则实时计算
-    cursor.execute('''
-        SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
-        UNION
-        SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
-    ''', (task_id, task_id))
-    event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+    # 先计算评测视频总时长
+    total_duration = 0
+    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (task['eval_set_id'],))
+    eval_set = cursor.fetchone()
+    if eval_set and eval_set['video_ids']:
+        try:
+            video_db_ids = json.loads(eval_set['video_ids'])
+            if video_db_ids:
+                placeholders = ','.join('?' for _ in video_db_ids)
+                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                row = cursor.fetchone()
+                total_duration = row['total'] or 0
+        except Exception:
+            pass
+    total_duration_hours = total_duration / 3600 if total_duration else 0
+
+    # 按事件类型计算指标（包含配置文件中所有事件类型）
+    all_event_types = _get_all_event_types()
+    if not all_event_types:
+        cursor.execute('''
+            SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
+            UNION
+            SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
+        ''', (task_id, task_id))
+        all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
 
     event_metrics = []
-    for etype in event_types:
-        # 告警相关指标
+    for etype in all_event_types:
+        # 告警相关指标（尊重 manual_status）
         cursor.execute('''
-            SELECT COUNT(*) AS alert_count,
-                   SUM(CASE WHEN is_false_positive=0 THEN 1 ELSE 0 END) AS correct_pred_count
+            SELECT is_false_positive, manual_status
             FROM eval_merged_events WHERE task_id=? AND event_type=?
         ''', (task_id, etype))
-        alert_row = cursor.fetchone()
-        alert_count = alert_row['alert_count'] or 0
-        correct_pred_count = alert_row['correct_pred_count'] or 0
+        alert_count = 0
+        correct_pred_count = 0
+        fp_count = 0
+        for row in cursor.fetchall():
+            status = _get_effective_status(row)
+            if status == 'ignored':
+                continue
+            alert_count += 1
+            if status == 'correct':
+                correct_pred_count += 1
+            elif status == 'false_positive':
+                fp_count += 1
 
-        # GT相关指标
+        # GT相关指标 - 按新逻辑计算
         cursor.execute('''
-            SELECT SUM(confirmed_count) AS gt_count,
-                   SUM(actual_count) AS hit_count
+            SELECT confirmed_count, actual_count
             FROM eval_gt_events WHERE task_id=? AND event_type=?
         ''', (task_id, etype))
-        gt_row = cursor.fetchone()
-        gt_count = gt_row['gt_count'] or 0
-        hit_count = gt_row['hit_count'] or 0
+        gt_events = cursor.fetchall()
 
-        # 计算精确率和召回率
+        gt_count = 0
+        hit_count = 0
+        missed_gt_count = 0
+
+        for ev in gt_events:
+            confirmed = ev['confirmed_count'] or 0
+            actual = ev['actual_count'] or 0
+
+            if confirmed == 0:
+                if actual > 0:
+                    gt_count += 1
+                    hit_count += min(actual, 1)
+            else:
+                gt_count += confirmed
+                hit_count += min(actual, confirmed)
+                if actual < confirmed:
+                    missed_gt_count += 1
+
         precision = correct_pred_count / alert_count if alert_count > 0 else None
         event_recall = hit_count / gt_count if gt_count > 0 else None
-
-        # 漏检的GT事件数
-        cursor.execute('''
-            SELECT COUNT(*) AS missed_gt_count
-            FROM eval_gt_events
-            WHERE task_id=? AND event_type=? AND actual_count < confirmed_count
-        ''', (task_id, etype))
-        missed_gt_count = cursor.fetchone()['missed_gt_count'] or 0
+        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
 
         event_metrics.append({
             'event_type': etype,
             'alert_count': alert_count,
             'gt_count': gt_count,
             'correct_pred_count': correct_pred_count,
+            'false_positive_count': fp_count,
             'hit_count': hit_count,
             'missed_gt_count': missed_gt_count,
             'precision': precision,
-            'recall': event_recall
+            'recall': event_recall,
+            'avg_fp_per_hour': avg_fp_per_hour
         })
 
-    return jsonify({'success': True, 'event_metrics': event_metrics})
+    # 计算整体指标
+    total_alert_count = sum(em['alert_count'] for em in event_metrics)
+    total_gt_count = sum(em['gt_count'] for em in event_metrics)
+    total_correct_pred_count = sum(em['correct_pred_count'] for em in event_metrics)
+    total_fp_count = sum(em['false_positive_count'] for em in event_metrics)
+    total_hit_count = sum(em['hit_count'] for em in event_metrics)
+    total_missed_gt_count = sum(em['missed_gt_count'] for em in event_metrics)
+
+    overall_precision = total_correct_pred_count / total_alert_count if total_alert_count > 0 else None
+    recalls_with_gt = [em['recall'] for em in event_metrics if em['recall'] is not None and em['gt_count'] > 0]
+    overall_recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
+    overall_avg_fp = round(total_fp_count / total_duration_hours, 2) if total_duration_hours else 0
+
+    overall = {
+        'accuracy': overall_precision,
+        'recall': overall_recall,
+        'avg_fp_per_hour': overall_avg_fp,
+        'alert_count': total_alert_count,
+        'gt_count': total_gt_count,
+        'correct_pred_count': total_correct_pred_count,
+        'false_positive_count': total_fp_count,
+        'hit_count': total_hit_count,
+        'missed_gt_count': total_missed_gt_count
+    }
+
+    return jsonify({'success': True, 'event_metrics': event_metrics, 'overall': overall})
+
+
+def _get_font(size):
+    """尝试加载系统中文字体"""
+    font_paths = [
+        '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/wqy-microhei/wqy-microhei.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+    ]
+    from PIL import ImageFont
+    for fp in font_paths:
+        try:
+            return ImageFont.truetype(fp, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def _generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours=0):
+    """用 Pillow 生成评测报告图片"""
+    from PIL import Image, ImageDraw
+
+    width = 1200
+    margin = 40
+    bg_color = (255, 255, 255)
+    header_color = (52, 152, 219)  # #3498db
+    text_dark = (44, 62, 80)
+    text_gray = (100, 100, 100)
+    line_color = (220, 220, 220)
+    card_bg = (248, 249, 250)
+    good_color = (39, 174, 96)
+    mid_color = (243, 156, 18)
+    bad_color = (231, 76, 60)
+
+    font_title = _get_font(36)
+    font_subtitle = _get_font(24)
+    font_normal = _get_font(20)
+    font_small = _get_font(18)
+    font_table = _get_font(18)
+
+    # 预估高度
+    row_height = 46
+    header_height = 160
+    overall_height = 140
+    section_gap = 30
+    table_header = 50
+    table_rows = (len(event_metrics) + 1) * row_height  # +1 合计行
+    height = header_height + overall_height + section_gap + 60 + table_header + table_rows + margin * 2
+
+    img = Image.new('RGB', (width, height), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    y = 0
+
+    # 顶部蓝条
+    draw.rectangle([0, 0, width, header_height - 40], fill=header_color)
+    draw.text((width // 2, 40), "评测报告", font=font_title, fill=(255, 255, 255), anchor="mt")
+
+    # 任务名 + 评估时间
+    y = header_height - 30
+    task_name = task.get('name', '-')
+    created_at = task.get('created_at', '-')
+    if created_at:
+        from datetime import datetime as _dt, timezone as _tz
+        if isinstance(created_at, str):
+            try:
+                dt = _dt.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                dt = dt.replace(tzinfo=_tz.utc).astimezone()
+                eval_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                eval_time = created_at
+        elif isinstance(created_at, _dt):
+            if created_at.tzinfo is None:
+                dt = created_at.replace(tzinfo=_tz.utc).astimezone()
+            else:
+                dt = created_at.astimezone()
+            eval_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            eval_time = str(created_at)
+    else:
+        eval_time = '-'
+    draw.text((margin, y), f"任务：{task_name}", font=font_subtitle, fill=text_dark)
+    y += 40
+    draw.text((margin, y), f"评估时间：{eval_time}", font=font_normal, fill=text_gray)
+    y += 50
+
+    # 整体指标区域
+    def draw_card(x, w, label, value, color):
+        draw.rounded_rectangle([x, y, x + w, y + 100], radius=8, fill=card_bg)
+        draw.text((x + w // 2, y + 20), label, font=font_small, fill=text_gray, anchor="mt")
+        draw.text((x + w // 2, y + 60), value, font=font_subtitle, fill=color, anchor="mt")
+
+    card_w = (width - margin * 2 - 40) // 3
+    acc_str = f"{(accuracy * 100):.1f}%" if accuracy is not None else "N/A"
+    rec_str = f"{(recall * 100):.1f}%" if recall is not None else "N/A"
+    fp_str = f"{avg_fp_per_hour:.2f}" if avg_fp_per_hour is not None else "N/A"
+
+    def fp_color(val):
+        if val is None:
+            return text_gray
+        if val <= 1.0:
+            return good_color
+        if val <= 3.0:
+            return mid_color
+        return bad_color
+
+    draw_card(margin, card_w, "整体精确率", acc_str, good_color if accuracy and accuracy >= 0.8 else mid_color if accuracy and accuracy >= 0.5 else bad_color)
+    draw_card(margin + card_w + 20, card_w, "整体召回率", rec_str, good_color if recall and recall >= 0.8 else mid_color if recall and recall >= 0.5 else bad_color)
+    draw_card(margin + card_w * 2 + 40, card_w, "平均误检数/小时", fp_str, fp_color(avg_fp_per_hour))
+    y += 120
+
+    # 分隔线
+    y += section_gap
+    draw.line([margin, y, width - margin, y], fill=line_color, width=2)
+    y += section_gap
+
+    # 详细指标标题
+    draw.text((margin, y), "事件详细指标", font=font_subtitle, fill=text_dark)
+    y += 50
+
+    # 表格
+    cols = ["事件类型", "告警数", "准确数", "精确率", "GT数", "命中数", "漏检数", "召回率", "误检数", "平均误检/h"]
+    col_widths = [150, 90, 90, 100, 80, 80, 80, 100, 90, 110]
+    total_table_w = sum(col_widths)
+    start_x = margin + (width - margin * 2 - total_table_w) // 2
+
+    def draw_table_row(row_y, cells, is_header=False, is_total=False, cell_colors=None):
+        bg = (240, 240, 240) if is_header else (248, 249, 250) if is_total else bg_color
+        if is_header or is_total:
+            draw.rectangle([start_x, row_y, start_x + total_table_w, row_y + row_height], fill=bg)
+        x = start_x
+        for i, cell in enumerate(cells):
+            text = str(cell)
+            fw = col_widths[i]
+            anchor = "lm" if i == 0 else "mm"
+            tx = x + 10 if i == 0 else x + fw // 2
+            font = font_table
+            fill = cell_colors[i] if cell_colors and i < len(cell_colors) and cell_colors[i] else text_dark
+            draw.text((tx, row_y + row_height // 2), text, font=font, fill=fill, anchor=anchor)
+            x += fw
+        # 横线
+        draw.line([start_x, row_y + row_height, start_x + total_table_w, row_y + row_height], fill=line_color, width=1)
+
+    # 表头
+    draw_table_row(y, cols, is_header=True)
+    y += row_height
+
+    # 数据行
+    for em in event_metrics:
+        prec_val = em.get('precision')
+        rec_val = em.get('recall')
+        fp_val = em.get('avg_fp_per_hour', 0)
+        prec = f"{(prec_val * 100):.1f}%" if prec_val is not None else "N/A"
+        rec = f"{(rec_val * 100):.1f}%" if rec_val is not None else "N/A"
+        fp_txt = f"{fp_val:.2f}"
+        cells = [
+            em.get('event_type', '-'),
+            em.get('alert_count', 0),
+            em.get('correct_pred_count', 0),
+            prec,
+            em.get('gt_count', 0),
+            em.get('hit_count', 0),
+            em.get('missed_gt_count', 0),
+            rec,
+            em.get('false_positive_count', 0),
+            fp_txt,
+        ]
+        prec_color = good_color if prec_val is not None and prec_val >= 0.8 else mid_color if prec_val is not None and prec_val >= 0.5 else bad_color if prec_val is not None else None
+        rec_color = good_color if rec_val is not None and rec_val >= 0.8 else mid_color if rec_val is not None and rec_val >= 0.5 else bad_color if rec_val is not None else None
+        fp_color_val = fp_color(fp_val)
+        cell_colors = [None, None, None, prec_color, None, None, None, rec_color, None, fp_color_val]
+        draw_table_row(y, cells, cell_colors=cell_colors)
+        y += row_height
+
+    # 合计行
+    total_alert = sum(em.get('alert_count', 0) for em in event_metrics)
+    total_correct = sum(em.get('correct_pred_count', 0) for em in event_metrics)
+    total_gt = sum(em.get('gt_count', 0) for em in event_metrics)
+    total_hit = sum(em.get('hit_count', 0) for em in event_metrics)
+    total_miss = sum(em.get('missed_gt_count', 0) for em in event_metrics)
+    total_fp = sum(em.get('false_positive_count', 0) for em in event_metrics)
+    overall_avg_fp = round(total_fp / total_duration_hours, 2) if total_duration_hours else 0
+    oprec = f"{(accuracy * 100):.1f}%" if accuracy is not None else "N/A"
+    orec = f"{(recall * 100):.1f}%" if recall is not None else "N/A"
+    total_cells = [
+        "合计/整体", total_alert, total_correct, oprec,
+        total_gt, total_hit, total_miss, orec, total_fp, f"{overall_avg_fp:.2f}"
+    ]
+    prec_color = good_color if accuracy and accuracy >= 0.8 else mid_color if accuracy and accuracy >= 0.5 else bad_color
+    rec_color = good_color if recall and recall >= 0.8 else mid_color if recall and recall >= 0.5 else bad_color
+    fp_color_val = fp_color(avg_fp_per_hour)
+    cell_colors = [None, None, None, prec_color, None, None, None, rec_color, None, fp_color_val]
+    draw_table_row(y, total_cells, is_total=True, cell_colors=cell_colors)
+
+    # 外边框
+    draw.rectangle([start_x, y - (len(event_metrics) + 1) * row_height, start_x + total_table_w, y + row_height], outline=line_color, width=1)
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+
+@bp.route('/api/tasks/<int:task_id>/report-image', methods=['GET'])
+def get_report_image(task_id):
+    """生成并下载评测报告图片"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+
+    task_dict = dict(task)
+    event_metrics = []
+    accuracy = None
+    recall = None
+    avg_fp_per_hour = None
+
+    # 计算评测视频总时长（两边都需要）
+    total_duration = 0
+    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (task_dict['eval_set_id'],))
+    eval_set = cursor.fetchone()
+    if eval_set and eval_set['video_ids']:
+        try:
+            video_db_ids = json.loads(eval_set['video_ids'])
+            if video_db_ids:
+                placeholders = ','.join('?' for _ in video_db_ids)
+                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                row = cursor.fetchone()
+                total_duration = row['total'] or 0
+        except Exception:
+            pass
+    total_duration_hours = total_duration / 3600 if total_duration else 0
+
+    if task_dict.get('finalized') and task_dict.get('event_metrics'):
+        # 已确认结果，直接读取保存的数据
+        try:
+            event_metrics = json.loads(task_dict['event_metrics'])
+        except Exception:
+            event_metrics = []
+        accuracy = task_dict.get('accuracy')
+        recall = task_dict.get('recall')
+        avg_fp_per_hour = task_dict.get('avg_fp_per_hour')
+        # 兼容旧数据：如果数据库没存 avg_fp_per_hour，实时计算
+        if avg_fp_per_hour is None and total_duration_hours:
+            cursor.execute('''
+                SELECT is_false_positive, manual_status
+                FROM eval_merged_events WHERE task_id=?
+            ''', (task_id,))
+            fp_count = sum(1 for row in cursor.fetchall() if _get_effective_status(row) == 'false_positive')
+            avg_fp_per_hour = round(fp_count / total_duration_hours, 2)
+    else:
+        # 未确认，实时计算
+        res = get_event_metrics(task_id)
+        if res.status_code != 200:
+            return res
+        data = res.get_json()
+        event_metrics = data.get('event_metrics', [])
+
+        # 精确率
+        cursor.execute('''
+            SELECT is_false_positive, manual_status
+            FROM eval_merged_events WHERE task_id=?
+        ''', (task_id,))
+        total = 0
+        correct = 0
+        for row in cursor.fetchall():
+            status = _get_effective_status(row)
+            if status == 'ignored':
+                continue
+            total += 1
+            if status == 'correct':
+                correct += 1
+        accuracy = correct / total if total > 0 else None
+
+        # 召回率（gt_count>0 的事件类型召回率的算术平均）
+        recalls_with_gt = [em['recall'] for em in event_metrics if em.get('recall') is not None and em.get('gt_count', 0) > 0]
+        recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
+
+        # 平均误检数 = 总误检数 / 总时长
+        cursor.execute('''
+            SELECT is_false_positive, manual_status
+            FROM eval_merged_events WHERE task_id=?
+        ''', (task_id,))
+        fp_count = sum(1 for row in cursor.fetchall() if _get_effective_status(row) == 'false_positive')
+        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+
+    # 对于报告图片，统一用总误检数/总时长重新计算平均误检数，避免旧数据不一致
+    cursor.execute('''
+        SELECT is_false_positive, manual_status
+        FROM eval_merged_events WHERE task_id=?
+    ''', (task_id,))
+    fp_count = sum(1 for row in cursor.fetchall() if _get_effective_status(row) == 'false_positive')
+    avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+
+    buf = _generate_report_image(task_dict, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours)
+    filename = f"report_{task_dict.get('name', 'task')}_{task_id}.png"
+    return send_file(buf, mimetype='image/png', as_attachment=True, download_name=filename)
 
 
 @bp.route('/api/gt-frames/<int:frame_id>/file', methods=['GET'])

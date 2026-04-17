@@ -14,6 +14,36 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 确保同级目录可导入，以便直接调用 ocr_easy（复用 Reader）
+if str(Path(__file__).parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).parent))
+
+try:
+    import ocr_easy
+    HAS_OCR_EASY = True
+except Exception:
+    HAS_OCR_EASY = False
+
+_OCR_READER = None
+
+
+def _get_ocr_reader():
+    global _OCR_READER
+    if _OCR_READER is None and HAS_OCR_EASY:
+        _OCR_READER = ocr_easy.get_reader()
+    return _OCR_READER
+
+
+def run_ocr_direct(image_path):
+    """直接调用 ocr_easy（复用 Reader），返回结构与 ocr_easy.main 一致"""
+    reader = _get_ocr_reader()
+    ocr_text = ocr_easy.preprocess_and_ocr(str(image_path), reader=reader)
+    parsed = ocr_easy.parse_watermark_text(ocr_text)
+    return {
+        "image": str(image_path),
+        **parsed
+    }
+
 
 def extract_alert_type_id(image_path):
     """从文件名提取告警类型ID"""
@@ -155,7 +185,10 @@ def verify_single_image(image_path, config, tolerance=5, mock_ocr=None):
         }
         result["ocr_result"] = ocr_result
     else:
-        ocr_result = run_ocr_subprocess(image_path)
+        if HAS_OCR_EASY:
+            ocr_result = run_ocr_direct(image_path)
+        else:
+            ocr_result = run_ocr_subprocess(image_path)
         if "error" in ocr_result:
             result["reason"] = f"OCR failed: {ocr_result['error']}"
             return result

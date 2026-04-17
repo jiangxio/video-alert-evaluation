@@ -138,6 +138,13 @@ def init_db():
     except Exception:
         pass  # 列已存在
 
+    # 为常用表追加 updated_at 列（兼容已有数据）
+    for table in ['events', 'gt_frames', 'eval_tasks', 'videos']:
+        try:
+            cursor.execute(f'ALTER TABLE {table} ADD COLUMN updated_at TIMESTAMP')
+        except Exception:
+            pass  # 列已存在
+
     # 对 videos.filename 加唯一索引（防止重复上传）
     cursor.execute('''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_filename ON videos(filename)
@@ -169,6 +176,7 @@ def init_db():
             event_end_sec REAL DEFAULT 60.0,
             event_interval_sec REAL DEFAULT 10.0,
             trigger_rate REAL DEFAULT 0.5,
+            min_event_duration_sec REAL DEFAULT 0,
             status TEXT DEFAULT 'created',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -177,6 +185,12 @@ def init_db():
     # 为 eval_tasks 追加 eval_set_id 列（兼容已有数据）
     try:
         cursor.execute('ALTER TABLE eval_tasks ADD COLUMN eval_set_id INTEGER REFERENCES eval_video_sets(id)')
+    except Exception:
+        pass  # 列已存在
+
+    # 为 eval_tasks 追加 min_event_duration_sec 列（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE eval_tasks ADD COLUMN min_event_duration_sec REAL DEFAULT 0')
     except Exception:
         pass  # 列已存在
 
@@ -247,6 +261,7 @@ def init_db():
         'representative_image_id INTEGER',
         'is_false_positive INTEGER DEFAULT 0',
         'matched_gt_event_id INTEGER',
+        'manual_status TEXT DEFAULT "auto"',
     ]:
         col_name = col_def.split()[0]
         try:

@@ -103,6 +103,10 @@
 
   <div class="toolbar">
     <button class="btn btn-sm" onclick="openOcrModal()">全部执行 OCR</button>
+    <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.85rem;">
+      <input type="checkbox" id="stop-on-failure">
+      失败时停止
+    </label>
     <span id="ocr-summary"></span>
   </div>
 
@@ -125,13 +129,21 @@
           <option value="">未标记</option>
         </select>
       </td></tr>
-      <tr><td>video_id</td><td id="detail-video-id">-</td></tr>
-      <tr><td>时间戳</td><td id="detail-timestamp">-</td></tr>
+      <tr><td>video_id</td><td>
+        <input type="text" id="detail-video-id-input" style="padding:0.3rem;border:1px solid #ddd;border-radius:4px;font-size:0.9rem;width:120px;" placeholder="10位数字">
+        <span id="detail-video-id" style="display:none;"></span>
+      </td></tr>
+      <tr><td>时间戳</td><td>
+        <input type="text" id="detail-timestamp-input" style="padding:0.3rem;border:1px solid #ddd;border-radius:4px;font-size:0.9rem;width:140px;" placeholder="HH:MM:SS.sss">
+        <span id="detail-timestamp" style="display:none;"></span>
+      </td></tr>
+      <tr><td>原始OCR</td><td id="detail-raw-ocr" style="font-size:0.85rem;color:#888;word-break:break-all;max-width:300px;">-</td></tr>
       <tr><td>原始尺寸</td><td id="detail-size">-</td></tr>
       <tr><td>文件大小</td><td id="detail-filesize">-</td></tr>
     </table>
     <div class="detail-footer">
       <button class="btn btn-sm" id="btn-ocr-single" onclick="runSingleOcr()">执行 OCR</button>
+      <button class="btn btn-sm btn-success" id="btn-ocr-save" onclick="saveManualOcr()">保存 OCR</button>
       <button class="btn btn-sm btn-danger" onclick="deleteCurrentImage()">删除图片</button>
     </div>
   </div>
@@ -206,9 +218,24 @@ async function openDetail(imageId) {
   document.getElementById('detail-filename').textContent = img.filename;
   document.getElementById('detail-img').src = `/alerts/api/images/${imageId}/file?t=${Date.now()}`;
   document.getElementById('detail-label').value = img.event_label || '';
+
+  // 填充OCR字段
   document.getElementById('detail-video-id').textContent = img.ocr?.video_id || '-';
-  document.getElementById('detail-timestamp').textContent =
-    img.ocr?.timestamp ? `${img.ocr.timestamp} (${img.ocr.timestamp_seconds}s)` : '-';
+  document.getElementById('detail-video-id-input').value = img.ocr?.video_id || '';
+
+  let tsText = '-';
+  if (img.ocr?.timestamp) {
+    tsText = `${img.ocr.timestamp} (${img.ocr.timestamp_seconds}s)`;
+  } else if (img.ocr?.error || img.ocr?.raw_ocr_text) {
+    tsText = '失败: ';
+    if (img.ocr?.error) tsText += img.ocr.error;
+    if (img.ocr?.raw_ocr_text) tsText += ` | 识别到: "${img.ocr.raw_ocr_text}"`;
+  }
+  document.getElementById('detail-timestamp').textContent = tsText;
+  document.getElementById('detail-timestamp-input').value = img.ocr?.timestamp || '';
+
+  document.getElementById('detail-raw-ocr').textContent = img.ocr?.raw_ocr_text || '-';
+
   document.getElementById('detail-size').textContent =
     img.image_width ? `${img.image_width} × ${img.image_height} px` : '-';
   document.getElementById('detail-filesize').textContent =
@@ -267,12 +294,103 @@ async function runSingleOcr() {
 
   if (data.ocr) {
     document.getElementById('detail-video-id').textContent = data.ocr.video_id || '-';
-    document.getElementById('detail-timestamp').textContent =
-      data.ocr.timestamp ? `${data.ocr.timestamp} (${data.ocr.timestamp_seconds}s)` : '-';
+    document.getElementById('detail-video-id-input').value = data.ocr.video_id || '';
+
+    let tsText = '-';
+    if (data.ocr.timestamp) {
+      tsText = `${data.ocr.timestamp} (${data.ocr.timestamp_seconds}s)`;
+    } else if (data.ocr.error || data.ocr.raw_ocr_text) {
+      tsText = '失败: ';
+      if (data.ocr.error) tsText += data.ocr.error;
+      if (data.ocr.raw_ocr_text) tsText += ` | 识别到: "${data.ocr.raw_ocr_text}"`;
+    }
+    document.getElementById('detail-timestamp').textContent = tsText;
+    document.getElementById('detail-timestamp-input').value = data.ocr.timestamp || '';
+    document.getElementById('detail-raw-ocr').textContent = data.ocr.raw_ocr_text || '-';
+
     // 同步本地数据
     const img = allImages.find(i => i.id === currentImageId);
     if (img) img.ocr = data.ocr;
     renderGrid(allImages);
+  }
+}
+
+function parseTimestampToSeconds(tsStr) {
+  // 解析 HH:MM:SS.sss 格式为秒数
+  const match = tsStr.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$/);
+  if (match) {
+    const h = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10);
+    const s = parseInt(match[3], 10);
+    const ms = parseInt(match[4], 10);
+    return h * 3600 + m * 60 + s + ms / 1000;
+  }
+  return null;
+}
+
+async function saveManualOcr() {
+  if (!currentImageId) return;
+
+  const videoId = document.getElementById('detail-video-id-input').value.trim();
+  const timestamp = document.getElementById('detail-timestamp-input').value.trim();
+
+  // 验证格式
+  if (videoId && videoId.length !== 10) {
+    alert('video_id 必须是10位数字');
+    return;
+  }
+  if (timestamp && !/^\d{2}:\d{2}:\d{2}\.\d{3}$/.test(timestamp)) {
+    alert('时间戳格式必须是 HH:MM:SS.sss');
+    return;
+  }
+
+  const timestampSeconds = timestamp ? parseTimestampToSeconds(timestamp) : null;
+  const success = !!(videoId && timestamp && timestampSeconds !== null);
+
+  const btn = document.getElementById('btn-ocr-save');
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+
+  try {
+    const res = await fetch(`/alerts/api/images/${currentImageId}/ocr/manual`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        video_id: videoId || null,
+        timestamp: timestamp || null,
+        timestamp_seconds: timestampSeconds,
+        success: success
+      })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      // 更新显示
+      document.getElementById('detail-video-id').textContent = videoId || '-';
+      let tsText = '-';
+      if (timestamp && timestampSeconds !== null) {
+        tsText = `${timestamp} (${timestampSeconds}s)`;
+      }
+      document.getElementById('detail-timestamp').textContent = tsText;
+
+      // 同步本地数据
+      const img = allImages.find(i => i.id === currentImageId);
+      if (img) {
+        img.ocr = {
+          video_id: videoId || null,
+          timestamp: timestamp || null,
+          timestamp_seconds: timestampSeconds,
+          success: success
+        };
+      }
+      renderGrid(allImages);
+      alert('保存成功！');
+    } else {
+      alert('保存失败: ' + (data.error || '未知错误'));
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存 OCR';
   }
 }
 
@@ -281,10 +399,16 @@ async function openOcrModal() {
   document.getElementById('ocr-log').innerHTML = '';
   document.getElementById('ocr-bar').style.width = '0%';
   document.getElementById('ocr-progress-text').textContent = '启动中…';
-  document.getElementById('ocr-close-btn').disabled = true;
+  document.getElementById('ocr-close-btn').disabled = false;
+  document.getElementById('ocr-close-btn').textContent = '停止';
   document.getElementById('ocr-modal').classList.add('open');
 
-  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/batch`, {method:'POST'});
+  const stopOnFailure = document.getElementById('stop-on-failure').checked;
+  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/batch`, {
+    method:'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({stop_on_failure: stopOnFailure})
+  });
   const data = await res.json();
   if (!res.ok) {
     appendLog('❌ ' + (data.error || '启动失败'), 'fail');
@@ -308,11 +432,19 @@ async function openOcrModal() {
     for (const r of newResults) {
       const img = allImages.find(i => i.id === r.image_id);
       const name = img ? img.filename : `#${r.image_id}`;
-      if (r.success) {
+      if (r.skipped) {
+        appendLog(`⏭ ${name}  跳过`, 'fail');
+        if (img) img.ocr = {success: false};
+      } else if (r.success) {
         appendLog(`✔ ${name}  video_id=${r.video_id || '-'}  ts=${r.timestamp || '-'}`, 'ok');
         if (img) img.ocr = {video_id: r.video_id, timestamp: r.timestamp, timestamp_seconds: r.timestamp_seconds, success: true};
       } else {
-        appendLog(`✘ ${name}  ${r.error || 'OCR 未识别'}`, 'fail');
+        let failMsg = r.error || 'OCR 未识别';
+        // 如果有原始OCR文本也显示出来
+        if (r.raw_ocr_text) {
+          failMsg += ` | 识别到: "${r.raw_ocr_text}"`;
+        }
+        appendLog(`✘ ${name}  ${failMsg}`, 'fail');
         if (img) img.ocr = {success: false};
       }
     }
@@ -321,10 +453,14 @@ async function openOcrModal() {
     if (!status.running) {
       clearInterval(ocrPollTimer);
       const ok = status.results.filter(r => r.success).length;
-      const fail = status.results.length - ok;
-      document.getElementById('ocr-progress-text').textContent =
-        `完成！✔ 成功 ${ok} 张  ✘ 失败 ${fail} 张`;
-      document.getElementById('ocr-close-btn').disabled = false;
+      const skipped = status.results.filter(r => r.skipped).length;
+      const fail = status.results.length - ok - skipped;
+      let statusText = `完成！✔ 成功 ${ok} 张  ✘ 失败 ${fail} 张`;
+      if (skipped > 0) statusText += `  ⏭ 跳过 ${skipped} 张`;
+      if (status.stopped) statusText += ' (因失败停止)';
+      if (status.cancelled) statusText += ' (已停止)';
+      document.getElementById('ocr-progress-text').textContent = statusText;
+      document.getElementById('ocr-close-btn').textContent = '关闭';
       renderGrid(allImages);
     }
   }, 1500);
@@ -332,7 +468,10 @@ async function openOcrModal() {
 
 function closeOcrModal() {
   if (ocrPollTimer) clearInterval(ocrPollTimer);
+  // 通知后端中断（不等待完成）
+  fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/cancel`, {method: 'POST'}).catch(() => {});
   document.getElementById('ocr-modal').classList.remove('open');
+  renderGrid(allImages);
 }
 
 function appendLog(text, type) {

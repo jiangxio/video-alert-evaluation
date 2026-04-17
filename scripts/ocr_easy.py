@@ -17,7 +17,19 @@ except ImportError:
     HAS_PIL = False
 
 
-def preprocess_and_ocr(image_path):
+_reader = None
+
+
+def get_reader():
+    """懒加载并复用 EasyOCR Reader（避免每次重复初始化模型）"""
+    global _reader
+    if _reader is None:
+        import easyocr
+        _reader = easyocr.Reader(['en'], gpu=False)
+    return _reader
+
+
+def preprocess_and_ocr(image_path, reader=None):
     """预处理 + EasyOCR识别"""
     if not HAS_PIL:
         raise ImportError("需要Pillow: pip install Pillow")
@@ -25,8 +37,8 @@ def preprocess_and_ocr(image_path):
     img = Image.open(image_path).convert('L')
     w, h = img.size
 
-    # 裁剪左上角（宽度需覆盖完整水印文字，10位ID + 时间戳约需600px）
-    crop = img.crop((0, 0, min(700, w), min(120, h)))
+    # 裁剪左上角（只裁剪水印部分，避免后面的字母干扰，10位ID + 时间戳约需550px）
+    crop = img.crop((0, 0, min(540, w), min(50, h)))
 
     # 增强对比度
     enhancer = ImageEnhance.Contrast(crop)
@@ -37,15 +49,14 @@ def preprocess_and_ocr(image_path):
 
     # EasyOCR识别
     try:
-        import easyocr
         import numpy as np
-        reader = easyocr.Reader(['en'], gpu=False)
+        if reader is None:
+            reader = get_reader()
         result = reader.readtext(np.array(img_inverted))
         texts = [item[1] for item in result]
         return ' '.join(texts)
     except Exception as e:
-        print(json.dumps({"error": f"EasyOCR失败: {str(e)}"}))
-        sys.exit(1)
+        raise RuntimeError(f"EasyOCR失败: {str(e)}")
 
 
 def parse_watermark_text(text):
@@ -64,38 +75,34 @@ def parse_watermark_text(text):
     cleaned = re.sub(r'\s+', ' ', text.strip())
     # 把 | 或 l（L小写）或 I（i大写）替换成空格（OCR 容易把 | 认成 l 或 I）
     cleaned = re.sub(r'[|lI]', ' ', cleaned)
+    # 把字母 O 替换成数字 0（OCR 容易把 0 认成 O）
+    cleaned = re.sub(r'[Oo]', '0', cleaned)
+    # 自动纠正：把时间戳里的冒号/点混用统一为 HH:MM:SS.sss
+    # 支持 00:02:27.440 / 00.02.27.440 / 00:02.27.440 等变体
+    cleaned = re.sub(r'(\d{2})[:.](\d{2})[:.](\d{2})[:.](\d{3})', r'\1:\2:\3.\4', cleaned)
 
     # 提取视频ID（恰好10位数字）
     id_match = re.search(r'\b(\d{10})\b', cleaned)
     if id_match:
         result["video_id"] = id_match.group(1)
+        # 移除视频ID，防止其末尾数字被误识别为时间戳的一部分
+        cleaned = cleaned.replace(id_match.group(1), '', 1)
 
-    # 提取时间戳（支持冒号、点或空格作为分隔符）
-    time_match = re.search(r'(\d{1,2}[:. ]\d{2}[:. ]\d{2}(?:[.,]\d+)?)', cleaned)
+    # 提取时间戳（固定格式 HH:MM:SS.sss，必须严格匹配）
+    time_match = re.search(r'(\d{2}:\d{2}:\d{2}\.\d{3})', cleaned)
     if time_match:
         result["timestamp"] = time_match.group(1)
         try:
-            t_str = time_match.group(1).replace(',', '.')
-            # 把所有非数字/点的分隔符统一换成冒号
-            t_str = re.sub(r'[^0-9.]', ':', t_str)
-            # 确保有两个冒号分隔时分秒
-            t_str = re.sub(r':+', ':', t_str)
-            if '.' in t_str:
-                hms_part, ms_part = t_str.split('.', 1)
-                ms = ms_part
-            else:
-                hms_part, ms = t_str, '0'
-            hms_parts = hms_part.split(':')
-            # 去掉开头结尾的空字符串
-            hms_parts = [p for p in hms_parts if p]
-            while len(hms_parts) < 3:
-                hms_parts = ['0'] + hms_parts
-            h, m, s = map(int, hms_parts)
-            result["timestamp_seconds"] = round(h * 3600 + m * 60 + s + float(f"0.{ms:<03}"), 3)
+            t_str = time_match.group(1)
+            time_part, ms = t_str.split('.', 1)
+            h, m, s = map(int, time_part.split(':'))
+            result["timestamp_seconds"] = round(h * 3600 + m * 60 + s + float(f"0.{ms}"), 3)
         except Exception:
             pass
 
-    result["success"] = (result["video_id"] is not None or result["timestamp"] is not None)
+    # 只有当时间戳严格匹配 HH:MM:SS.sss 格式时才算成功
+    # 视频ID和时间戳都需要识别成功
+    result["success"] = (result["video_id"] is not None and result["timestamp"] is not None)
     return result
 
 

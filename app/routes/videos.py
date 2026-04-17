@@ -296,11 +296,12 @@ def upload_video():
 
     video_id = extract_video_id(filename)
     file_size = save_path.stat().st_size
+    duration = get_video_duration(str(save_path))
 
     cursor.execute('''
-        INSERT INTO videos (filename, original_path, video_id, file_size)
-        VALUES (?, ?, ?, ?)
-    ''', (filename, str(save_path), video_id, file_size))
+        INSERT INTO videos (filename, original_path, video_id, file_size, duration)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (filename, str(save_path), video_id, file_size, duration))
     db.commit()
 
     video_db_id = cursor.lastrowid
@@ -310,7 +311,8 @@ def upload_video():
         'video': {
             'id': video_db_id,
             'filename': filename,
-            'video_id': video_id
+            'video_id': video_id,
+            'duration': duration
         }
     })
 
@@ -569,14 +571,26 @@ def apply_watermark(video_id):
     if not video['video_id']:
         return jsonify({'error': '请先设置视频ID后再添加水印'}), 400
 
-    # 创建任务ID
-    task_id = f"watermark_{int(time.time())}_{random.randint(1000,9999)}"
-    watermark_tasks[task_id] = {
-        'video_id': video_id,
-        'status': 'processing',
-        'progress': 0,
-        'error': None
-    }
+    if not video['video_id_confirmed']:
+        return jsonify({'error': '视频ID尚未确认，请先确认视频ID后再添加水印'}), 400
+
+    with watermark_lock:
+        # 检查是否已有正在进行的打水印任务
+        for tid, task in watermark_tasks.items():
+            if task.get('video_id') == video_id and task.get('status') == 'processing':
+                return jsonify({
+                    'error': '该视频正在打水印中，请勿重复提交',
+                    'task_id': tid
+                }), 429
+
+        # 创建任务ID
+        task_id = f"watermark_{int(time.time())}_{random.randint(1000,9999)}"
+        watermark_tasks[task_id] = {
+            'video_id': video_id,
+            'status': 'processing',
+            'progress': 0,
+            'error': None
+        }
 
     # 启动后台线程
     project_root = current_app.config['PROJECT_ROOT']
@@ -859,6 +873,8 @@ def add_event(video_id):
         (video_id, event_type, start, end, 'pending')
     )
     db.commit()
+    cursor.execute('UPDATE videos SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (video_id,))
+    db.commit()
     event_id = cursor.lastrowid
 
     # 自动更新JSON
@@ -912,6 +928,7 @@ def delete_event(video_id, event_id):
 
     # 删除事件
     cursor.execute('DELETE FROM events WHERE id = ?', (event_id,))
+    cursor.execute('UPDATE videos SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (video_id,))
     db.commit()
 
     # 自动更新JSON
@@ -1239,6 +1256,48 @@ def batch_add_to_eval_set():
     return jsonify({'success': True, 'added_count': added_count})
 
 
+@bp.route('/api/eval-sets/batch-remove', methods=['POST'])
+def batch_remove_from_eval_set():
+    """批量从评测集移除视频"""
+    data = request.get_json() or {}
+    set_id = data.get('set_id')
+    video_ids = data.get('video_ids', [])
+
+    if not set_id:
+        return jsonify({'error': '请选择评测集'}), 400
+    if not video_ids:
+        return jsonify({'error': '请选择要移出的视频'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (set_id,))
+    eval_set = cursor.fetchone()
+
+    if not eval_set:
+        return jsonify({'error': '评测集不存在'}), 404
+
+    current_ids = []
+    if eval_set['video_ids']:
+        try:
+            current_ids = json.loads(eval_set['video_ids'])
+        except Exception:
+            current_ids = []
+
+    removed_count = 0
+    for vid in video_ids:
+        if vid in current_ids:
+            current_ids.remove(vid)
+            removed_count += 1
+
+    cursor.execute(
+        'UPDATE eval_video_sets SET video_ids = ? WHERE id = ?',
+        (json.dumps(current_ids), set_id)
+    )
+    db.commit()
+
+    return jsonify({'success': True, 'removed_count': removed_count})
+
+
 @bp.route('/api/eval-sets/<int:set_id>/remove', methods=['POST'])
 def remove_video_from_eval_set(set_id):
     """从评测集移除视频"""
@@ -1313,6 +1372,7 @@ def delete_eval_set(set_id):
 # 内存中的任务进度存储
 video_process_tasks = {}
 watermark_tasks = {}
+watermark_lock = threading.Lock()
 
 
 def concat_videos_ffmpeg(video_paths, output_path):
@@ -1515,7 +1575,8 @@ def _do_package_task(task_id, video_ids, project_root, generated_dir):
                 SELECT w.output_path, v.video_id, v.filename
                 FROM watermarked_videos w
                 JOIN videos v ON v.id = w.original_video_id
-                WHERE w.id = ?
+                WHERE w.original_video_id = ?
+                ORDER BY w.created_at DESC LIMIT 1
             ''', (vid,))
             row = cursor.fetchone()
             if row and Path(row['output_path']).exists():

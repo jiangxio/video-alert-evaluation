@@ -30,6 +30,9 @@ EXT="${FILENAME##*.}"
 OUTPUT_VIDEO="$OUTPUT_DIR/${VIDEO_ID}.${EXT}"
 mkdir -p "$OUTPUT_DIR"
 
+# 用于 drawtext 的 ID：把冒号替换成横杠，避免 FFmpeg filter 语法错误
+SAFE_VIDEO_ID="${VIDEO_ID//:/-}"
+
 echo "处理视频: $INPUT_VIDEO"
 echo "  视频ID: $VIDEO_ID"
 echo "  输出到: $OUTPUT_VIDEO"
@@ -37,11 +40,12 @@ echo "  输出到: $OUTPUT_VIDEO"
 # 构建FFmpeg命令 - 简洁版本
 # 左上角显示：ID + 时间，带半透明背景
 # 使用 pts 时间戳（从0开始的播放时间）
+# 输入/输出加 file: 前缀，防止文件名中的冒号被当成协议分隔符
 
-ffmpeg -y -i "$INPUT_VIDEO" \
+ffmpeg -y -i "file:${INPUT_VIDEO}" \
     -vf "drawtext=
         fontfile='${FONT_FILE}':
-        text='${VIDEO_ID} | %{pts\:hms}':
+        text='${SAFE_VIDEO_ID} | %{pts\:hms}':
         x=${WATERMARK_X}:
         y=${WATERMARK_Y}:
         fontsize=${FONT_SIZE}:
@@ -55,6 +59,6 @@ ffmpeg -y -i "$INPUT_VIDEO" \
     -c:a "$AUDIO_CODEC" \
     -hide_banner \
     -loglevel error \
-    "$OUTPUT_VIDEO"
+    "file:${OUTPUT_VIDEO}"
 
 echo "  完成: $OUTPUT_VIDEO"

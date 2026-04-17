@@ -514,6 +514,8 @@ async function doAnalyze() {
     confirmedAlertIndices.clear(); // 重置确认状态
     renderConfirmCols();
     goToStage('confirm');
+  } catch (e) {
+    alert('分析请求出错: ' + e.message);
   } finally {
     btn.disabled = false; btn.textContent = '分析可合并事件';
   }
@@ -521,14 +523,14 @@ async function doAnalyze() {
 
 // ── 渲染二次确认 ───────────────────────────────────────────────────────────────
 function renderConfirmCols() {
-  // 合并告警（只显示 image_ids > 1 的组，单张不显示但会保存）
+  // 只显示多图片组（image_ids > 1），单张不显示但会保存为独立事件
   const displayAlerts = mergedAlertsData.map((m, idx) => ({ m, idx })).filter(({ m }) => (m.image_ids || []).length > 1);
   const alertList = document.getElementById('alert-cards-list');
   const confirmedCount = confirmedAlertIndices.size;
   const totalCount = displayAlerts.length;
   document.getElementById('alert-count-badge').textContent = totalCount ? `(${confirmedCount}/${totalCount} 组已确认)` : '';
   if (!displayAlerts.length) {
-    alertList.innerHTML = '<p style="color:#888;font-size:0.88rem;">没有需要二次确认的合并告警组（单张图片事件会在后台自动保留）。</p>';
+    alertList.innerHTML = '<p style="color:#888;font-size:0.88rem;">没有需要合并的告警组。</p>';
   } else {
     alertList.innerHTML = displayAlerts.map(({ m, idx }) => {
       const repId = m.representative_image_id;
@@ -608,7 +610,9 @@ function toggleConfirmAlert(idx) {
 
 function confirmAllAlerts() {
   for (let i = 0; i < mergedAlertsData.length; i++) {
-    confirmedAlertIndices.add(i);
+    if ((mergedAlertsData[i].image_ids || []).length > 1) {
+      confirmedAlertIndices.add(i);
+    }
   }
   renderConfirmCols();
 }
@@ -628,12 +632,35 @@ async function doConfirm() {
     return;
   }
 
+  // 处理合并告警：已确认的多图片组保持合并，未确认的多图片组拆开成单张
+  const finalMergedAlerts = [];
+  for (let i = 0; i < mergedAlertsData.length; i++) {
+    const m = mergedAlertsData[i];
+    if (m.is_single || confirmedAlertIndices.has(i)) {
+      finalMergedAlerts.push(m);
+    } else {
+      // 未确认的多图片组，拆开成单张
+      for (const img of (m.all_images || [])) {
+        finalMergedAlerts.push({
+          video_id: m.video_id,
+          event_type: m.event_type,
+          image_ids: [img.id],
+          all_images: [img],
+          representative_image_id: img.id,
+          ts_start: img.timestamp_seconds,
+          ts_end: img.timestamp_seconds,
+          is_single: true,
+        });
+      }
+    }
+  }
+
   btn.disabled = true; btn.textContent = '保存中…';
   try {
     const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/confirm', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ merged_alerts: mergedAlertsData, gt_events: gtEventsData }),
+      body: JSON.stringify({ merged_alerts: finalMergedAlerts, gt_events: gtEventsData }),
     });
     const data = await res.json();
     if (!res.ok) { alert('保存失败: ' + (data.error || '未知')); return; }

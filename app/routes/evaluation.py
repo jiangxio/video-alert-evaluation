@@ -791,14 +791,14 @@ def check_updates(task_id):
     if not evaluated_at:
         return jsonify({'has_updates': False})
 
-    # 获取任务涉及的所有 video_db_id
+    # 获取任务涉及的所有 video_id（TEXT）
     cursor.execute('''
-        SELECT DISTINCT video_db_id FROM (
-            SELECT video_db_id FROM eval_merged_events WHERE task_id = ?
+        SELECT DISTINCT video_id FROM (
+            SELECT video_id FROM eval_merged_events WHERE task_id = ?
             UNION
-            SELECT video_db_id FROM eval_gt_events WHERE task_id = ?
+            SELECT video_id FROM eval_gt_events WHERE task_id = ?
         )
-        WHERE video_db_id IS NOT NULL
+        WHERE video_id IS NOT NULL
     ''', (task_id, task_id))
     video_ids = [row[0] for row in cursor.fetchall()]
     if not video_ids:
@@ -809,13 +809,15 @@ def check_updates(task_id):
     try:
         # 检查 videos 表的更新时间
         cursor.execute(f'''
-            SELECT MAX(updated_at) FROM videos WHERE id IN ({placeholders})
+            SELECT MAX(updated_at) FROM videos WHERE video_id IN ({placeholders})
         ''', video_ids)
         video_max = cursor.fetchone()[0]
 
-        # 检查 events 表的更新时间
+        # 检查 events 表的更新时间（通过 videos.video_id 关联）
         cursor.execute(f'''
-            SELECT MAX(updated_at) FROM events WHERE video_db_id IN ({placeholders})
+            SELECT MAX(e.updated_at) FROM events e
+            JOIN videos v ON v.id = e.video_db_id
+            WHERE v.video_id IN ({placeholders})
         ''', video_ids)
         event_max = cursor.fetchone()[0]
     except Exception:

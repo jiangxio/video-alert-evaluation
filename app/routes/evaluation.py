@@ -1,12 +1,14 @@
 """评测相关路由 - 基于告警数据集 + 评测视频集/GT帧"""
 from flask import Blueprint, request, jsonify, render_template, current_app, send_file
 from pathlib import Path
+from datetime import datetime
 import json
 import threading
 import subprocess
 import io
 
 from app.database import get_db, DATABASE_PATH
+from app.routes import send_file_with_cache
 
 bp = Blueprint('evaluation', __name__, url_prefix='/evaluation')
 
@@ -823,10 +825,24 @@ def check_updates(task_id):
     except Exception:
         return jsonify({'has_updates': False})
 
-    max_updated = max(
-        [evaluated_at] + [v for v in [video_max, event_max] if v]
-    )
-    return jsonify({'has_updates': max_updated > evaluated_at})
+    def _to_dt(value):
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        return None
+
+    evaluated_dt = _to_dt(evaluated_at)
+    if not evaluated_dt:
+        return jsonify({'has_updates': False})
+
+    times = [evaluated_dt] + [_to_dt(v) for v in [video_max, event_max] if v is not None]
+    times = [t for t in times if t is not None]
+    if not times:
+        return jsonify({'has_updates': False})
+
+    max_updated = max(times)
+    return jsonify({'has_updates': max_updated > evaluated_dt})
 
 
 @bp.route('/api/tasks/<int:task_id>/finalize', methods=['POST'])
@@ -1438,7 +1454,9 @@ def get_report_image(task_id):
 
     buf = _generate_report_image(task_dict, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours)
     filename = f"report_{task_dict.get('name', 'task')}_{task_id}.png"
-    return send_file(buf, mimetype='image/png', as_attachment=True, download_name=filename)
+    response = send_file(buf, mimetype='image/png', as_attachment=True, download_name=filename)
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
 
 
 @bp.route('/api/gt-frames/<int:frame_id>/file', methods=['GET'])
@@ -1455,4 +1473,4 @@ def serve_gt_frame(frame_id):
     if not file_path.exists():
         return 'File not found', 404
 
-    return send_file(str(file_path))
+    return send_file_with_cache(str(file_path))

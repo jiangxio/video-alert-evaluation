@@ -127,6 +127,12 @@ pip install -r requirements-flask.txt
 pip install -r requirements-ocr.txt
 ```
 
+> **macOS 用户注意**：Homebrew 默认安装的 FFmpeg **不包含** `drawtext` 滤镜所需的 `libfreetype` 支持，运行打水印时会报错。建议从 conda-forge 安装完整版 FFmpeg：
+> ```bash
+> conda install -c conda-forge ffmpeg
+> ```
+> 并确保 conda 环境的 `ffmpeg` 优先于 Homebrew 版本（`which ffmpeg` 应指向 conda 路径）。
+
 ### 启动 Web 平台
 ```bash
 python run.py

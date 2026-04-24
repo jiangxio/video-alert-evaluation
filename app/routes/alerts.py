@@ -1,5 +1,5 @@
 """告警数据集相关路由"""
-from flask import Blueprint, request, jsonify, render_template, current_app, send_file
+from flask import Blueprint, request, jsonify, render_template, current_app
 from pathlib import Path
 import json
 import os
@@ -12,6 +12,7 @@ from app.database import get_db, DATABASE_PATH
 from app.services.verification_service import (
     parse_alert_config, extract_alert_type_id, run_ocr
 )
+from app.routes import send_file_with_cache
 
 bp = Blueprint('alerts', __name__, url_prefix='/alerts')
 
@@ -359,7 +360,7 @@ def serve_image(image_id):
     path = Path(row['file_path'])
     if not path.exists():
         return jsonify({'error': '文件不存在于磁盘'}), 404
-    return send_file(str(path))
+    return send_file_with_cache(str(path))
 
 
 @bp.route('/api/images/<int:image_id>/label', methods=['PUT'])

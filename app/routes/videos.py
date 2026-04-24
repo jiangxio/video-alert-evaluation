@@ -1,5 +1,5 @@
 """视频相关路由"""
-from flask import Blueprint, request, jsonify, render_template, current_app, send_file, after_this_request
+from flask import Blueprint, request, jsonify, render_template, current_app, after_this_request
 from pathlib import Path
 import re
 import os
@@ -13,6 +13,7 @@ import random
 
 from app.database import get_db, DATABASE_PATH
 from app.services.watermark_service import add_watermark
+from app.routes import send_file_with_cache
 
 bp = Blueprint('videos', __name__, url_prefix='/videos')
 
@@ -422,8 +423,8 @@ def download_video(video_id):
 
     # inline=true 用于浏览器直接播放，inline=false（默认）用于下载
     if inline:
-        return send_file(str(file_path), mimetype='video/mp4')
-    return send_file(str(file_path), as_attachment=True, download_name=download_name)
+        return send_file_with_cache(str(file_path), mimetype='video/mp4')
+    return send_file_with_cache(str(file_path), as_attachment=True, download_name=download_name)
 
 
 @bp.route('/api/download/batch', methods=['POST'])
@@ -489,7 +490,7 @@ def batch_download():
             return response
 
         type_label = '水印版' if download_type == 'watermarked' else '原始版'
-        return send_file(
+        return send_file_with_cache(
             tmp_path,
             mimetype='application/zip',
             as_attachment=True,
@@ -707,7 +708,17 @@ def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_roo
                 (original_video_id, filename, output_path, file_size, resolution, duration)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (video_id, filename, str(output_path), file_size, resolution, duration))
+            wm_db_id = cursor.lastrowid
             conn.commit()
+
+            # 预生成缩略图
+            thumbs_dir = Path(project_root) / 'thumbnails'
+            thumbs_dir.mkdir(parents=True, exist_ok=True)
+            thumb_path = thumbs_dir / f"{filename}_thumb.jpg"
+            if extract_thumbnail(output_path, thumb_path):
+                cursor.execute('UPDATE watermarked_videos SET thumbnail_path = ? WHERE id = ?',
+                               (str(thumb_path), wm_db_id))
+                conn.commit()
 
             watermark_tasks[task_id]['progress'] = 100
             watermark_tasks[task_id]['status'] = 'done'
@@ -738,7 +749,7 @@ def get_thumbnail(wm_id):
 
     # 如果已有封面且文件存在，直接返回
     if thumbnail_path and Path(thumbnail_path).exists():
-        return send_file(str(thumbnail_path))
+        return send_file_with_cache(str(thumbnail_path))
 
     # 否则实时生成
     video_path = Path(wm['output_path'])
@@ -756,7 +767,7 @@ def get_thumbnail(wm_id):
         cursor.execute('UPDATE watermarked_videos SET thumbnail_path = ? WHERE id = ?',
                        (str(thumb_path), wm_id))
         db.commit()
-        return send_file(str(thumb_path))
+        return send_file_with_cache(str(thumb_path))
     else:
         return jsonify({'error': '生成封面失败'}), 500
 
@@ -1799,7 +1810,7 @@ def download_generated_video(gen_id):
     if not file_path.exists():
         return jsonify({'error': '文件不存在'}), 404
 
-    return send_file(
+    return send_file_with_cache(
         str(file_path),
         as_attachment=True,
         download_name=row['name']

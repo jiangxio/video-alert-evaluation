@@ -331,6 +331,15 @@ def init_db():
         )
     ''')
 
+    # 常用查询索引
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_alert_image ON ocr_results(alert_image_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_video_db ON events(video_db_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_watermarked_original ON watermarked_videos(original_video_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_gt_frames_event ON gt_frames(event_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_eval_merged_task ON eval_merged_events(task_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_eval_gt_task ON eval_gt_events(task_id)')
+
     db.commit()
     db.close()
 

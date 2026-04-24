@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动Flask应用"""
+"""启动Flask应用（生产环境使用Waitress多线程服务器）"""
 from app import create_app
 
 app = create_app()
@@ -15,4 +15,5 @@ if __name__ == '__main__':
 ║  告警图片: http://localhost:8080/alerts/                       ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    from waitress import serve
+    serve(app, host='0.0.0.0', port=8080, threads=16)

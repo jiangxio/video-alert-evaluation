@@ -26,6 +26,7 @@ class Config:
     REPORT_DIR = str(BASE_DIR / 'report')
     THUMBNAILS_DIR = str(BASE_DIR / 'thumbnails')
     GENERATED_VIDEOS_DIR = str(BASE_DIR / 'generated_videos')
+    ALERT_TYPES_CONFIG = str(BASE_DIR / 'config' / 'alert_types.json')
 
     # 允许的文件扩展名
     ALLOWED_VIDEO_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv'}

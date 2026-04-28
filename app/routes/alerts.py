@@ -37,8 +37,7 @@ def _get_image_size(file_path):
 
 def _load_alert_config():
     """加载告警类型配置"""
-    import sqlite3
-    config_path = Path(current_app.config['REPORT_DIR']) / 'config.json'
+    config_path = Path(current_app.config['ALERT_TYPES_CONFIG'])
     if config_path.exists():
         return parse_alert_config(str(config_path))
     return {}
@@ -164,7 +163,9 @@ def import_zip(dataset_id):
                 skipped.append(filename)
                 continue
 
-            dest = Path(current_app.config['UPLOAD_ALERTS']) / filename
+            dataset_dir = Path(current_app.config['UPLOAD_ALERTS']) / str(dataset_id)
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+            dest = dataset_dir / filename
             if dest.exists():
                 import uuid
                 dest = dest.parent / f'{dest.stem}_{uuid.uuid4().hex[:6]}{dest.suffix}'
@@ -278,7 +279,9 @@ def upload_to_dataset(dataset_id):
             errors.append(f'{filename}: 已存在于该数据集')
             continue
 
-        save_path = Path(current_app.config['UPLOAD_ALERTS']) / filename
+        dataset_dir = Path(current_app.config['UPLOAD_ALERTS']) / str(dataset_id)
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        save_path = dataset_dir / filename
         # 磁盘上文件名冲突时加后缀
         if save_path.exists():
             stem = save_path.stem

@@ -27,7 +27,7 @@ def calc_expected_count(start_sec, end_sec, interval_sec, trigger_rate, min_even
 
 def _get_all_event_types():
     """从 report/config.json 读取所有事件类型列表（按配置顺序）"""
-    config_path = Path(current_app.config['REPORT_DIR']) / 'config.json'
+    config_path = Path(current_app.config['ALERT_TYPES_CONFIG'])
     event_types = []
     if config_path.exists():
         with open(config_path, 'r', encoding='utf-8') as f:

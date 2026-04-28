@@ -228,7 +228,7 @@ def find_alert_images(report_dir="report"):
 def batch_verify(report_dir="report", config=None, tolerance=5, mock_ocr=None):
     """批量验证"""
     if config is None:
-        config = parse_alert_config("report/config.json")
+        config = parse_alert_config("config/alert_types.json")
     images = find_alert_images(report_dir)
     results = []
     for img_path in images:
@@ -274,7 +274,7 @@ def main():
     parser = argparse.ArgumentParser(description='告警图片验证')
     parser.add_argument('image', nargs='?', help='单张图片路径')
     parser.add_argument('--batch', action='store_true', help='批量验证report目录下所有图片')
-    parser.add_argument('--config', default='report/config.json', help='配置文件路径 (默认: report/config.json)')
+    parser.add_argument('--config', default='config/alert_types.json', help='配置文件路径 (默认: config/alert_types.json)')
     parser.add_argument('--output', help='输出JSON文件路径 (批量模式默认: report/verification_results.json)')
     parser.add_argument('--tolerance', type=int, default=5, help='时间容错秒数 (默认: 5)')
     parser.add_argument('--quiet', action='store_true', help='只输出JSON，不输出人类可读信息')

@@ -9,6 +9,7 @@
     <ul style="margin: 1rem 0 1rem 2rem;">
         <li>上传和管理视频文件</li>
         <li>为视频标注事件，自动生成标准答案数据</li>
+        <li><strong>自动标注</strong>：通过多模态AI自动检测视频中的事件，生成标注结果</li>
         <li>给视频添加可识别水印（视频ID + 时间戳）</li>
         <li>创建告警图片数据集，支持 ZIP 批量导入</li>
         <li>识别告警图片中的水印文字信息</li>
@@ -29,6 +30,16 @@
         <p>查看已打水印视频、标注事件、生成标准答案。</p>
         <p style="margin-top: 1rem;">
             <a href="/videos/" class="btn">前往视频管理</a>
+        </p>
+    </div>
+    <div class="card">
+        <h3>🤖 自动标注</h3>
+        <p>通过多模态AI自动分析视频画面，检测事件并生成标注结果。</p>
+        <p style="color:#e74c3c;font-size:0.85rem;margin-top:0.5rem;">
+            <strong>注意：仅支持没有事件标注的视频进行自动标注。</strong>
+        </p>
+        <p style="margin-top: 1rem;">
+            <a href="/auto-annotation/" class="btn btn-success">前往自动标注</a>
         </p>
     </div>
     <div class="card">

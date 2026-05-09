@@ -1,0 +1,488 @@
+{% extends "base.html" %}
+
+{% block title %}自动标注 - 配置参数{% endblock %}
+
+{% block content %}
+<style>
+  .breadcrumb { font-size:0.88rem; color:#888; margin-bottom:1rem; }
+  .breadcrumb a { color:#3498db; text-decoration:none; }
+
+  .config-layout { display:flex; gap:1.5rem; }
+  .config-form { flex:1; }
+  .status-panel { width:320px; }
+
+  .form-group { margin-bottom:1.2rem; }
+  .form-group label { display:block; font-weight:600; margin-bottom:0.4rem; font-size:0.9rem; }
+  .form-group input[type="number"] {
+    width:100%; padding:0.5rem; border:1px solid #ddd; border-radius:4px; font-size:1rem;
+  }
+  .checkbox-group {
+    display:flex; flex-wrap:wrap; gap:0.6rem;
+  }
+  .checkbox-item {
+    display:flex; align-items:center; gap:0.3rem;
+    padding:0.4rem 0.8rem; background:#f8f9fa; border-radius:4px; cursor:pointer;
+    border:1px solid #eee; user-select:none;
+  }
+  .checkbox-item:hover { background:#e8f4f8; border-color:#3498db; }
+  .checkbox-item input { cursor:pointer; }
+
+  .api-config { margin-top:1rem; padding:1rem; background:#f8f9fa; border-radius:6px; }
+  .api-config.collapsed .api-fields { display:none; }
+  .api-toggle { color:#3498db; cursor:pointer; font-size:0.9rem; }
+  .api-toggle:hover { text-decoration:underline; }
+
+  .status-card {
+    background:white; border:1px solid #eee; border-radius:8px; padding:1rem;
+  }
+  .status-card h3 { margin:0 0 1rem; font-size:1rem; }
+  .progress-bar {
+    width:100%; height:20px; background:#eee; border-radius:10px; overflow:hidden;
+    margin-bottom:0.5rem;
+  }
+  .progress-fill {
+    height:100%; background:#3498db; width:0%; transition:width 0.3s;
+    display:flex; align-items:center; justify-content:center;
+    color:white; font-size:0.75rem;
+  }
+  .status-detail { font-size:0.85rem; color:#666; line-height:1.8; }
+  .status-detail .phase { font-weight:600; color:#333; }
+
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
+  .btn:disabled { opacity:0.6; cursor:not-allowed; }
+
+  .video-info {
+    background:#f8f9fa; border-radius:6px; padding:1rem; margin-bottom:1.5rem;
+    display:flex; gap:1rem; align-items:center;
+  }
+  .video-info img { width:160px; aspect-ratio:16/9; object-fit:cover; border-radius:4px; }
+  .video-info .meta { font-size:0.9rem; color:#666; }
+  .video-info .meta strong { color:#333; }
+
+  .modal-overlay {
+    position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.5); display:none; align-items:center; justify-content:center;
+    z-index:100;
+  }
+  .modal-overlay.show { display:flex; }
+  .modal-box {
+    background:white; border-radius:8px; padding:1.5rem; max-width:400px; width:90%;
+    box-shadow:0 4px 20px rgba(0,0,0,0.2);
+  }
+  .modal-box h3 { margin:0 0 1rem; }
+  .modal-box p { color:#666; margin-bottom:1.5rem; }
+  .modal-actions { display:flex; gap:0.5rem; justify-content:flex-end; }
+</style>
+
+<div class="breadcrumb">
+  <a href="/auto-annotation/">自动标注</a> / 配置参数
+</div>
+
+<div class="video-info">
+  <img src="/videos/api/{{ watermarked.id }}/thumbnail" alt="缩略图" onerror="this.style.display='none'">
+  <div class="meta">
+    <div><strong>视频ID:</strong> {{ video.video_id or '未设置' }}</div>
+    <div><strong>文件名:</strong> {{ video.filename }}</div>
+    <div><strong>时长:</strong> {{ '%.1f'|format(watermarked.duration or 0) }} 秒</div>
+  </div>
+</div>
+
+<div class="config-layout">
+  <div class="config-form">
+    <h3>标注参数</h3>
+    <form id="annoForm">
+      <div class="form-group">
+        <label>抽帧间隔（秒）</label>
+        <input type="number" id="frameInterval" value="1" min="1" required>
+        <small style="color:#888;">每隔多少秒提取一帧进行分析</small>
+      </div>
+
+      <div class="form-group">
+        <label>需要检测的事件类型</label>
+        <div class="checkbox-group">
+          {% for etype in event_types %}
+          <label class="checkbox-item">
+            <input type="checkbox" name="event_type" value="{{ etype }}">
+            {{ etype }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>合并间隔（秒）</label>
+        <input type="number" id="mergeInterval" value="5" min="0" required>
+        <small style="color:#888;">同类型检测结果间隔多少秒内合并为一个事件</small>
+      </div>
+
+      <div class="api-config collapsed" id="apiConfigPanel">
+        <div class="api-toggle" onclick="toggleApiConfig()">▶ API 配置（可选，默认使用已保存配置）</div>
+        <div class="api-fields" style="margin-top:0.8rem;">
+          <div class="form-group" style="margin-bottom:0.8rem;">
+            <label style="font-weight:normal;">API Key</label>
+            <input type="password" id="apiKey" placeholder="sk-xxx" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+          </div>
+          <div class="form-group" style="margin-bottom:0.8rem;">
+            <label style="font-weight:normal;">Base URL</label>
+            <input type="text" id="baseUrl" placeholder="https://openapi-ai.cmaiot.cn/v1" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+          </div>
+          <div class="form-group" style="margin-bottom:0.8rem;">
+            <label style="font-weight:normal;">模型名称</label>
+            <input type="text" id="modelName" placeholder="Qwen3-VL-8B-Instruct" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-weight:normal;">API 请求间隔（秒）</label>
+            <input type="number" id="requestInterval" value="1" min="0" placeholder="1" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+            <small style="color:#888;">每帧分析后等待多久再发下一个请求，用于控制 QPS</small>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:1.5rem;">
+        <button type="submit" class="btn btn-success" id="startBtn">开始自动标注</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="status-panel">
+    <div class="status-card">
+      <h3>任务状态</h3>
+      <div id="statusContent">
+        <p style="color:#888;font-size:0.9rem;">暂无运行中的任务</p>
+      </div>
+    </div>
+    <div class="status-card" style="margin-top:1rem;">
+      <h3>历史任务</h3>
+      <div id="historyContent">
+        <p style="color:#888;font-size:0.9rem;">正在加载...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 中断确认弹窗 -->
+<div class="modal-overlay" id="stopModal">
+  <div class="modal-box">
+    <h3>中断任务</h3>
+    <p>确定要中断当前的自动标注任务吗？</p>
+    <div class="modal-actions">
+      <button class="btn" onclick="hideStopModal()" style="background:#95a5a6;">取消</button>
+      <button class="btn btn-danger" onclick="confirmStop()">确认中断</button>
+    </div>
+  </div>
+</div>
+
+<!-- 清空数据确认弹窗 -->
+<div class="modal-overlay" id="clearModal">
+  <div class="modal-box">
+    <h3>清空中间数据</h3>
+    <p>是否清空已抽取的帧图片和分析结果？此操作不可恢复。</p>
+    <div class="modal-actions">
+      <button class="btn" onclick="hideClearModal()" style="background:#95a5a6;">保留数据</button>
+      <button class="btn btn-danger" onclick="confirmClear()">清空数据</button>
+    </div>
+  </div>
+</div>
+
+<!-- JSON 查看弹窗 -->
+<div class="modal-overlay" id="jsonModal" onclick="if(event.target===this)hideJsonModal()">
+  <div class="modal-box" style="max-width:700px;width:90%;max-height:80vh;display:flex;flex-direction:column;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h3 style="margin:0;">标注结果 JSON</h3>
+      <button class="btn" onclick="hideJsonModal()" style="padding:0.3rem 0.6rem;font-size:0.8rem;background:#95a5a6;">关闭</button>
+    </div>
+    <pre id="jsonContent" style="flex:1;overflow:auto;background:#f8f9fa;padding:1rem;border-radius:4px;font-size:0.85rem;line-height:1.5;margin:0;"></pre>
+  </div>
+</div>
+
+<script>
+  const videoDbId = {{ video.id }};
+  let currentTaskId = null;
+  let isRunning = false;
+  let pollInterval = null;
+
+  function toggleApiConfig() {
+    const panel = document.getElementById('apiConfigPanel');
+    panel.classList.toggle('collapsed');
+    const toggle = panel.querySelector('.api-toggle');
+    toggle.textContent = panel.classList.contains('collapsed')
+      ? '▶ API 配置（可选，默认使用已保存配置）'
+      : '▼ API 配置（可选，默认使用已保存配置）';
+  }
+
+  document.getElementById('annoForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    if (isRunning) return;
+
+    const frameInterval = parseInt(document.getElementById('frameInterval').value);
+    const mergeInterval = parseInt(document.getElementById('mergeInterval').value);
+    const checkboxes = document.querySelectorAll('input[name="event_type"]:checked');
+    const eventTypes = Array.from(checkboxes).map(cb => cb.value);
+
+    if (frameInterval < 1) { showMessage('抽帧间隔至少为1秒', 'error'); return; }
+    if (mergeInterval < 0) { showMessage('合并间隔不能为负数', 'error'); return; }
+    if (eventTypes.length === 0) { showMessage('至少选择一个事件类型', 'error'); return; }
+
+    const payload = {
+      video_db_id: videoDbId,
+      frame_interval_sec: frameInterval,
+      merge_interval_sec: mergeInterval,
+      event_types: eventTypes,
+    };
+
+    const apiKey = document.getElementById('apiKey').value.trim();
+    const baseUrl = document.getElementById('baseUrl').value.trim();
+    const modelName = document.getElementById('modelName').value.trim();
+    const requestInterval = parseInt(document.getElementById('requestInterval').value || '1');
+    if (apiKey) payload.api_key = apiKey;
+    if (baseUrl) payload.base_url = baseUrl;
+    if (modelName) payload.model = modelName;
+    if (!isNaN(requestInterval) && requestInterval >= 0) payload.request_interval_sec = requestInterval;
+
+    try {
+      const r = await fetch('/auto-annotation/api/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const res = await r.json();
+      if (res.success) {
+        currentTaskId = res.task_id;
+        isRunning = true;
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('startBtn').textContent = res.queued ? '已加入队列' : '任务运行中...';
+        showMessage(res.queued ? '任务已加入队列' : '任务已开始', 'success');
+        startPolling();
+      } else {
+        showMessage(res.error || '启动失败', 'error');
+      }
+    } catch (err) {
+      showMessage('启动失败: ' + (err.message || ''), 'error');
+    }
+  });
+
+  function startPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    loadStatus();
+    pollInterval = setInterval(loadStatus, 2000);
+  }
+
+  async function loadStatus() {
+    try {
+      const r = await fetch('/auto-annotation/api/status');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const res = await r.json();
+      const container = document.getElementById('statusContent');
+
+      if (!res.has_running_task) {
+        container.innerHTML = '<p style="color:#888;font-size:0.9rem;">暂无运行中的任务</p>';
+        if (isRunning) {
+          isRunning = false;
+          document.getElementById('startBtn').disabled = false;
+          document.getElementById('startBtn').textContent = '开始自动标注';
+          if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+          // 任务刚结束，查询最终结果
+          if (currentTaskId) {
+            checkTaskResult(currentTaskId);
+          }
+        }
+        return;
+      }
+
+      const t = res.current_task;
+      currentTaskId = t.task_id;
+      isRunning = true;
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('startBtn').textContent = '任务运行中...';
+
+      const phaseMap = {
+        queued: '排队中', extracting: '抽帧中', analyzing: '分析中',
+        merging: '合并中', saving: '保存中', done: '已完成', cancelled: '已中断'
+      };
+
+      let html = `
+        <div class="progress-bar">
+          <div class="progress-fill" style="width:${t.phase_progress}%">${t.phase_progress}%</div>
+        </div>
+        <div class="status-detail">
+          <div>阶段: <span class="phase">${phaseMap[t.phase] || t.phase}</span></div>
+          <div>已分析帧: ${t.analyzed_frames} / ${t.total_frames}</div>
+          <div>视频ID: ${t.video_id}</div>
+        </div>
+      `;
+
+      if (t.status === 'processing') {
+        html += `<button class="btn btn-danger" style="margin-top:1rem;width:100%;" onclick="showStopModal()">中断任务</button>`;
+      }
+
+      if (res.queue_count > 0) {
+        html += `<div style="margin-top:0.8rem;font-size:0.85rem;color:#f39c12;">排队中: ${res.queue_count} 个任务</div>`;
+      }
+
+      container.innerHTML = html;
+    } catch (e) {
+      console.error('status error', e);
+    }
+  }
+
+  async function checkTaskResult(taskId) {
+    try {
+      const r = await fetch('/auto-annotation/api/tasks');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const tasks = await r.json();
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) return;
+
+      if (task.status === 'done') {
+        showMessage('自动标注完成！JSON 已保存到 ground_truth/' + task.video_id + '.json', 'success');
+        currentTaskId = null;
+        loadHistory();
+      } else if (task.status === 'cancelled') {
+        showStopClearDialog();
+      } else if (task.status === 'failed') {
+        showMessage('任务失败: ' + (task.error_message || '未知错误'), 'error');
+        showStopClearDialog();
+      }
+    } catch (e) {
+      console.error('checkTaskResult error:', e);
+    }
+  }
+
+  function showStopModal() {
+    document.getElementById('stopModal').classList.add('show');
+  }
+  function hideStopModal() {
+    document.getElementById('stopModal').classList.remove('show');
+  }
+
+  async function confirmStop() {
+    hideStopModal();
+    try {
+      const r = await fetch('/auto-annotation/api/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      showMessage('已发送中断指令', 'success');
+    } catch (e) {
+      showMessage('中断失败', 'error');
+    }
+  }
+
+  function showStopClearDialog() {
+    // 任务结束后显示清空确认
+    document.getElementById('clearModal').classList.add('show');
+  }
+
+  function hideClearModal() {
+    document.getElementById('clearModal').classList.remove('show');
+    currentTaskId = null;
+  }
+
+  async function confirmClear() {
+    hideClearModal();
+    if (!currentTaskId) return;
+    try {
+      const r = await fetch('/auto-annotation/api/clear-intermediate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: currentTaskId })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      showMessage('中间数据已清空', 'success');
+    } catch (e) {
+      showMessage('清空失败', 'error');
+    }
+    currentTaskId = null;
+  }
+
+  async function loadHistory() {
+    try {
+      const r = await fetch('/auto-annotation/api/tasks');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const tasks = await r.json();
+      const videoTasks = tasks.filter(t => t.video_db_id === videoDbId);
+      const container = document.getElementById('historyContent');
+
+      if (videoTasks.length === 0) {
+        container.innerHTML = '<p style="color:#888;font-size:0.9rem;">该视频暂无历史任务</p>';
+        return;
+      }
+
+      const statusMap = {
+        done: { text: '成功', color: '#27ae60' },
+        failed: { text: '失败', color: '#e74c3c' },
+        cancelled: { text: '已中断', color: '#f39c12' },
+        processing: { text: '运行中', color: '#3498db' },
+        queued: { text: '排队中', color: '#888' }
+      };
+
+      let html = '';
+      for (const t of videoTasks.slice(0, 5)) {
+        const s = statusMap[t.status] || { text: t.status, color: '#888' };
+        const dateStr = t.created_at ? new Date(t.created_at).toLocaleString('zh-CN') : '--';
+        html += `
+          <div style="margin-bottom:0.8rem;padding-bottom:0.8rem;border-bottom:1px solid #eee;">
+            <div style="font-size:0.82rem;color:#666;">${dateStr}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.3rem;">
+              <span style="font-weight:600;color:${s.color};font-size:0.9rem;">${s.text}</span>
+              ${t.status === 'done' && t.result_json_path
+                ? `<button class="btn" style="font-size:0.75rem;padding:0.2rem 0.6rem;" onclick="viewJson(${t.id})">查看JSON</button>`
+                : ''}
+            </div>
+            ${t.status === 'failed' && t.error_message
+              ? `<div style="font-size:0.8rem;color:#e74c3c;margin-top:0.3rem;">${t.error_message}</div>`
+              : ''}
+          </div>`;
+      }
+      container.innerHTML = html;
+    } catch (e) {
+      document.getElementById('historyContent').innerHTML =
+        '<p style="color:#888;font-size:0.9rem;">加载历史任务失败</p>';
+    }
+  }
+
+  async function viewJson(taskId) {
+    try {
+      const r = await fetch('/auto-annotation/api/json/' + taskId);
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.error || 'HTTP ' + r.status);
+      }
+      const data = await r.json();
+      showJsonModal(data);
+    } catch (e) {
+      showMessage('读取JSON失败: ' + (e.message || ''), 'error');
+    }
+  }
+
+  function showJsonModal(data) {
+    const pre = document.getElementById('jsonContent');
+    pre.textContent = JSON.stringify(data, null, 2);
+    document.getElementById('jsonModal').classList.add('show');
+  }
+
+  function hideJsonModal() {
+    document.getElementById('jsonModal').classList.remove('show');
+  }
+
+  // showMessage fallback (app.js may load after this script)
+  if (typeof showMessage !== 'function') {
+    window.showMessage = function(text, type) {
+      const el = document.createElement('div');
+      el.className = 'message message-' + type;
+      el.textContent = text;
+      el.style.cssText = 'position:fixed;top:20px;right:20px;padding:1rem 1.5rem;border-radius:4px;z-index:9999;color:white;';
+      el.style.background = type === 'success' ? '#27ae60' : '#e74c3c';
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 3000);
+    };
+  }
+
+  loadStatus();
+  loadHistory();
+</script>
+{% endblock %}

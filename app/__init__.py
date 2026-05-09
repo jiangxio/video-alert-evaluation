@@ -15,11 +15,12 @@ def create_app(config_class=Config):
     database.init_app(app)
 
     # 注册蓝图
-    from app.routes import videos, alerts, verification, evaluation
+    from app.routes import videos, alerts, verification, evaluation, auto_annotation
     app.register_blueprint(videos.bp)
     app.register_blueprint(alerts.bp)
     app.register_blueprint(verification.bp)
     app.register_blueprint(evaluation.bp)
+    app.register_blueprint(auto_annotation.bp)
 
     # 首页路由
     @app.route('/')

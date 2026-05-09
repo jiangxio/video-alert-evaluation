@@ -331,6 +331,39 @@ def init_db():
         )
     ''')
 
+    # 自动化标注任务表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS auto_annotation_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_db_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            video_id TEXT NOT NULL,
+            status TEXT DEFAULT 'queued',
+            frame_interval_sec INTEGER NOT NULL DEFAULT 1,
+            merge_interval_sec INTEGER NOT NULL DEFAULT 5,
+            event_types TEXT NOT NULL,
+            total_frames INTEGER DEFAULT 0,
+            analyzed_frames INTEGER DEFAULT 0,
+            current_phase TEXT DEFAULT 'queued',
+            phase_progress INTEGER DEFAULT 0,
+            result_json_path TEXT,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+    ''')
+
+    # 逐帧分析结果表（中间数据）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS auto_annotation_frames (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES auto_annotation_tasks(id) ON DELETE CASCADE,
+            timestamp_sec REAL NOT NULL,
+            frame_path TEXT NOT NULL,
+            detected_event_types TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     # 常用查询索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_alert_image ON ocr_results(alert_image_id)')
@@ -339,6 +372,8 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_gt_frames_event ON gt_frames(event_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_eval_merged_task ON eval_merged_events(task_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_eval_gt_task ON eval_gt_events(task_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_task_video ON auto_annotation_tasks(video_db_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_frames_task ON auto_annotation_frames(task_id)')
 
     db.commit()
     db.close()

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}自动标注 - 选择视频{% endblock %}
+
+{% block content %}
+<style>
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; }
+  .page-header h2 { margin:0; }
+  .status-bar {
+    background:#f8f9fa; border-radius:6px; padding:0.8rem 1rem;
+    margin-bottom:1.5rem; display:flex; gap:1.5rem; align-items:center; font-size:0.9rem;
+  }
+  .status-bar .running { color:#27ae60; font-weight:600; }
+  .status-bar .queued { color:#f39c12; }
+
+  .video-grid {
+    display:grid; grid-template-columns:repeat(5, 1fr); gap:1rem;
+  }
+  @media (max-width:1200px) { .video-grid { grid-template-columns:repeat(4, 1fr); } }
+  @media (max-width:900px) { .video-grid { grid-template-columns:repeat(3, 1fr); } }
+  @media (max-width:600px) { .video-grid { grid-template-columns:repeat(2, 1fr); } }
+
+  .video-card {
+    border:1px solid #eee; border-radius:8px; overflow:hidden;
+    background:white; transition:box-shadow 0.2s;
+  }
+  .video-card:hover { box-shadow:0 4px 12px rgba(0,0,0,0.1); }
+  .card-thumbnail { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; background:#f0f0f0; }
+  .card-info { padding:0.7rem; }
+  .card-video-id { font-weight:600; font-size:0.95rem; margin-bottom:0.3rem; }
+  .card-meta { font-size:0.8rem; color:#888; margin-bottom:0.5rem; }
+  .card-actions .btn { width:100%; text-align:center; font-size:0.85rem; padding:0.4rem; }
+
+  .empty-state { text-align:center; padding:3rem; color:#888; }
+  .empty-state h3 { margin-bottom:0.5rem; color:#666; }
+</style>
+
+<div class="page-header">
+  <h2>自动标注 - 选择视频</h2>
+</div>
+
+<div class="card" style="margin-bottom:1.5rem;background:#f0f7ff;border-left:4px solid #3498db;">
+  <p style="margin:0;color:#333;">
+    <strong>功能说明：</strong>通过多模态AI自动分析视频画面，逐帧检测事件并合并为事件区间，最终生成标准答案JSON。
+  </p>
+  <p style="margin:0.5rem 0 0 0;color:#e74c3c;font-size:0.9rem;">
+    <strong>注意：只有没有事件标注的视频才会显示在此页面。</strong>已标注事件的视频需要手动删除事件后才能使用自动标注。
+  </p>
+</div>
+
+<div class="status-bar" id="statusBar">
+  <span id="statusText">正在检查任务状态...</span>
+</div>
+
+<div id="videoGrid" class="video-grid">
+  <div class="empty-state">
+    <div class="loading"></div>
+    <p>正在加载视频列表...</p>
+  </div>
+</div>
+
+<script>
+  async function loadVideos() {
+    try {
+      const r = await fetch('/auto-annotation/api/videos-without-events');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const res = await r.json();
+      const grid = document.getElementById('videoGrid');
+      if (!Array.isArray(res)) {
+        console.error('API did not return array:', res);
+        throw new Error('接口返回格式错误');
+      }
+      if (res.length === 0) {
+        grid.innerHTML = `
+          <div class="empty-state" style="grid-column:1/-1;">
+            <h3>暂无需要标注的视频</h3>
+            <p>所有视频均已存在事件标注，或尚未上传/打水印。</p>
+          </div>
+        `;
+        return;
+      }
+      grid.innerHTML = res.map(v => `
+        <div class="video-card">
+          <img class="card-thumbnail" src="/videos/api/${v.id}/thumbnail?fallback=1" alt="${v.filename}" onerror="this.src='/static/img/no-thumb.png'">
+          <div class="card-info">
+            <div class="card-video-id">${v.video_id || '未设置ID'}</div>
+            <div class="card-meta">${v.filename}<br>时长: ${formatDuration(v.duration)}</div>
+          </div>
+          <div class="card-actions" style="padding:0 0.7rem 0.7rem;">
+            <a href="/auto-annotation/config/${v.video_db_id}" class="btn btn-success">选择此视频</a>
+          </div>
+        </div>
+      `).join('');
+    } catch (e) {
+      console.error('loadVideos error:', e);
+      document.getElementById('videoGrid').innerHTML = `
+        <div class="empty-state" style="grid-column:1/-1;">
+          <h3>加载失败</h3>
+          <p>${e.message || '请刷新重试'}</p>
+        </div>
+      `;
+    }
+  }
+
+  async function loadStatus() {
+    try {
+      const r = await fetch('/auto-annotation/api/status');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const res = await r.json();
+      const bar = document.getElementById('statusBar');
+      const text = document.getElementById('statusText');
+      if (res.has_running_task && res.current_task) {
+        text.innerHTML = `
+          <span class="running">运行中</span>
+          视频 ${res.current_task.video_id} | 阶段: ${phaseName(res.current_task.phase)} | 进度: ${res.current_task.phase_progress}%
+          ${res.current_task.analyzed_frames}/${res.current_task.total_frames} 帧
+          ${res.queue_count > 0 ? `<span class="queued">| 排队中: ${res.queue_count} 个</span>` : ''}
+        `;
+      } else if (res.queue_count > 0) {
+        text.innerHTML = `<span class="queued">排队中: ${res.queue_count} 个任务</span>`;
+      } else {
+        text.innerHTML = '当前无运行中的自动标注任务';
+      }
+    } catch (e) {
+      document.getElementById('statusText').textContent = '状态获取失败';
+    }
+  }
+
+  function phaseName(phase) {
+    const map = {
+      queued: '排队中', extracting: '抽帧中', analyzing: '分析中',
+      merging: '合并中', saving: '保存中', done: '已完成', cancelled: '已中断'
+    };
+    return map[phase] || phase;
+  }
+
+  function formatDuration(sec) {
+    if (!sec) return '--';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+
+  loadVideos();
+  loadStatus();
+  setInterval(loadStatus, 3000);
+</script>
+{% endblock %}

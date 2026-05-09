@@ -251,6 +251,13 @@ def list_watermarked_videos():
         if filter_video_ids is not None and row['video_id'] not in filter_video_ids:
             continue
 
+        # 检查是否存在 ground_truth JSON 文件
+        vid = row['vid']
+        has_gt_json = False
+        if vid:
+            gt_path = Path(current_app.config['GROUND_TRUTH_DIR']) / f'{vid}.json'
+            has_gt_json = gt_path.exists()
+
         item = {
             'id': row['wm_id'],
             'video_db_id': row['video_id'],
@@ -261,7 +268,8 @@ def list_watermarked_videos():
             'thumbnail_path': row['thumbnail_path'],
             'resolution': row['resolution'],
             'duration': row['wm_duration'] or row['orig_duration'],
-            'event_types': row['event_types'].split(',') if row['event_types'] else []
+            'event_types': row['event_types'].split(',') if row['event_types'] else [],
+            'has_ground_truth': has_gt_json
         }
         result.append(item)
 
@@ -560,7 +568,7 @@ def confirm_video_id(video_id):
 
 @bp.route('/api/<int:video_id>/watermark', methods=['POST'])
 def apply_watermark(video_id):
-    """给视频添加水印（异步处理）"""
+    """给视频添加水印（异步队列处理，一次只运行一个）"""
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
@@ -576,11 +584,11 @@ def apply_watermark(video_id):
         return jsonify({'error': '视频ID尚未确认，请先确认视频ID后再添加水印'}), 400
 
     with watermark_lock:
-        # 检查是否已有正在进行的打水印任务
+        # 检查是否已有该视频正在排队或处理中
         for tid, task in watermark_tasks.items():
-            if task.get('video_id') == video_id and task.get('status') == 'processing':
+            if task.get('video_id') == video_id and task.get('status') in ('processing', 'queued'):
                 return jsonify({
-                    'error': '该视频正在打水印中，请勿重复提交',
+                    'error': '该视频已在打水印队列中，请勿重复提交',
                     'task_id': tid
                 }), 429
 
@@ -588,12 +596,32 @@ def apply_watermark(video_id):
         task_id = f"watermark_{int(time.time())}_{random.randint(1000,9999)}"
         watermark_tasks[task_id] = {
             'video_id': video_id,
-            'status': 'processing',
+            'video_id_str': video['video_id'],
+            'status': 'queued',
             'progress': 0,
             'error': None
         }
 
-    # 启动后台线程
+        # 判断是否有正在运行的打水印任务
+        has_running = any(t.get('status') == 'processing' for t in watermark_tasks.values())
+
+        if has_running:
+            # 加入队列
+            watermark_tasks[task_id]['status'] = 'queued'
+            watermark_queue.append({
+                'task_id': task_id,
+                'video_id': video_id,
+                'video_path': video['original_path'],
+                'video_id_str': video['video_id'],
+                'project_root': current_app.config['PROJECT_ROOT'],
+                'output_dir': current_app.config['OUTPUT_DIR'],
+            })
+            return jsonify({'success': True, 'task_id': task_id, 'status': 'queued'})
+        else:
+            # 直接启动
+            watermark_tasks[task_id]['status'] = 'processing'
+
+    # 启动后台线程（锁外启动避免死锁）
     project_root = current_app.config['PROJECT_ROOT']
     output_dir = current_app.config['OUTPUT_DIR']
     thread = threading.Thread(
@@ -602,7 +630,33 @@ def apply_watermark(video_id):
     )
     thread.start()
 
-    return jsonify({'success': True, 'task_id': task_id})
+    return jsonify({'success': True, 'task_id': task_id, 'status': 'processing'})
+
+
+def _start_next_watermark_task():
+    """启动队列中的下一个打水印任务"""
+    global current_watermark_task_id
+
+    with watermark_lock:
+        current_watermark_task_id = None
+        if not watermark_queue:
+            return
+        next_item = watermark_queue.pop(0)
+        next_tid = next_item['task_id']
+        if next_tid in watermark_tasks:
+            watermark_tasks[next_tid]['status'] = 'processing'
+        current_watermark_task_id = next_tid
+        video_path = next_item['video_path']
+        video_id_str = next_item['video_id_str']
+        video_id = next_item['video_id']
+        project_root = next_item['project_root']
+        output_dir = next_item['output_dir']
+
+    thread = threading.Thread(
+        target=_do_watermark_async,
+        args=(next_tid, video_id, video_path, video_id_str, project_root, output_dir)
+    )
+    thread.start()
 
 
 @bp.route('/api/watermark-tasks/<task_id>/progress', methods=['GET'])
@@ -617,6 +671,28 @@ def get_watermark_progress(task_id):
         'progress': task['progress'],
         'error': task['error']
     })
+
+
+@bp.route('/api/watermark-tasks', methods=['GET'])
+def list_watermark_tasks():
+    """获取所有打水印任务（排队中 + 进行中）"""
+    with watermark_lock:
+        result = []
+        for task_id, task in watermark_tasks.items():
+            if task.get('status') not in ('queued', 'processing'):
+                continue
+            result.append({
+                'task_id': task_id,
+                'video_id': task.get('video_id'),
+                'video_id_str': task.get('video_id_str'),
+                'status': task.get('status'),
+                'progress': task.get('progress'),
+                'error': task.get('error')
+            })
+        # 排序：processing 在前，queued 在后，同状态按 task_id 时间戳
+        result.sort(key=lambda x: (0 if x['status'] == 'processing' else 1, x['task_id']))
+
+    return jsonify({'tasks': result})
 
 
 def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_root, output_dir):
@@ -677,7 +753,6 @@ def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_roo
         if not result['success']:
             watermark_tasks[task_id]['status'] = 'failed'
             watermark_tasks[task_id]['error'] = result.get('error', '水印添加失败')
-            conn.close()
             return
 
         # 阶段3: 后处理 (70-95%)
@@ -731,6 +806,7 @@ def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_roo
         watermark_tasks[task_id]['error'] = str(e)
     finally:
         conn.close()
+        _start_next_watermark_task()
 
 
 # ── 封面图 ────────────────────────────────────────────────────────────────────
@@ -1144,6 +1220,102 @@ def save_ground_truth(video_id):
     return jsonify({'success': True})
 
 
+@bp.route('/api/<int:video_id>/import-gt-json', methods=['POST'])
+def import_ground_truth_json(video_id):
+    """将上传的 ground truth JSON 文件导入为事件标注"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    video = cursor.fetchone()
+    if not video:
+        return jsonify({'error': '视频不存在'}), 404
+
+    vid = video['video_id']
+    if not vid:
+        return jsonify({'error': '请先设置视频ID'}), 400
+
+    # 接收上传的 JSON 文件
+    if 'json_file' not in request.files:
+        return jsonify({'error': '请上传JSON文件'}), 400
+
+    file = request.files['json_file']
+    if file.filename == '':
+        return jsonify({'error': '未选择文件'}), 400
+
+    # 读取并解析 JSON
+    try:
+        gt_data = json.load(file.stream)
+    except json.JSONDecodeError as e:
+        return jsonify({'error': f'JSON解析失败: {e}'}), 400
+    except Exception as e:
+        return jsonify({'error': f'读取文件失败: {e}'}), 400
+
+    # 校验数据结构
+    if not isinstance(gt_data, dict):
+        return jsonify({'error': 'JSON根节点必须是对象'}), 400
+
+    if 'events' not in gt_data:
+        return jsonify({'error': 'JSON缺少 events 字段'}), 400
+
+    if not isinstance(gt_data['events'], list):
+        return jsonify({'error': 'events 必须是数组'}), 400
+
+    # 校验 id 是否匹配当前视频
+    json_id = gt_data.get('id')
+    if json_id != vid:
+        return jsonify({'error': f'JSON中的 id "{json_id}" 与当前视频ID "{vid}" 不匹配'}), 400
+
+    events = gt_data['events']
+    if not events:
+        return jsonify({'error': 'JSON中没有事件数据'}), 400
+
+    # 校验每个事件的格式
+    for i, event in enumerate(events):
+        if not isinstance(event, dict):
+            return jsonify({'error': f'第{i+1}个事件格式错误'}), 400
+        if 'type' not in event or 'start' not in event or 'end' not in event:
+            return jsonify({'error': f'第{i+1}个事件缺少 type/start/end 字段'}), 400
+
+    added = 0
+    for event in events:
+        event_type = event.get('type')
+        start = event.get('start')
+        end = event.get('end')
+        if event_type is None or start is None or end is None:
+            continue
+
+        cursor.execute(
+            'INSERT INTO events (video_db_id, event_type, start_seconds, end_seconds, gt_frames_status) VALUES (?, ?, ?, ?, ?)',
+            (video_id, event_type, start, end, 'pending')
+        )
+        db.commit()
+        event_id = cursor.lastrowid
+        added += 1
+
+        # 后台异步生成GT帧
+        project_root = current_app.config['PROJECT_ROOT']
+        thread = threading.Thread(
+            target=_capture_gt_frames_async,
+            args=(video_id, event_id, event_type, start, end, project_root),
+            daemon=True
+        )
+        thread.start()
+
+    # 保存 JSON 到 ground_truth 目录（file 字段用当前视频文件名）
+    gt_dir = Path(current_app.config['GROUND_TRUTH_DIR'])
+    gt_dir.mkdir(parents=True, exist_ok=True)
+    gt_path = gt_dir / f'{vid}.json'
+    save_data = {
+        'file': video['filename'],
+        'id': vid,
+        'events': gt_data['events']
+    }
+    with open(str(gt_path), 'w', encoding='utf-8') as f:
+        json.dump(save_data, f, ensure_ascii=False, indent=2)
+
+    return jsonify({'success': True, 'added': added})
+
+
 # ── 评测视频集管理 ───────────────────────────────────────────────────────────
 
 @bp.route('/api/eval-sets', methods=['GET'])
@@ -1384,6 +1556,8 @@ def delete_eval_set(set_id):
 video_process_tasks = {}
 watermark_tasks = {}
 watermark_lock = threading.Lock()
+watermark_queue = []  # 排队中的打水印任务
+current_watermark_task_id = None  # 当前正在执行的打水印任务ID
 
 
 def concat_videos_ffmpeg(video_paths, output_path):

@@ -2,6 +2,10 @@
 const API = {
     async get(endpoint) {
         const res = await fetch(endpoint);
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`HTTP ${res.status}: ${text}`);
+        }
         return res.json();
     },
     async post(endpoint, data) {
@@ -9,6 +13,10 @@ const API = {
             ? { method: 'POST', body: data }
             : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) };
         const res = await fetch(endpoint, options);
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`HTTP ${res.status}: ${text}`);
+        }
         return res.json();
     }
 };

@@ -416,6 +416,21 @@ function closeCreateModal() {
   document.getElementById('newSetNotes').value = '';
 }
 
+async function importGtJson(videoId, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!confirm('确定要将 Ground Truth JSON 导入为事件标注吗？')) return;
+
+  const res = await fetch(`/videos/api/${videoId}/import-gt-json`, {method: 'POST'});
+  const data = await res.json();
+  if (res.ok) {
+    alert(`成功导入 ${data.added} 个事件`);
+    loadVideos();
+  } else {
+    alert(data.error || '导入失败');
+  }
+}
+
 async function deleteVideo(videoId, event) {
   event.preventDefault();
   event.stopPropagation();

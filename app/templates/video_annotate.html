@@ -291,7 +291,10 @@
 
     <!-- 事件列表 -->
     <div class="panel-section">
-      <div class="panel-title">事件标注</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
+        <div class="panel-title" style="margin-bottom:0;">事件标注</div>
+        <button class="btn btn-sm" onclick="openImportModal()">导入事件</button>
+      </div>
       <table class="event-table">
         <thead>
           <tr>
@@ -366,6 +369,40 @@
         <button class="btn btn-sm" onclick="loadJson()">加载JSON</button>
         <button class="btn btn-sm btn-secondary" onclick="saveJson()">保存JSON</button>
         <button class="btn btn-sm" onclick="regenerateJson()">从事件重新生成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 导入事件弹窗 -->
+<div class="gt-modal-overlay" id="importModal" style="display:none;">
+  <div class="gt-modal-content" style="max-width:500px;">
+    <span class="gt-modal-close" onclick="closeImportModal()">&times;</span>
+    <h3>导入事件</h3>
+    <div style="margin:1.5rem 0;">
+      <!-- 从 GT JSON 导入 -->
+      <div style="padding:1rem;background:#f8f9fa;border-radius:6px;margin-bottom:1rem;">
+        <div style="font-weight:600;margin-bottom:0.5rem;"><span style="font-size:1.2rem;">📄</span> 从 GT JSON 文件导入</div>
+        <p style="font-size:0.85rem;color:#666;margin-bottom:0.8rem;">
+          上传 JSON 文件导入事件标注。文件中的 <code>id</code> 必须与当前视频ID一致，<code>file</code> 字段会被忽略。
+        </p>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+          <input type="file" id="gtJsonFileInput" accept=".json,application/json"
+                 style="padding:0.3rem;border:1px solid #ddd;border-radius:4px;font-size:0.85rem;">
+          <button class="btn btn-sm" onclick="importFromGtJson()" id="importGtBtn">执行导入</button>
+        </div>
+        <div id="gtJsonImportError" style="color:#e74c3c;font-size:0.8rem;margin-top:0.3rem;display:none;"></div>
+      </div>
+
+      <!-- 从自动标注结果导入 -->
+      <div style="padding:1rem;background:#f8f9fa;border-radius:6px;">
+        <div style="font-weight:600;margin-bottom:0.5rem;"><span style="font-size:1.2rem;">🤖</span> 从自动标注结果导入</div>
+        <p style="font-size:0.85rem;color:#666;margin-bottom:0.8rem;">
+          选择该视频已完成的自动标注任务，将其检测结果导入为事件标注。
+        </p>
+        <div id="autoAnnoTasksArea">
+          <div style="color:#888;font-size:0.85rem;">加载中...</div>
+        </div>
       </div>
     </div>
   </div>
@@ -815,6 +852,123 @@ function formatTime(sec) {
   }
   return `${s}秒`;
 }
+
+// ── 导入事件相关 ──────────────────────────────────────────────────────────────
+
+function openImportModal() {
+  document.getElementById('importModal').style.display = 'flex';
+  loadAutoAnnoTasks();
+}
+
+function closeImportModal() {
+  document.getElementById('importModal').style.display = 'none';
+}
+
+async function importFromGtJson() {
+  const fileInput = document.getElementById('gtJsonFileInput');
+  const btn = document.getElementById('importGtBtn');
+  const errorDiv = document.getElementById('gtJsonImportError');
+  const file = fileInput.files[0];
+
+  if (!file) {
+    errorDiv.textContent = '请先选择JSON文件';
+    errorDiv.style.display = 'block';
+    return;
+  }
+
+  errorDiv.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = '导入中...';
+
+  const formData = new FormData();
+  formData.append('json_file', file);
+
+  try {
+    const res = await fetch(`/videos/api/${VIDEO_ID}/import-gt-json`, {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (res.ok) {
+      alert(`成功导入 ${data.added} 个事件`);
+      fileInput.value = '';
+      closeImportModal();
+      loadData();
+    } else {
+      errorDiv.textContent = data.error || '导入失败';
+      errorDiv.style.display = 'block';
+    }
+  } catch (e) {
+    errorDiv.textContent = '请求失败: ' + e.message;
+    errorDiv.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '执行导入';
+  }
+}
+
+async function loadAutoAnnoTasks() {
+  const container = document.getElementById('autoAnnoTasksArea');
+  try {
+    const res = await fetch(`/auto-annotation/api/tasks/video/${VIDEO_ID}`);
+    const tasks = await res.json();
+    if (!tasks.length) {
+      container.innerHTML = `
+        <div style="color:#888;font-size:0.85rem;padding:0.5rem;background:#fff;border-radius:4px;">
+          该视频暂无已完成的自动标注任务。
+          <a href="/auto-annotation/config/${VIDEO_ID}" style="color:#3498db;">去创建</a>
+        </div>`;
+      return;
+    }
+    container.innerHTML = `
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <select id="autoAnnoTaskSelect" style="flex:1;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
+          ${tasks.map(t => `
+            <option value="${t.id}">
+              任务 #${t.id} · ${new Date(t.created_at).toLocaleString()} · ${t.analyzed_frames || 0}帧
+            </option>
+          `).join('')}
+        </select>
+        <button class="btn btn-sm" onclick="importFromAutoAnno()">导入</button>
+      </div>
+      <div id="autoAnnoImportError" style="color:#e74c3c;font-size:0.8rem;margin-top:0.3rem;display:none;"></div>
+    `;
+  } catch (e) {
+    container.innerHTML = `<div style="color:#e74c3c;font-size:0.85rem;">加载失败: ${e.message}</div>`;
+  }
+}
+
+async function importFromAutoAnno() {
+  const select = document.getElementById('autoAnnoTaskSelect');
+  const errorDiv = document.getElementById('autoAnnoImportError');
+  if (!select || !select.value) {
+    errorDiv.textContent = '请先选择一个自动标注任务';
+    errorDiv.style.display = 'block';
+    return;
+  }
+  const taskId = select.value;
+  errorDiv.style.display = 'none';
+  try {
+    const res = await fetch(`/auto-annotation/api/convert-to-events/${taskId}`, {method: 'POST'});
+    const data = await res.json();
+    if (res.ok) {
+      alert(`成功导入 ${data.event_count} 个事件`);
+      closeImportModal();
+      loadData();
+    } else {
+      errorDiv.textContent = data.error || '导入失败';
+      errorDiv.style.display = 'block';
+    }
+  } catch (e) {
+    errorDiv.textContent = '请求失败: ' + e.message;
+    errorDiv.style.display = 'block';
+  }
+}
+
+// 点击弹窗背景关闭
+document.getElementById('importModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeImportModal();
+});
 
 function setPlaybackRate(rate) {
   const video = document.getElementById('mainVideo');

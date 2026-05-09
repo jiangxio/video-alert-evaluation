@@ -113,6 +113,7 @@
   <div class="search-bar">
     <input type="text" id="searchInput" placeholder="搜索文件名或video_id..." oninput="searchVideos()">
     <button class="btn" onclick="loadVideos()">刷新</button>
+    <button class="btn" onclick="showWatermarkQueueModal()">查看打水印进度</button>
   </div>
 
   <table class="video-table">
@@ -130,9 +131,48 @@
   </table>
 </div>
 
+<!-- 打水印队列弹窗 -->
+<div class="modal-overlay" id="watermarkQueueModal">
+  <div class="modal-content" style="min-width:480px;max-width:600px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h3 style="margin:0;">打水印任务队列</h3>
+      <button class="btn btn-sm btn-secondary" onclick="closeWatermarkQueueModal()">关闭</button>
+    </div>
+    <div id="queueModalContent">
+      <div style="color:#888;font-size:0.9rem;">加载中...</div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .modal-overlay {
+    display:none;
+    position:fixed;
+    top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.5);
+    z-index:100;
+    align-items:center;
+    justify-content:center;
+  }
+  .modal-overlay.visible { display:flex; }
+  .modal-content {
+    background:white;
+    padding:1.5rem;
+    border-radius:8px;
+    min-width:320px;
+    max-width:90vw;
+  }
+  .queue-processing { padding:0.8rem;background:#fff3cd;border-radius:6px;margin-bottom:1rem;border-left:4px solid #f39c12; }
+  .queue-pending { padding:0.8rem;background:#e8f4f8;border-radius:6px;margin-bottom:0.5rem;border-left:4px solid #3498db; }
+  .queue-empty { color:#888;font-size:0.9rem;text-align:center;padding:1.5rem; }
+  .queue-section-title { font-size:0.85rem;color:#666;margin-bottom:0.5rem;font-weight:600; }
+  .queue-progress-bar { width:100%;height:8px;background:#e0e0e0;border-radius:4px;overflow:hidden;margin-top:0.3rem; }
+  .queue-progress-fill { height:100%;background:#f39c12;border-radius:4px;transition:width 0.5s; }
+</style>
+
 <script>
 let allVideos = [];
-let watermarkingVideos = new Map(); // video_db_id -> { task_id, progress }
+let watermarkingVideos = new Map(); // video_db_id -> { task_id, progress, status }
 
 // 上传区域拖拽
 document.getElementById('uploadZone').addEventListener('dragover', (e) => {
@@ -213,7 +253,9 @@ function renderTable(videos) {
   }
   tbody.innerHTML = videos.map(v => {
     const isWatermarking = watermarkingVideos.has(v.id);
-    const progress = isWatermarking ? watermarkingVideos.get(v.id).progress : 0;
+    const wmInfo = isWatermarking ? watermarkingVideos.get(v.id) : null;
+    const wmStatus = wmInfo ? wmInfo.status : '';
+    const progress = wmInfo ? wmInfo.progress : 0;
     const isVideoIdConfirmed = v.video_id_confirmed || v.has_watermark;
 
     return `
@@ -233,8 +275,9 @@ function renderTable(videos) {
       </td>
       <td>
         ${isWatermarking ? `
-          <span class="watermark-status" style="color:#f39c12;">
-            <span style="animation:pulse 1.5s infinite;">⏳</span> 处理中
+          <span class="watermark-status" style="color:${wmStatus === 'queued' ? '#3498db' : '#f39c12'};">
+            <span style="animation:pulse 1.5s infinite;">⏳</span>
+            ${wmStatus === 'queued' ? '排队中' : '处理中'}
           </span>
         ` : `
           <span class="watermark-status ${v.has_watermark ? 'done' : 'pending'}">
@@ -246,7 +289,7 @@ function renderTable(videos) {
         <div class="action-btns">
           <button class="btn btn-sm btn-secondary" onclick="startRename(${v.id})">重命名</button>
           ${!v.has_watermark && !isWatermarking ? `<button class="btn btn-sm" onclick="applyWatermark(${v.id})" ${!v.video_id ? 'disabled' : ''}>打水印</button>` : ''}
-          ${isWatermarking ? `<button class="btn btn-sm" disabled>处理中</button>` : ''}
+          ${isWatermarking ? `<button class="btn btn-sm" disabled>${wmStatus === 'queued' ? '排队中' : '处理中'}</button>` : ''}
           <div class="download-dropdown">
             <button class="btn btn-sm btn-secondary">下载 ▼</button>
             <div class="download-dropdown-content">
@@ -310,7 +353,7 @@ async function confirmVideoId(videoId, videoIdValue) {
 
 async function applyWatermark(videoId) {
   // 立即标记为处理中并禁用按钮，防止重复提交
-  watermarkingVideos.set(videoId, { task_id: null, progress: 0 });
+  watermarkingVideos.set(videoId, { task_id: null, progress: 0, status: 'queued' });
   renderTable(allVideos);
 
   try {
@@ -318,8 +361,8 @@ async function applyWatermark(videoId) {
     const data = await res.json();
     if (!res.ok) {
       if (res.status === 429 && data.task_id) {
-        // 已有正在进行的任务，直接跟踪其进度
-        watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0 });
+        // 已在队列中，直接跟踪其进度
+        watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0, status: 'queued' });
         pollWatermarkProgress(videoId, data.task_id);
         return;
       }
@@ -330,8 +373,8 @@ async function applyWatermark(videoId) {
       return;
     }
 
-    // 开始跟踪进度
-    watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0 });
+    // 开始跟踪进度（可能是 queued 或 processing）
+    watermarkingVideos.set(videoId, { task_id: data.task_id, progress: 0, status: data.status || 'processing' });
     pollWatermarkProgress(videoId, data.task_id);
   } catch (e) {
     watermarkingVideos.delete(videoId);
@@ -401,9 +444,19 @@ async function pollWatermarkProgress(videoDbId, taskId) {
       return;
     }
 
-    if (data.status === 'processing') {
-      // 不更新进度，只显示"处理中"，每3秒检查一次
-      setTimeout(checkProgress, 3000);
+    // 更新本地状态
+    if (watermarkingVideos.has(videoDbId)) {
+      const info = watermarkingVideos.get(videoDbId);
+      info.status = data.status;
+      info.progress = data.progress || 0;
+    }
+
+    if (data.status === 'queued') {
+      // 还在排队，每秒检查一次
+      setTimeout(checkProgress, 1000);
+    } else if (data.status === 'processing') {
+      // 处理中，每2秒检查一次
+      setTimeout(checkProgress, 2000);
     } else if (data.status === 'done') {
       watermarkingVideos.delete(videoDbId);
       loadVideos();
@@ -415,5 +468,85 @@ async function pollWatermarkProgress(videoDbId, taskId) {
   };
   checkProgress();
 }
+
+// ── 打水印队列弹窗 ────────────────────────────────────────────────────────────
+
+let queuePollInterval = null;
+
+function showWatermarkQueueModal() {
+  document.getElementById('watermarkQueueModal').classList.add('visible');
+  loadWatermarkQueue();
+  // 每2秒自动刷新
+  queuePollInterval = setInterval(loadWatermarkQueue, 2000);
+}
+
+function closeWatermarkQueueModal() {
+  document.getElementById('watermarkQueueModal').classList.remove('visible');
+  if (queuePollInterval) {
+    clearInterval(queuePollInterval);
+    queuePollInterval = null;
+  }
+}
+
+async function loadWatermarkQueue() {
+  try {
+    const res = await fetch('/videos/api/watermark-tasks');
+    const data = await res.json();
+    renderWatermarkQueue(data.tasks || []);
+  } catch (e) {
+    document.getElementById('queueModalContent').innerHTML =
+      '<div class="queue-empty">加载失败，请稍后重试</div>';
+  }
+}
+
+function renderWatermarkQueue(tasks) {
+  const container = document.getElementById('queueModalContent');
+  if (!tasks.length) {
+    container.innerHTML = '<div class="queue-empty">暂无打水印任务</div>';
+    return;
+  }
+
+  const processing = tasks.filter(t => t.status === 'processing');
+  const queued = tasks.filter(t => t.status === 'queued');
+
+  let html = '';
+
+  if (processing.length) {
+    html += '<div class="queue-section-title">当前进行中的任务</div>';
+    html += processing.map(t => `
+      <div class="queue-processing">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span><strong>Video ID: ${escHtml(t.video_id_str || '-')}</strong></span>
+          <span style="color:#f39c12;font-size:0.85rem;">
+            <span style="animation:pulse 1.5s infinite;">&#9203;</span> 处理中 ${t.progress || 0}%
+          </span>
+        </div>
+        <div class="queue-progress-bar">
+          <div class="queue-progress-fill" style="width:${t.progress || 0}%;"></div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  if (queued.length) {
+    html += `<div class="queue-section-title">排队中（${queued.length}个）</div>`;
+    html += queued.map((t, idx) => `
+      <div class="queue-pending">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span><span style="color:#888;margin-right:0.5rem;">#${idx + 1}</span>
+          Video ID: <strong>${escHtml(t.video_id_str || '-')}</strong></span>
+          <span style="color:#3498db;font-size:0.85rem;">等待中</span>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  container.innerHTML = html;
+}
+
+// 点击空白处关闭弹窗
+document.getElementById('watermarkQueueModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeWatermarkQueueModal();
+});
 </script>
 {% endblock %}

@@ -786,7 +786,9 @@ def convert_to_events(task_id):
     events = gt_data.get("events", [])
     video_db_id = task["video_db_id"]
 
-    # 插入 events 表
+    # 批量插入所有事件，然后统一串行后台生成 GT 帧
+    # 避免每个事件都启动独立线程导致并发 FFmpeg 卡死系统
+    inserted_events = []
     for event in events:
         cursor.execute(
             """
@@ -797,21 +799,41 @@ def convert_to_events(task_id):
         )
         event_id = cursor.lastrowid
         db.commit()
+        inserted_events.append((event_id, event["type"], event["start"], event["end"]))
 
-        # 后台生成 GT 帧（复用现有逻辑）
-        project_root = current_app.config["PROJECT_ROOT"]
-        thread = threading.Thread(
-            target=_capture_gt_frames_async,
-            args=(video_db_id, event_id, event["type"], event["start"], event["end"], project_root),
-            daemon=True,
-        )
-        thread.start()
+    # 启动一个后台线程串行生成 GT 帧
+    project_root = current_app.config["PROJECT_ROOT"]
+    thread = threading.Thread(
+        target=_batch_capture_gt_frames,
+        args=(video_db_id, inserted_events, project_root),
+        daemon=True,
+    )
+    thread.start()
 
     # 重新生成 JSON（保持同步）
     from app.routes.videos import generate_ground_truth_json
     generate_ground_truth_json(video_db_id)
 
     return jsonify({"success": True, "event_count": len(events)})
+
+
+def _batch_capture_gt_frames(video_db_id, events, project_root):
+    """串行生成多个事件的 GT 帧，避免并发 FFmpeg 导致系统卡死"""
+    for event_id, event_type, start, end in events:
+        try:
+            _capture_gt_frames_async(video_db_id, event_id, event_type, start, end, project_root)
+        except Exception as e:
+            # 单个事件失败不影响后续事件
+            import sqlite3
+            conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE events SET gt_frames_status = ? WHERE id = ?",
+                ("failed", event_id),
+            )
+            conn.commit()
+            conn.close()
 
 
 # ── 导入现有 GT 帧捕获函数（避免循环导入）─────────────────────────────────────

@@ -57,6 +57,7 @@ ffmpeg -y -i "file:${INPUT_VIDEO}" \
     -crf "$CRF" \
     -preset "$PRESET" \
     -c:a "$AUDIO_CODEC" \
+    -movflags +faststart \
     -hide_banner \
     -loglevel error \
     "file:${OUTPUT_VIDEO}"

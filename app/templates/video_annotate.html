@@ -875,19 +875,26 @@ async function importFromGtJson() {
     errorDiv.style.display = 'block';
     return;
   }
+  if (btn.disabled) return; // 防止重复点击
 
   errorDiv.style.display = 'none';
+  fileInput.disabled = true;
   btn.disabled = true;
-  btn.textContent = '导入中...';
+  btn.textContent = '正在导入...';
 
   const formData = new FormData();
   formData.append('json_file', file);
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
+
   try {
     const res = await fetch(`/videos/api/${VIDEO_ID}/import-gt-json`, {
       method: 'POST',
-      body: formData
+      body: formData,
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     const data = await res.json();
     if (res.ok) {
       alert(`成功导入 ${data.added} 个事件`);
@@ -899,9 +906,15 @@ async function importFromGtJson() {
       errorDiv.style.display = 'block';
     }
   } catch (e) {
-    errorDiv.textContent = '请求失败: ' + e.message;
+    if (e.name === 'AbortError') {
+      errorDiv.textContent = '导入超时，请稍后手动刷新页面查看结果';
+    } else {
+      errorDiv.textContent = '请求失败: ' + e.message;
+    }
     errorDiv.style.display = 'block';
   } finally {
+    clearTimeout(timeoutId);
+    fileInput.disabled = false;
     btn.disabled = false;
     btn.textContent = '执行导入';
   }
@@ -940,16 +953,33 @@ async function loadAutoAnnoTasks() {
 
 async function importFromAutoAnno() {
   const select = document.getElementById('autoAnnoTaskSelect');
+  const btn = select ? select.nextElementSibling : null;
   const errorDiv = document.getElementById('autoAnnoImportError');
+
   if (!select || !select.value) {
     errorDiv.textContent = '请先选择一个自动标注任务';
     errorDiv.style.display = 'block';
     return;
   }
+  if (btn && btn.disabled) return; // 防止重复点击
+
   const taskId = select.value;
   errorDiv.style.display = 'none';
+  if (select) select.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '正在导入...';
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超时
+
   try {
-    const res = await fetch(`/auto-annotation/api/convert-to-events/${taskId}`, {method: 'POST'});
+    const res = await fetch(`/auto-annotation/api/convert-to-events/${taskId}`, {
+      method: 'POST',
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
     const data = await res.json();
     if (res.ok) {
       alert(`成功导入 ${data.event_count} 个事件`);
@@ -960,8 +990,19 @@ async function importFromAutoAnno() {
       errorDiv.style.display = 'block';
     }
   } catch (e) {
-    errorDiv.textContent = '请求失败: ' + e.message;
+    if (e.name === 'AbortError') {
+      errorDiv.textContent = '导入超时，请稍后手动刷新页面查看结果';
+    } else {
+      errorDiv.textContent = '请求失败: ' + e.message;
+    }
     errorDiv.style.display = 'block';
+  } finally {
+    clearTimeout(timeoutId);
+    if (select) select.disabled = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '导入';
+    }
   }
 }
 

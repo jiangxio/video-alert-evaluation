@@ -1027,6 +1027,49 @@ def delete_event(video_id, event_id):
     return jsonify({'success': True})
 
 
+@bp.route('/api/<int:video_id>/events', methods=['DELETE'])
+def delete_all_events(video_id):
+    """删除视频的所有事件（同时删除关联的GT帧，自动更新JSON）"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM videos WHERE id = ?', (video_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '视频不存在'}), 404
+
+    # 获取该视频所有事件的GT帧文件路径并删除磁盘文件
+    cursor.execute('''
+        SELECT gf.file_path FROM gt_frames gf
+        JOIN events e ON gf.event_id = e.id
+        WHERE e.video_db_id = ?
+    ''', (video_id,))
+    frames = cursor.fetchall()
+    for frame in frames:
+        try:
+            Path(frame['file_path']).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # 删除该视频的所有GT帧记录
+    cursor.execute('''
+        DELETE FROM gt_frames WHERE event_id IN (
+            SELECT id FROM events WHERE video_db_id = ?
+        )
+    ''', (video_id,))
+
+    # 删除该视频的所有事件
+    cursor.execute('DELETE FROM events WHERE video_db_id = ?', (video_id,))
+    cursor.execute('UPDATE videos SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', (video_id,))
+    db.commit()
+
+    # 自动更新JSON
+    cursor.execute('SELECT video_id FROM videos WHERE id = ?', (video_id,))
+    v = cursor.fetchone()
+    if v and v['video_id']:
+        generate_ground_truth_json(video_id)
+
+    return jsonify({'success': True})
+
+
 @bp.route('/api/<int:video_id>/events/<int:event_id>/gt-frames/', methods=['GET'])
 def get_event_gt_frames(video_id, event_id):
     """获取事件的所有GT帧"""

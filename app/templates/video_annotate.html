@@ -293,7 +293,10 @@
     <div class="panel-section">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
         <div class="panel-title" style="margin-bottom:0;">事件标注</div>
-        <button class="btn btn-sm" onclick="openImportModal()">导入事件</button>
+        <div style="display:flex;gap:0.5rem;">
+          <button class="btn btn-sm" onclick="openImportModal()">导入事件</button>
+          <button class="btn btn-sm btn-danger" onclick="deleteAllEvents()">一键清除</button>
+        </div>
       </div>
       <table class="event-table">
         <thead>
@@ -689,6 +692,26 @@ async function deleteEvent(eventId) {
   if (res.ok) {
     const eventsRes = await fetch(`/videos/api/${VIDEO_ID}/events`);
     videoData.events = await eventsRes.json();
+    renderEvents();
+  } else {
+    alert('删除失败');
+  }
+}
+
+async function deleteAllEvents() {
+  const events = videoData.events || [];
+  if (!events.length) {
+    alert('当前没有事件可删除');
+    return;
+  }
+  if (!confirm(`确定要删除全部 ${events.length} 个事件吗？相关的GT帧也将被删除，此操作不可恢复。`)) return;
+
+  const res = await fetch(`/videos/api/${VIDEO_ID}/events`, {
+    method: 'DELETE'
+  });
+
+  if (res.ok) {
+    videoData.events = [];
     renderEvents();
   } else {
     alert('删除失败');

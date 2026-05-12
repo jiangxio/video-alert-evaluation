@@ -205,11 +205,12 @@ def search_videos():
 
 @bp.route('/api/watermarked', methods=['GET'])
 def list_watermarked_videos():
-    """获取所有打水印视频（用于管理页网格，带事件标签聚合），支持按评测集筛选"""
+    """获取所有打水印视频（用于管理页网格，带事件标签聚合），支持按评测集筛选和搜索"""
     db = get_db()
     cursor = db.cursor()
 
     eval_set_id = request.args.get('eval_set_id')
+    q = request.args.get('q', '').strip()
     filter_video_ids = None
 
     # 如果指定了评测集，获取该评测集包含的视频ID
@@ -224,9 +225,17 @@ def list_watermarked_videos():
         else:
             filter_video_ids = []
 
+    # 构建搜索条件
+    where_conditions = ""
+    query_params = []
+    if q:
+        where_conditions = "AND (v.video_id LIKE ? OR w.filename LIKE ?)"
+        like = f'%{q}%'
+        query_params.extend([like, like])
+
     # 查询打水印视频，关联原视频信息和事件类型
     # 只取每个原始视频的最新打水印版本
-    cursor.execute('''
+    cursor.execute(f'''
         SELECT
             w.id as wm_id, w.filename as wm_filename, w.output_path, w.file_size as wm_file_size,
             w.thumbnail_path, w.resolution, w.duration as wm_duration,
@@ -240,9 +249,10 @@ def list_watermarked_videos():
             FROM watermarked_videos w2
             WHERE w2.original_video_id = w.original_video_id
         )
+        {where_conditions}
         GROUP BY w.id
         ORDER BY w.created_at DESC
-    ''')
+    ''', query_params)
     rows = cursor.fetchall()
 
     result = []

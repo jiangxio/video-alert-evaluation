@@ -15,7 +15,7 @@
   .toolbar {
     display:flex;
     justify-content:space-between;
-    align-items:center;
+    align-items:flex-start;
     flex-wrap:wrap;
     gap:0.5rem;
     margin-bottom:1rem;
@@ -23,7 +23,15 @@
     background:#f8f9fa;
     border-radius:6px;
   }
-  .batch-actions { display:flex; gap:0.5rem; align-items:center; }
+  .batch-actions { display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; }
+  .btn-group { display:flex; gap:0.5rem; align-items:center; }
+  .action-label { font-size:0.88rem; color:#555; }
+  .action-select { padding:0.35rem 0.5rem; border:1px solid #ccc; border-radius:4px; font-size:0.88rem; background:#fff; }
+  .action-input { padding:0.35rem 0.5rem; border:1px solid #ccc; border-radius:4px; font-size:0.88rem; background:#fff; min-width:200px; }
+  .btn-secondary { background:#7f8c8d; }
+  .btn-secondary:hover { background:#636e72; }
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
 
   .video-grid {
     display:grid;
@@ -151,37 +159,52 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-bottom:1rem;">视频管理 <span style="font-size:0.85rem;font-weight:400;color:#888;">(只显示已打水印的视频)</span></h2>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h2 style="margin:0;">视频管理 <span style="font-size:0.85rem;font-weight:400;color:#888;">(只显示已打水印的视频)</span></h2>
+    <a href="/videos/upload/" class="btn btn-success">上传视频</a>
+  </div>
 
+  <!-- 批量操作 -->
   <div class="toolbar">
     <div class="batch-actions">
-      <label style="font-size:0.9rem;">
-        <input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> 全选
-      </label>
-      <span id="selectedCount" style="font-size:0.85rem;color:#666;"></span>
-      <select id="evalSetSelect">
-        <option value="">选择评测集...</option>
-      </select>
-      <button class="btn btn-sm" onclick="addToEvalSet()">添加到评测集</button>
-      <button class="btn btn-sm btn-secondary" onclick="batchRemoveFromEvalSet()">移出评测集</button>
-      <button class="btn btn-sm btn-secondary" onclick="showCreateEvalSetModal()">新建评测集</button>
-      <button class="btn btn-sm" onclick="concatSelected()" id="concatBtn" disabled>拼接视频</button>
-      <button class="btn btn-sm" onclick="packageSelected()" id="packageBtn" disabled>打包下载</button>
-      <button class="btn btn-sm btn-danger" onclick="batchDeleteVideos()">删除</button>
-    </div>
-    <div>
-      <a href="/videos/upload/" class="btn">上传视频</a>
+      <div class="btn-group">
+        <span class="action-label">批量操作：</span>
+        <button class="btn btn-sm" onclick="concatSelected()" id="concatBtn" disabled>拼接视频</button>
+        <button class="btn btn-sm" onclick="packageSelected()" id="packageBtn" disabled>打包下载</button>
+        <button class="btn btn-sm btn-danger" onclick="batchDeleteVideos()">删除</button>
+      </div>
     </div>
   </div>
 
-  <div style="display:flex;gap:1rem;margin-bottom:1rem;align-items:center;">
-    <div class="eval-set-filter" style="display:flex;gap:0.5rem;align-items:center;">
-      <label style="font-size:0.9rem;color:#666;">评测集筛选:</label>
-      <select id="evalSetFilter" onchange="filterByEvalSet()" style="padding:0.4rem;border:1px solid #ddd;border-radius:4px;">
-        <option value="">全部视频</option>
-      </select>
-      <button class="btn btn-sm" onclick="editEvalSetName()">修改名称</button>
-      <button class="btn btn-sm btn-danger" onclick="deleteEvalSet()">删除评测集</button>
+  <!-- 评测集管理 -->
+  <div class="toolbar" style="margin-top:0.5rem;">
+    <div class="batch-actions">
+      <!-- 操作行 -->
+      <div class="btn-group">
+        <span class="action-label">评测集操作：</span>
+        <select id="evalSetSelect" class="action-select">
+          <option value="">选择评测集...</option>
+        </select>
+        <button class="btn btn-sm" onclick="editEvalSetName()">修改</button>
+        <button class="btn btn-sm" onclick="addToEvalSet()">添加</button>
+        <button class="btn btn-sm btn-secondary" onclick="batchRemoveFromEvalSet()">移出</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteEvalSet()">删除</button>
+        <button class="btn btn-sm btn-success" onclick="showCreateEvalSetModal()">新建</button>
+      </div>
+      <div style="flex-basis:100%;"></div>
+      <!-- 筛选/选择行 -->
+      <div class="btn-group">
+        <label class="action-label" style="cursor:pointer;">
+          <input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> 全选
+        </label>
+        <span id="selectedCount" style="font-size:0.88rem;color:#666;"></span>
+        <span class="action-label">评测集筛选：</span>
+        <select id="evalSetFilter" onchange="filterVideos()" class="action-select">
+          <option value="">全部视频</option>
+        </select>
+        <span class="action-label">搜索：</span>
+        <input type="text" id="videoSearch" placeholder="输入视频ID或文件名..." class="action-input" oninput="searchVideosDebounced()">
+      </div>
     </div>
   </div>
 
@@ -251,6 +274,24 @@ async function loadEvalSets() {
   filterSelect.innerHTML = '<option value="">全部视频</option>' +
     evalSets.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   filterSelect.value = currentFilter; // 保持当前选择
+}
+
+let _searchTimeout = null;
+function searchVideosDebounced() {
+  if (_searchTimeout) clearTimeout(_searchTimeout);
+  _searchTimeout = setTimeout(filterVideos, 300);
+}
+
+async function filterVideos() {
+  const setId = document.getElementById('evalSetFilter').value;
+  const q = document.getElementById('videoSearch').value.trim();
+  const params = new URLSearchParams();
+  if (setId) params.append('eval_set_id', setId);
+  if (q) params.append('q', q);
+  const url = '/videos/api/watermarked' + (params.toString() ? '?' + params.toString() : '');
+  const res = await fetch(url);
+  allVideos = await res.json();
+  renderGrid();
 }
 
 function renderGrid() {
@@ -499,15 +540,6 @@ function formatFileSize(bytes) {
   return bytes.toFixed(1) + ' ' + units[i];
 }
 
-// 评测集筛选
-async function filterByEvalSet() {
-  const setId = document.getElementById('evalSetFilter').value;
-  const url = setId ? `/videos/api/watermarked?eval_set_id=${setId}` : '/videos/api/watermarked';
-  const res = await fetch(url);
-  allVideos = await res.json();
-  renderGrid();
-}
-
 // 修改评测集名称
 async function editEvalSetName() {
   const setId = document.getElementById('evalSetFilter').value;
@@ -550,7 +582,7 @@ async function deleteEvalSet() {
     alert('删除成功');
     document.getElementById('evalSetFilter').value = '';
     loadEvalSets();
-    filterByEvalSet();
+    filterVideos();
   } else {
     const data = await res.json();
     alert(data.error || '删除失败');

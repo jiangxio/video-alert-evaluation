@@ -1,4 +1,0 @@
-# Flask Web Platform Dependencies
-Flask>=2.3
-Werkzeug>=2.3
-waitress>=2.1

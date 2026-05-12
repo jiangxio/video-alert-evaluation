@@ -10,9 +10,9 @@ A video watermark benchmarking tool that tests OCR capabilities to extract video
 
 ### Video Watermarking (CLI)
 ```bash
-./process.sh --install          # Install dependencies
-./process.sh --single video1/046-3.30-18:16.mp4  # Watermark single video
-./process.sh --batch            # Watermark all videos in video1/ and video2/
+python process.py --install          # Install dependencies
+python process.py --single video1/046-3.30-18:16.mp4  # Watermark single video
+python process.py --batch            # Watermark all videos in video1/ and video2/
 ```
 
 ### OCR and Verification (CLI)
@@ -32,7 +32,7 @@ python scripts/ocr_easy.py report/402_1774925112_103.png
 
 ### Web Platform
 ```bash
-pip install -r requirements-flask.txt
+pip install -r requirements.txt
 python run.py    # Starts Flask on 0.0.0.0:8080
 ```
 
@@ -41,7 +41,7 @@ python run.py    # Starts Flask on 0.0.0.0:8080
 ### Two Interfaces, Shared Scripts
 
 The CLI and web platform both call the same underlying scripts via subprocess. The Flask services (`app/services/`) are thin wrappers that exec the CLI scripts:
-- `watermark_service.add_watermark()` → execs `scripts/process_single.sh`
+- `watermark_service.add_watermark()` → execs `scripts/process_single.py`
 - `verification_service.run_ocr()` → execs `scripts/ocr_easy.py`
 - `verification_service.verify_alert()` → execs `scripts/verify_alert.py`
 
@@ -70,25 +70,23 @@ The DB schema tracks the full lifecycle: `videos` → `watermarked_videos`, `ale
 
 ### Watermark Format
 
-FFmpeg `drawtext` filter adds `{VIDEO_ID} | {HH:MM:SS}` at position (20, 20) in 32px DejaVuSans-Bold white text with a semi-transparent black background. Settings are in `config.sh`.
+FFmpeg `drawtext` filter adds `{VIDEO_ID} | {HH:MM:SS}` at position (20, 20) in 32px DejaVuSans-Bold white text with a semi-transparent black background. Settings are in `scripts/process_single.py`.
 
 ## Configuration Files
 
 | File | Purpose |
 |------|---------|
-| `config.sh` | FFmpeg/font settings for watermarking (font, size, position, codec) |
+| `scripts/process_single.py` | FFmpeg/font settings for watermarking (font candidates, size, position, codec) |
 | `report/config.json` | Alert type ID → event type name mapping (format: `"id name"` per line) |
 | `ground_truth/{video_id}.json` | Ground truth events with type, start, end timestamps |
 | `app/config.py` | Flask config: upload paths, size limits, allowed extensions |
 
 ## Dependencies
 
-Three separate requirements files — install only what you need:
-- `requirements.txt` — core (qrcode, Pillow)
-- `requirements-flask.txt` — web platform (Flask, Werkzeug)
-- `requirements-ocr.txt` — OCR backend (choose PaddleOCR **or** EasyOCR **or** Tesseract)
+All Python deps consolidated in a single file:
+- `requirements.txt` — Flask, Werkzeug, waitress (web), easyocr (OCR), Pillow (image processing)
 
-External: FFmpeg must be installed for watermarking. `process.sh --install` handles Python deps.
+External: FFmpeg must be installed for watermarking. `python process.py --install` handles Python deps.
 
 ## Important Notes
 

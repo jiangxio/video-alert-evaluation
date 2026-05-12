@@ -5,10 +5,6 @@
 ### 1. 安装依赖
 
 ```bash
-# 安装Flask依赖
-pip install -r requirements-flask.txt
-
-# 如果还没有安装基础依赖
 pip install -r requirements.txt
 ```
 

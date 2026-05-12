@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-# 默认配置（与 config.sh 保持一致）
+# 默认配置
 DEFAULT_CONFIG = {
     'font_size': 32,
     'font_color': 'white',

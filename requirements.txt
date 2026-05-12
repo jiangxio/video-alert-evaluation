@@ -1,11 +1,10 @@
-#基础依赖
-qrcode[pil]>=7.0
-Pillow>=9.0
-# EasyOCR
-easyocr>=1.7
-# Flask Web Platform Dependencies
+# Web 平台
 Flask>=2.3
 Werkzeug>=2.3
+waitress>=2.1
 
+# OCR 水印识别
+easyocr>=1.7
 
-
+# 图像处理
+Pillow>=9.0

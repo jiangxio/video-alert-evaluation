@@ -41,18 +41,14 @@
 │   ├── services/         # 业务逻辑
 │   ├── templates/        # 前端模板
 │   └── static/
-├── scripts/              # 命令行脚本
-│   ├── process_single.sh    # 单个视频打水印
-│   ├── batch_process.sh     # 批量视频打水印
+├── scripts/              # 命令行脚本（跨平台 Python）
+│   ├── process_single.py    # 单个视频打水印
+│   ├── batch_process.py     # 批量视频打水印
 │   ├── ocr_easy.py          # EasyOCR 水印识别
-│   ├── final_ocr.py         # PaddleOCR 水印识别
 │   └── verify_alert.py      # 告警验证脚本
-├── config.sh             # 水印样式配置
-├── process.sh            # 视频处理入口脚本
+├── process.py            # 视频处理入口脚本（跨平台）
 ├── run.py                # Flask 服务启动
-├── requirements.txt      # 基础依赖
-├── requirements-flask.txt # Web 平台依赖
-└── requirements-ocr.txt  # OCR 引擎依赖
+└── requirements.txt      # 所有 Python 依赖
 ```
 
 ---
@@ -62,8 +58,7 @@
 ### 要上传的文件夹/文件：
 - `app/`
 - `scripts/`
-- `config.sh`
-- `process.sh`
+- `process.py`
 - `run.py`
 - `requirements*.txt`
 - `README.md`
@@ -117,14 +112,7 @@ __pycache__/
 
 ### 安装依赖
 ```bash
-# 基础依赖（视频处理、QR码）
 pip install -r requirements.txt
-
-# Web 平台依赖
-pip install -r requirements-flask.txt
-
-# OCR 引擎（选择其一安装即可）
-pip install -r requirements-ocr.txt
 ```
 
 > **macOS 用户注意**：Homebrew 默认安装的 FFmpeg **不包含** `drawtext` 滤镜所需的 `libfreetype` 支持，运行打水印时会报错。建议从 conda-forge 安装完整版 FFmpeg：
@@ -139,17 +127,64 @@ python run.py
 ```
 访问 http://localhost:8080
 
-### 命令行使用
+### 命令行使用（Linux/macOS/Windows 通用）
 ```bash
-# 安装系统依赖
-./process.sh --install
+# 安装依赖
+python process.py --install
 
 # 处理单个视频（添加水印）
-./process.sh --single video1/046-3.30-18:16.mp4
+python process.py --single video1/046-3.30-18:16.mp4
 
 # 批量处理所有视频
-./process.sh --batch
+python process.py --batch
 ```
+
+---
+
+## 部署注意事项
+
+### 1. FFmpeg 必须安装并加入 PATH
+
+打水印和抽帧都依赖 FFmpeg，安装后确保命令行能直接调用：
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
+
+> **macOS 用户注意**：Homebrew 默认安装的 FFmpeg **不包含** `drawtext` 滤镜所需的 `libfreetype` 支持，运行打水印时会报错。建议从 conda-forge 安装完整版 FFmpeg：
+> ```bash
+> conda install -c conda-forge ffmpeg
+> ```
+> 并确保 conda 环境的 `ffmpeg` 优先于 Homebrew 版本（`which ffmpeg` 应指向 conda 路径）。
+
+### 2. 字体自动查找
+
+打水印需要字体文件，`scripts/process_single.py` 会按操作系统自动查找常见字体路径：
+
+| 系统 | 查找路径 |
+|------|---------|
+| Linux | `/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf` |
+| macOS | `/System/Library/Fonts/Helvetica.ttc` 等 |
+| Windows | `C:/Windows/Fonts/arial.ttf` 等 |
+
+如果找不到字体，会报错。你可以修改 `scripts/process_single.py` 中的 `_FONT_CANDIDATES` 列表添加自己的字体路径。
+
+### 3. 视频源目录
+
+批量处理（`python process.py --batch`）默认递归查找项目根目录下所有 `.mp4` 文件，排除 `output/` 目录。如需修改源目录，直接编辑 `scripts/batch_process.py` 中的 `find_videos()` 函数。
+
+### 4. 输出目录
+
+默认输出到项目根目录的 `output/` 文件夹。如需修改，可通过 `--output-dir` 参数指定：
+
+```bash
+python scripts/process_single.py video.mp4 --output-dir /path/to/output
+```
+
+### 5. 视频 ID 规则
+
+文件名格式为 `{视频ID}-{其他信息}.mp4`，如 `046-3.30-18:16.mp4`，系统会自动提取 `046` 作为视频 ID。如果文件名不含 `-`，则整个文件名（不含扩展名）会被当作视频 ID。
 
 ---
 

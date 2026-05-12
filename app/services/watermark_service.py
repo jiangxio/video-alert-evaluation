@@ -1,16 +1,16 @@
-"""视频水印服务 - 调用现有脚本"""
+"""视频水印服务 - 调用跨平台脚本"""
 import subprocess
 import sys
 from pathlib import Path
 
 
 def add_watermark(video_path, output_dir, video_id=None):
-    """调用process_single.sh给视频添加水印"""
-    script_path = Path(__file__).parent.parent.parent / 'scripts' / 'process_single.sh'
+    """调用 process_single.py 给视频添加水印"""
+    script_path = Path(__file__).parent.parent.parent / 'scripts' / 'process_single.py'
 
-    cmd = [str(script_path), str(video_path)]
+    cmd = [sys.executable, str(script_path), str(video_path), '--output-dir', str(output_dir)]
     if video_id:
-        cmd.append(str(video_id))
+        cmd.extend(['--video-id', str(video_id)])
 
     try:
         result = subprocess.run(
@@ -25,6 +25,6 @@ def add_watermark(video_path, output_dir, video_id=None):
             'stderr': result.stderr
         }
     except subprocess.TimeoutExpired:
-            return {'success': False, 'error': '处理超时'}
+        return {'success': False, 'error': '处理超时'}
     except Exception as e:
         return {'success': False, 'error': str(e)}

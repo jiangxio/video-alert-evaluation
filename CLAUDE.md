@@ -115,3 +115,23 @@ value = row_dict.get('key', default)
 - 从 `eval_tasks` 表读取任务参数时
 - 从 `events`、`videos` 等表读取数据时
 - 任何使用 `cursor.fetchone()` 或 `cursor.fetchall()` 获取 `sqlite3.Row` 对象的地方
+
+### 跨平台兼容与路径规范
+
+**原则**：代码需兼容 Linux / macOS / Windows，避免硬编码与运行设备强相关的绝对路径。
+
+**要求**：
+- 使用 `pathlib.Path` 处理路径，避免字符串拼接路径分隔符。
+- 配置文件中的路径优先使用相对路径或可通过环境变量覆盖。
+- 如果存在与特定设备/环境强相关的路径（如 `/userdata/nvr_warn_assets/`），必须在 `README.md` 中说明该路径的用途及如何修改为适配当前环境的值。
+
+**示例**：
+```python
+# 推荐 ✅
+from pathlib import Path
+base_dir = Path(__file__).resolve().parent
+assets_path = Path(os.environ.get("WARN_ASSETS_DIR", "./assets"))
+
+# 不推荐 ❌
+assets_path = "/userdata/nvr_warn_assets/"
+```

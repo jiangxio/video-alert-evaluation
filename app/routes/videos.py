@@ -12,7 +12,7 @@ import time
 import random
 
 from app.database import get_db, DATABASE_PATH
-from app.services.watermark_service import add_watermark
+from app.services.watermark_service import add_watermark, cancel_task
 from app.routes import send_file_with_cache
 
 bp = Blueprint('videos', __name__, url_prefix='/videos')
@@ -705,6 +705,29 @@ def list_watermark_tasks():
     return jsonify({'tasks': result})
 
 
+@bp.route('/api/watermark-tasks/<task_id>/cancel', methods=['POST'])
+def cancel_watermark_task(task_id):
+    """取消打水印任务（排队中：直接从队列移除；进行中：终止 FFmpeg 进程）"""
+    with watermark_lock:
+        task = watermark_tasks.get(task_id)
+        if not task:
+            return jsonify({'error': '任务不存在'}), 404
+
+        status = task.get('status')
+        if status not in ('queued', 'processing'):
+            return jsonify({'error': f'当前状态 {status}，无法取消'}), 400
+
+        if status == 'queued':
+            # 从队列里抽出来
+            watermark_queue[:] = [q for q in watermark_queue if q['task_id'] != task_id]
+            task['status'] = 'cancelled'
+            return jsonify({'success': True, 'status': 'cancelled'})
+
+    # processing 必须在锁外终止进程；_do_watermark_async 会捕捉到取消并把状态改成 cancelled
+    ok = cancel_task(task_id)
+    return jsonify({'success': ok})
+
+
 def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_root, output_dir):
     """后台异步执行打水印"""
     import sqlite3
@@ -713,67 +736,38 @@ def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_roo
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    stop_flag = [False]
-
-    def update_progress_smoothly(start_p, end_p, duration_sec):
-        """平滑更新进度"""
-        import time
-        steps = 20
-        step_duration = duration_sec / steps
-        for i in range(steps + 1):
-            if stop_flag[0]:
-                break
-            progress = start_p + int((end_p - start_p) * (i / steps))
-            watermark_tasks[task_id]['progress'] = progress
-            time.sleep(step_duration)
-
     try:
         # 阶段1: 准备 (0-15%)
         watermark_tasks[task_id]['progress'] = 5
-        time.sleep(0.3)
-        watermark_tasks[task_id]['progress'] = 10
         time.sleep(0.2)
         watermark_tasks[task_id]['progress'] = 15
 
-        # 阶段2: 执行打水印 (15-70%) - 在后台持续更新进度直到完成
-        stop_flag[0] = False
-        def update_progress_while_processing():
-            """持续更新进度直到FFmpeg完成"""
-            import time
-            current_progress = 15
-            while not stop_flag[0]:
-                # 缓慢增长到70%，然后保持
-                if current_progress < 70:
-                    current_progress += 0.5
-                    watermark_tasks[task_id]['progress'] = int(current_progress)
-                time.sleep(0.5)
+        # 阶段2: 执行打水印 (15-95%) - 由 FFmpeg 真实进度驱动
+        def progress_cb(ffmpeg_pct):
+            mapped = 15 + int(ffmpeg_pct * 0.80)
+            task = watermark_tasks.get(task_id)
+            if task is not None:
+                task['progress'] = mapped
 
-        progress_thread = threading.Thread(
-            target=update_progress_while_processing,
-            daemon=True
+        result = add_watermark(
+            video_path, output_dir,
+            video_id=video_id_str,
+            task_id=task_id,
+            progress_callback=progress_cb,
         )
-        progress_thread.start()
 
-        # 调用水印服务
-        result = add_watermark(video_path, output_dir, video_id=video_id_str)
-
-        stop_flag[0] = True
-        progress_thread.join(timeout=0.1)
+        if result.get('cancelled'):
+            watermark_tasks[task_id]['status'] = 'cancelled'
+            return
 
         if not result['success']:
             watermark_tasks[task_id]['status'] = 'failed'
-            watermark_tasks[task_id]['error'] = result.get('error', '水印添加失败')
+            watermark_tasks[task_id]['error'] = (
+                result.get('stderr') or result.get('error') or '水印添加失败'
+            )
             return
 
-        # 阶段3: 后处理 (70-95%)
-        watermark_tasks[task_id]['progress'] = 75
-        time.sleep(0.2)
-        watermark_tasks[task_id]['progress'] = 80
-        time.sleep(0.2)
-        watermark_tasks[task_id]['progress'] = 85
-        time.sleep(0.2)
-        watermark_tasks[task_id]['progress'] = 90
-        time.sleep(0.2)
+        # 阶段3: 后处理 (95-100%)
         watermark_tasks[task_id]['progress'] = 95
 
         original_path = Path(video_path)

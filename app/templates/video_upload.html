@@ -460,6 +460,9 @@ async function pollWatermarkProgress(videoDbId, taskId) {
     } else if (data.status === 'done') {
       watermarkingVideos.delete(videoDbId);
       loadVideos();
+    } else if (data.status === 'cancelled') {
+      watermarkingVideos.delete(videoDbId);
+      loadVideos();
     } else if (data.status === 'failed') {
       watermarkingVideos.delete(videoDbId);
       alert('打水印失败: ' + (data.error || '未知错误'));
@@ -517,8 +520,11 @@ function renderWatermarkQueue(tasks) {
       <div class="queue-processing">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <span><strong>Video ID: ${escHtml(t.video_id_str || '-')}</strong></span>
-          <span style="color:#f39c12;font-size:0.85rem;">
-            <span style="animation:pulse 1.5s infinite;">&#9203;</span> 处理中 ${t.progress || 0}%
+          <span style="display:flex;align-items:center;gap:0.5rem;">
+            <span style="color:#f39c12;font-size:0.85rem;">
+              <span style="animation:pulse 1.5s infinite;">&#9203;</span> 处理中 ${t.progress || 0}%
+            </span>
+            <button class="btn btn-sm" onclick="cancelWatermarkTask('${escHtml(t.task_id)}')">取消</button>
           </span>
         </div>
         <div class="queue-progress-bar">
@@ -535,13 +541,33 @@ function renderWatermarkQueue(tasks) {
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <span><span style="color:#888;margin-right:0.5rem;">#${idx + 1}</span>
           Video ID: <strong>${escHtml(t.video_id_str || '-')}</strong></span>
-          <span style="color:#3498db;font-size:0.85rem;">等待中</span>
+          <span style="display:flex;align-items:center;gap:0.5rem;">
+            <span style="color:#3498db;font-size:0.85rem;">等待中</span>
+            <button class="btn btn-sm" onclick="cancelWatermarkTask('${escHtml(t.task_id)}')">取消</button>
+          </span>
         </div>
       </div>
     `).join('');
   }
 
   container.innerHTML = html;
+}
+
+async function cancelWatermarkTask(taskId) {
+  if (!confirm('确定要取消该任务？')) return;
+  try {
+    const res = await fetch(`/videos/api/watermark-tasks/${taskId}/cancel`, {method: 'POST'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      alert(data.error || '取消失败');
+      return;
+    }
+  } catch (e) {
+    alert('取消失败：' + e.message);
+    return;
+  }
+  loadWatermarkQueue();
+  loadVideos();
 }
 
 // 点击空白处关闭弹窗

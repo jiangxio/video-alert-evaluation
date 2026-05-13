@@ -43,7 +43,7 @@ _FONT_CANDIDATES = {
 }
 
 
-def _find_font():
+def find_font():
     """根据操作系统查找可用的字体文件"""
     system = platform.system()
     for path in _FONT_CANDIDATES.get(system, []):
@@ -73,8 +73,18 @@ def _to_ffmpeg_path(path):
     return f"file:{p.as_posix()}"
 
 
-def _build_ffmpeg_cmd(input_path, output_path, video_id, font_file, config):
-    """构建 FFmpeg drawtext 命令"""
+def build_ffmpeg_cmd(input_path, output_path, video_id,
+                     *, font_file=None, config=None, progress_pipe=False):
+    """构建 FFmpeg drawtext 命令
+
+    progress_pipe=True 时追加 ``-progress pipe:1``，让 FFmpeg 把
+    ``out_time_us``、``progress`` 等字段写到 stdout，调用方可解析实时进度。
+    """
+    if font_file is None:
+        font_file = find_font()
+    if config is None:
+        config = DEFAULT_CONFIG
+
     safe_video_id = video_id.replace(':', '-')
 
     # pts:hms 中的冒号在 drawtext filter 中需要转义
@@ -90,7 +100,7 @@ def _build_ffmpeg_cmd(input_path, output_path, video_id, font_file, config):
         f"boxborderw={config['box_border_width']}"
     )
 
-    return [
+    cmd = [
         'ffmpeg', '-y',
         '-i', _to_ffmpeg_path(input_path),
         '-vf', drawtext,
@@ -101,8 +111,11 @@ def _build_ffmpeg_cmd(input_path, output_path, video_id, font_file, config):
         '-movflags', '+faststart',
         '-hide_banner',
         '-loglevel', 'error',
-        _to_ffmpeg_path(output_path),
     ]
+    if progress_pipe:
+        cmd.extend(['-progress', 'pipe:1'])
+    cmd.append(_to_ffmpeg_path(output_path))
+    return cmd
 
 
 def add_watermark(input_video, output_dir=None, video_id=None):
@@ -122,7 +135,7 @@ def add_watermark(input_video, output_dir=None, video_id=None):
     ext = input_path.suffix.lstrip('.') or 'mp4'
     output_path = output_dir / f"{video_id}.{ext}"
 
-    font_file = _find_font()
+    font_file = find_font()
     if not font_file:
         print("错误: 找不到合适的字体文件", file=sys.stderr)
         return False
@@ -131,7 +144,8 @@ def add_watermark(input_video, output_dir=None, video_id=None):
     print(f"  视频ID: {video_id}")
     print(f"  输出到: {output_path}")
 
-    cmd = _build_ffmpeg_cmd(str(input_path), str(output_path), video_id, font_file, DEFAULT_CONFIG)
+    cmd = build_ffmpeg_cmd(str(input_path), str(output_path), video_id,
+                           font_file=font_file, config=DEFAULT_CONFIG)
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)

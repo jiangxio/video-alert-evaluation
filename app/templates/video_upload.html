@@ -18,6 +18,17 @@
   }
   .upload-zone:hover, .upload-zone.dragover { border-color:#3498db; background:#f8fbff; }
   .upload-zone input { display:none; }
+  .upload-options {
+    display:flex;
+    align-items:center;
+    gap:0.5rem;
+    margin:-0.8rem 0 1.2rem;
+    color:#555;
+    font-size:0.92rem;
+    flex-wrap:wrap;
+  }
+  .upload-options input { width:16px; height:16px; }
+  .upload-options .hint { color:#888; font-size:0.85rem; }
 
   .video-table { width:100%; border-collapse:collapse; }
   .video-table th, .video-table td { padding:0.7rem; border-bottom:1px solid #eee; text-align:left; }
@@ -107,8 +118,13 @@
     <input type="file" id="fileInput" multiple accept=".mp4,.avi,.mov,.mkv">
     <div style="font-size:2rem;color:#ccc;margin-bottom:0.5rem;">📁</div>
     <div>点击或拖拽视频文件到此处上传</div>
-    <div style="font-size:0.85rem;color:#888;margin-top:0.5rem;">支持 MP4, AVI, MOV, MKV 格式，单个文件最大 800MB</div>
+    <div style="font-size:0.85rem;color:#888;margin-top:0.5rem;">支持 MP4, AVI, MOV, MKV 格式，单个文件最大 1.3GB</div>
   </div>
+  <label class="upload-options">
+    <input type="checkbox" id="alreadyWatermarked">
+    <span>已打水印</span>
+    <span class="hint">勾选后，上传的视频会直接显示为已打水印，不再进入打水印队列。</span>
+  </label>
 
   <div class="search-bar">
     <input type="text" id="searchInput" placeholder="搜索文件名或video_id..." oninput="searchVideos()">
@@ -193,20 +209,23 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
 });
 
 async function uploadFiles(files) {
-  const MAX_SIZE = 800 * 1024 * 1024; // 800MB
+  const MAX_SIZE = 1.3 * 1024 * 1024 * 1024; // 1.3GB
   for (const file of files) {
     // 前端检查文件大小
     if (file.size > MAX_SIZE) {
-      alert(`文件 "${file.name}" 超过大小限制 (最大800MB)`);
+      alert(`文件 "${file.name}" 超过大小限制 (最大1.3GB)`);
       continue;
     }
     const formData = new FormData();
     formData.append('video', file);
+    if (document.getElementById('alreadyWatermarked').checked) {
+      formData.append('already_watermarked', '1');
+    }
     try {
       const res = await fetch('/videos/api/upload', {method:'POST', body:formData});
       if (!res.ok) {
         if (res.status === 413) {
-          alert(`文件 "${file.name}" 超过大小限制 (最大800MB)`);
+          alert(`文件 "${file.name}" 超过大小限制 (最大1.3GB)`);
         } else {
           let errorMsg = '未知错误';
           try {

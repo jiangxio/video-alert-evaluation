@@ -316,14 +316,23 @@ def upload_video():
     video_id = extract_video_id(filename)
     file_size = save_path.stat().st_size
     duration = get_video_duration(str(save_path))
+    already_watermarked = request.form.get('already_watermarked') in ('1', 'true', 'on')
 
     cursor.execute('''
         INSERT INTO videos (filename, original_path, video_id, file_size, duration)
         VALUES (?, ?, ?, ?, ?)
     ''', (filename, str(save_path), video_id, file_size, duration))
-    db.commit()
-
     video_db_id = cursor.lastrowid
+
+    if already_watermarked:
+        resolution = get_video_resolution(save_path)
+        cursor.execute('''
+            INSERT INTO watermarked_videos
+            (original_video_id, filename, output_path, file_size, resolution, duration)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (video_db_id, filename, str(save_path), file_size, resolution, duration))
+
+    db.commit()
 
     return jsonify({
         'success': True,
@@ -331,6 +340,7 @@ def upload_video():
             'id': video_db_id,
             'filename': filename,
             'video_id': video_id,
+            'has_watermark': already_watermarked,
             'duration': duration
         }
     })
@@ -370,6 +380,10 @@ def rename_video(video_id):
     cursor.execute(
         'UPDATE videos SET filename = ?, original_path = ? WHERE id = ?',
         (new_filename, str(new_path), video_id)
+    )
+    cursor.execute(
+        'UPDATE watermarked_videos SET filename = ?, output_path = ? WHERE original_video_id = ? AND output_path = ?',
+        (new_filename, str(new_path), video_id, str(old_path))
     )
     db.commit()
 

@@ -43,6 +43,26 @@ _FONT_CANDIDATES = {
 }
 
 
+_FFMPEG = None  # 延迟查找
+
+
+def find_ffmpeg():
+    """查找 ffmpeg，优先使用 conda 环境中的版本（支持 drawtext）"""
+    global _FFMPEG
+    if _FFMPEG is not None:
+        return _FFMPEG
+    candidates = [
+        Path.home() / 'miniconda3' / 'envs' / 'pingce' / 'bin' / 'ffmpeg',
+        Path.home() / 'anaconda3' / 'envs' / 'pingce' / 'bin' / 'ffmpeg',
+    ]
+    for p in candidates:
+        if p.exists():
+            _FFMPEG = str(p)
+            return _FFMPEG
+    _FFMPEG = 'ffmpeg'
+    return _FFMPEG
+
+
 def find_font():
     """根据操作系统查找可用的字体文件"""
     system = platform.system()
@@ -101,7 +121,7 @@ def build_ffmpeg_cmd(input_path, output_path, video_id,
     )
 
     cmd = [
-        'ffmpeg', '-y',
+        find_ffmpeg(), '-y',
         '-i', _to_ffmpeg_path(input_path),
         '-vf', drawtext,
         '-c:v', config['video_codec'],

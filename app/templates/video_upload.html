@@ -107,7 +107,7 @@
     <input type="file" id="fileInput" multiple accept=".mp4,.avi,.mov,.mkv">
     <div style="font-size:2rem;color:#ccc;margin-bottom:0.5rem;">📁</div>
     <div>点击或拖拽视频文件到此处上传</div>
-    <div style="font-size:0.85rem;color:#888;margin-top:0.5rem;">支持 MP4, AVI, MOV, MKV 格式，单个文件最大 800MB</div>
+    <div style="font-size:0.85rem;color:#888;margin-top:0.5rem;">支持 MP4, AVI, MOV, MKV 格式，单个文件最大 1.2GB</div>
   </div>
 
   <div class="search-bar">
@@ -193,11 +193,11 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
 });
 
 async function uploadFiles(files) {
-  const MAX_SIZE = 800 * 1024 * 1024; // 800MB
+  const MAX_SIZE = 1200 * 1024 * 1024; // 1.2GB
   for (const file of files) {
     // 前端检查文件大小
     if (file.size > MAX_SIZE) {
-      alert(`文件 "${file.name}" 超过大小限制 (最大800MB)`);
+      alert(`文件 "${file.name}" 超过大小限制 (最大1.2GB)`);
       continue;
     }
     const formData = new FormData();
@@ -206,7 +206,7 @@ async function uploadFiles(files) {
       const res = await fetch('/videos/api/upload', {method:'POST', body:formData});
       if (!res.ok) {
         if (res.status === 413) {
-          alert(`文件 "${file.name}" 超过大小限制 (最大800MB)`);
+          alert(`文件 "${file.name}" 超过大小限制 (最大1.2GB)`);
         } else {
           let errorMsg = '未知错误';
           try {

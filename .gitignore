@@ -5,6 +5,9 @@ output/
 uploads/
 report/
 ground_truth/
+ground_truth_frames/
+thumbnails/
+auto_annotation_frames/
 
 # 数据库
 *.db

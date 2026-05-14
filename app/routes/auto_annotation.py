@@ -71,6 +71,7 @@ def _extract_frames(video_path: str, frames_dir: Path, interval_sec: int, task_i
                 [
                     "ffmpeg", "-ss", str(t), "-i", str(video_path),
                     "-vframes", "1", "-q:v", "2", "-y",
+                    "-strict_std_compliance", "unofficial",
                     "-loglevel", "error",
                     str(out_path),
                 ],

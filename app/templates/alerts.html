@@ -86,10 +86,10 @@
       <textarea id="new-notes" placeholder="可选备注信息"></textarea>
     </div>
     <div class="form-group">
-      <label>上传数据集文件 <span style="color:#888;font-weight:normal;">（可选，.zip）</span></label>
+      <label>上传数据集文件 <span style="color:#888;font-weight:normal;">（可选，.zip / .tar / .tar.gz）</span></label>
       <div class="zip-drop" id="zip-drop" onclick="document.getElementById('zip-input').click()">
-        <p>拖拽 ZIP 文件到这里，或点击选择</p>
-        <input type="file" id="zip-input" accept=".zip" class="hidden" onchange="onZipSelected(this)">
+        <p>拖拽压缩文件到这里，或点击选择</p>
+        <input type="file" id="zip-input" accept=".zip,.tar,.tar.gz,.tgz" class="hidden" onchange="onZipSelected(this)">
       </div>
       <div class="zip-selected" id="zip-selected"></div>
     </div>
@@ -156,13 +156,15 @@ zipDrop.addEventListener('dragleave', () => zipDrop.classList.remove('dragover')
 zipDrop.addEventListener('drop', e => {
   e.preventDefault(); zipDrop.classList.remove('dragover');
   const file = e.dataTransfer.files[0];
-  if (file && file.name.toLowerCase().endsWith('.zip')) {
+  const supported = ['.zip', '.tar', '.tar.gz', '.tgz'];
+  const ok = file && supported.some(ext => file.name.toLowerCase().endsWith(ext));
+  if (ok) {
     const dt = new DataTransfer();
     dt.items.add(file);
     document.getElementById('zip-input').files = dt.files;
     onZipSelected(document.getElementById('zip-input'));
   } else {
-    alert('请拖入 .zip 文件');
+    alert('请拖入 .zip / .tar / .tar.gz / .tgz 文件');
   }
 });
 
@@ -252,8 +254,11 @@ function openCreateModal() {
 function closeCreateModal() {
   document.getElementById('create-modal').classList.remove('open');
 }
-document.getElementById('create-modal').addEventListener('click', function(e) {
+document.getElementById('create-modal').addEventListener('mousedown', function(e) {
   if (e.target === this) closeCreateModal();
+});
+document.querySelector('#create-modal .modal-box').addEventListener('mousedown', function(e) {
+  e.stopPropagation();
 });
 document.getElementById('new-name').addEventListener('keydown', e => {
   if (e.key === 'Enter') createDataset();

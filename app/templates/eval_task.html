@@ -1349,13 +1349,19 @@ async function doReevaluate() {
   pollExecProgress();
 }
 
-// 点击弹窗外部关闭
-document.getElementById('eventMetricsModal').addEventListener('click', (e) => {
+// 点击弹窗外部关闭（用 mousedown 避免拖拽选中文本时误触发）
+document.getElementById('eventMetricsModal').addEventListener('mousedown', (e) => {
   if (e.target === e.currentTarget) closeEventMetricsModal();
 });
+document.querySelector('#eventMetricsModal .modal-content').addEventListener('mousedown', (e) => {
+  e.stopPropagation();
+});
 
-document.getElementById('imageViewModal').addEventListener('click', (e) => {
+document.getElementById('imageViewModal').addEventListener('mousedown', (e) => {
   if (e.target === e.currentTarget) closeImageViewModal();
+});
+document.querySelector('#imageViewModal .modal-content').addEventListener('mousedown', (e) => {
+  e.stopPropagation();
 });
 
 // ── 确认结果 ──────────────────────────────────────────────────────────────────

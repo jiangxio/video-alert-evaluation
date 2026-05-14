@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import zipfile
+import tarfile
 import tempfile
 import shutil
 
@@ -119,9 +120,36 @@ def delete_dataset(dataset_id):
     return jsonify({'success': True})
 
 
+def _extract_archive(archive_path, dest_dir):
+    """根据扩展名自动解压 zip / tar / tar.gz 到目标目录"""
+    name = archive_path.lower()
+    if name.endswith('.zip'):
+        with zipfile.ZipFile(archive_path, 'r') as zf:
+            zf.extractall(dest_dir)
+    elif name.endswith('.tar'):
+        with tarfile.open(archive_path, 'r:') as tf:
+            tf.extractall(dest_dir)
+    elif name.endswith('.tar.gz') or name.endswith('.tgz'):
+        with tarfile.open(archive_path, 'r:gz') as tf:
+            tf.extractall(dest_dir)
+    else:
+        raise ValueError('不支持的压缩格式')
+
+
+def _find_image_root(base_dir):
+    """如果 base_dir 下只有一个子目录且没有文件，则返回该子目录"""
+    base = Path(base_dir)
+    entries = [e for e in base.iterdir() if e.name != '__MACOSX']
+    dirs = [e for e in entries if e.is_dir()]
+    files = [e for e in entries if e.is_file()]
+    if len(dirs) == 1 and not files:
+        return dirs[0]
+    return base
+
+
 @bp.route('/api/datasets/<int:dataset_id>/import', methods=['POST'])
 def import_zip(dataset_id):
-    """从 ZIP 压缩包导入图片到数据集"""
+    """从压缩包（zip / tar / tar.gz）导入图片到数据集"""
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
@@ -131,23 +159,26 @@ def import_zip(dataset_id):
     if 'file' not in request.files:
         return jsonify({'error': '没有上传文件'}), 400
     f = request.files['file']
-    if not f.filename.lower().endswith('.zip'):
-        return jsonify({'error': '仅支持 .zip 格式'}), 400
+    fname = f.filename.lower()
+    supported = ('.zip', '.tar', '.tar.gz', '.tgz')
+    if not any(fname.endswith(ext) for ext in supported):
+        return jsonify({'error': '仅支持 .zip / .tar / .tar.gz / .tgz 格式'}), 400
 
     config = _load_alert_config()
     IMAGE_EXTS = current_app.config['ALLOWED_IMAGE_EXTENSIONS']
 
     tmp_dir = tempfile.mkdtemp()
     try:
-        zip_path = os.path.join(tmp_dir, 'upload.zip')
-        f.save(zip_path)
+        archive_path = os.path.join(tmp_dir, 'upload')
+        f.save(archive_path)
+        _extract_archive(archive_path, tmp_dir)
 
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(tmp_dir)
+        # 定位图片搜索根目录（处理压缩包内套单层文件夹的情况）
+        search_root = _find_image_root(tmp_dir)
 
         imported, skipped = [], []
 
-        for src in sorted(Path(tmp_dir).rglob('*')):
+        for src in sorted(search_root.rglob('*')):
             if not src.is_file():
                 continue
             if src.suffix.lower().lstrip('.') not in IMAGE_EXTS:

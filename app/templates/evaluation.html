@@ -244,8 +244,11 @@ function openCreateModal() {
 function closeCreateModal() {
   document.getElementById('create-modal').classList.remove('open');
 }
-document.getElementById('create-modal').addEventListener('click', function(e) {
+document.getElementById('create-modal').addEventListener('mousedown', function(e) {
   if (e.target === this) closeCreateModal();
+});
+document.querySelector('#create-modal .modal-box').addEventListener('mousedown', function(e) {
+  e.stopPropagation();
 });
 
 async function createTask() {

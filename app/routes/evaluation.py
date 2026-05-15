@@ -776,6 +776,57 @@ def update_manual_status(task_id, merged_id):
     return jsonify({'success': True, 'manual_status': manual_status})
 
 
+@bp.route('/api/tasks/<int:task_id>/merged-events/batch-status', methods=['PUT'])
+def batch_update_manual_status(task_id):
+    """批量更新合并告警的人工修正状态"""
+    data = request.get_json() or {}
+    merged_ids = data.get('merged_ids', [])
+    manual_status = data.get('manual_status')
+    if manual_status not in ('auto', 'correct', 'false_positive', 'ignored'):
+        return jsonify({'error': '无效的状态值'}), 400
+    if not merged_ids or not isinstance(merged_ids, list):
+        return jsonify({'error': '请提供 merged_ids 数组'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+
+    placeholders = ','.join('?' for _ in merged_ids)
+    cursor.execute(f'''
+        UPDATE eval_merged_events SET manual_status = ?
+        WHERE task_id = ? AND id IN ({placeholders})
+    ''', [manual_status, task_id] + merged_ids)
+    db.commit()
+
+    return jsonify({'success': True, 'updated': cursor.rowcount})
+
+
+@bp.route('/api/tasks/<int:task_id>/merged-events/batch-delete', methods=['POST'])
+def batch_delete_merged_events(task_id):
+    """批量删除合并告警事件"""
+    data = request.get_json() or {}
+    merged_ids = data.get('merged_ids', [])
+    if not merged_ids or not isinstance(merged_ids, list):
+        return jsonify({'error': '请提供 merged_ids 数组'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+
+    placeholders = ','.join('?' for _ in merged_ids)
+    cursor.execute(f'''
+        DELETE FROM eval_merged_events
+        WHERE task_id = ? AND id IN ({placeholders})
+    ''', [task_id] + merged_ids)
+    db.commit()
+
+    return jsonify({'success': True, 'deleted': cursor.rowcount})
+
+
 @bp.route('/api/tasks/<int:task_id>/check-updates', methods=['GET'])
 def check_updates(task_id):
     """检查该任务涉及的视频标注是否有更新"""

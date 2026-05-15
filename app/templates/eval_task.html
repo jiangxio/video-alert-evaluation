@@ -111,6 +111,7 @@
   .img-cell { position:relative; border-radius:6px; overflow:hidden; background:#f5f5f5; }
   .img-cell img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; }
   .img-badge { position:absolute; top:4px; right:4px; font-size:0.68rem; padding:2px 5px; border-radius:10px; color:white; font-weight:600; }
+  .cell-checkbox { position:absolute; top:4px; left:4px; width:18px; height:18px; cursor:pointer; z-index:5; accent-color:#3498db; }
   .badge-fp { background:#e74c3c; }
   .badge-ok { background:#27ae60; }
   .badge-hit { background:#27ae60; }
@@ -344,6 +345,12 @@
           <button class="btn btn-sm btn-secondary" id="ra-btn-fp" onclick="setAlertFilter('fp')">误检</button>
           <button class="btn btn-sm btn-secondary" id="ra-btn-ignored" onclick="setAlertFilter('ignored')">忽略</button>
         </div>
+        <div class="btn-group" style="margin-left:auto;">
+          <button class="btn btn-sm btn-secondary" id="btn-select-all" onclick="toggleSelectAll()">全选</button>
+          <button class="btn btn-sm btn-danger" id="btn-batch-ignore" onclick="batchIgnoreSelected()" disabled>批量忽略</button>
+          <button class="btn btn-sm btn-danger" id="btn-batch-delete" onclick="batchDeleteSelected()" disabled style="background:#c0392b;">批量删除</button>
+          <span id="batch-count" style="font-size:0.85rem;color:#888;display:none;"></span>
+        </div>
       </div>
       <div class="img-grid" id="alert-result-grid"></div>
     </div>
@@ -432,6 +439,9 @@ let filterVideo = '';
 let filterEvent = '';
 let alertFilter = 'all';
 let gtFilter = 'all';
+
+// 批量勾选
+let selectedAlertIds = new Set();
 
 // ── 状态徽章 ──────────────────────────────────────────────────────────────────
 function updateStatusBadge() {
@@ -772,6 +782,7 @@ function buildFilterOptions() {
 function applyFilters() {
   filterVideo = document.getElementById('filter-video').value;
   filterEvent = document.getElementById('filter-event').value;
+  selectedAlertIds.clear();
   renderAlertGrid();
   renderGtGrid();
 }
@@ -783,6 +794,7 @@ function setAlertFilter(f) {
     const btn = document.getElementById('ra-btn-' + k);
     if (btn) btn.className = 'btn btn-sm ' + (k === f ? 'btn-success' : 'btn-secondary');
   });
+  selectedAlertIds.clear();
   renderAlertGrid();
 }
 
@@ -817,9 +829,14 @@ function renderAlertGrid() {
       ? '/alerts/api/images/' + r.representative_image_id + '/file'
       : '';
     const tsLabel = formatTime(r.timestamp_seconds);
+    const isChecked = selectedAlertIds.has(r.id);
     cell.innerHTML = `
       <img src="${imgSrc}" alt="" onclick="showAlertImageInModalById(${r.id})">
       <span id="alert-badge-${r.id}" class="img-badge badge-${badgeCls}">${badgeText}</span>
+      <input type="checkbox" class="cell-checkbox" id="cb-${r.id}"
+        ${isChecked ? 'checked' : ''}
+        onclick="toggleSelectAlert(${r.id}, this.checked)"
+        title="勾选以批量操作">
       <div class="img-label" style="flex-direction:column;align-items:flex-start;gap:2px;">
         <div>${escHtml(r.video_id||'')} ${escHtml(tsLabel)} ${escHtml(r.event_type||'')}</div>
         <select id="alert-status-${r.id}" class="btn btn-sm" style="width:100%;font-size:0.75rem;padding:2px 4px;"
@@ -833,6 +850,7 @@ function renderAlertGrid() {
     `;
     grid.appendChild(cell);
   });
+  updateBatchButtons();
 }
 
 // ── GT 得分 Tab ───────────────────────────────────────────────────────────────
@@ -970,6 +988,145 @@ async function updateManualStatus(mergedId, status) {
     recomputeMetrics();
   } catch (e) {
     alert('请求失败: ' + e.message);
+  }
+}
+
+// ── 批量勾选与忽略 ────────────────────────────────────────────────────────────
+function toggleSelectAlert(mergedId, checked) {
+  if (checked) {
+    selectedAlertIds.add(mergedId);
+  } else {
+    selectedAlertIds.delete(mergedId);
+  }
+  updateBatchButtons();
+}
+
+function toggleSelectAll() {
+  // 获取当前过滤后可见的行
+  const visibleIds = getVisibleAlertIds();
+  if (selectedAlertIds.size === visibleIds.length && visibleIds.length > 0) {
+    // 已全选，取消全选
+    selectedAlertIds.clear();
+  } else {
+    // 全选所有可见的
+    selectedAlertIds.clear();
+    visibleIds.forEach(id => selectedAlertIds.add(id));
+  }
+  // 更新 checkbox 状态
+  visibleIds.forEach(id => {
+    const cb = document.getElementById('cb-' + id);
+    if (cb) cb.checked = selectedAlertIds.has(id);
+  });
+  updateBatchButtons();
+}
+
+function getVisibleAlertIds() {
+  // 返回当前过滤后可见的 alert merged event IDs
+  const ids = [];
+  for (const r of alertResults) {
+    if (filterVideo && r.video_id !== filterVideo) continue;
+    if (filterEvent && r.event_type !== filterEvent) continue;
+    const status = r.effective_status || (r.is_false_positive ? 'false_positive' : 'correct');
+    if (alertFilter === 'fp' && status !== 'false_positive') continue;
+    if (alertFilter === 'ok' && status !== 'correct') continue;
+    if (alertFilter === 'ignored' && status !== 'ignored') continue;
+    ids.push(r.id);
+  }
+  return ids;
+}
+
+function updateBatchButtons() {
+  const visibleIds = getVisibleAlertIds();
+  const count = selectedAlertIds.size;
+  const selAllBtn = document.getElementById('btn-select-all');
+  const ignoreBtn = document.getElementById('btn-batch-ignore');
+  const deleteBtn = document.getElementById('btn-batch-delete');
+  const countEl = document.getElementById('batch-count');
+
+  if (count > 0) {
+    selAllBtn.textContent = count === visibleIds.length && visibleIds.length > 0 ? '取消全选' : '全选';
+    ignoreBtn.disabled = false;
+    deleteBtn.disabled = false;
+    countEl.style.display = '';
+    countEl.textContent = `已选 ${count} 项`;
+  } else {
+    selAllBtn.textContent = '全选';
+    ignoreBtn.disabled = true;
+    deleteBtn.disabled = true;
+    countEl.style.display = 'none';
+  }
+}
+
+async function batchIgnoreSelected() {
+  if (selectedAlertIds.size === 0) return;
+  if (!confirm(`确定要将 ${selectedAlertIds.size} 条告警标记为「忽略」吗？忽略的告警不计入精确率。`)) return;
+
+  const ids = Array.from(selectedAlertIds);
+  const batchBtn = document.getElementById('btn-batch-ignore');
+  batchBtn.disabled = true;
+  batchBtn.textContent = '处理中…';
+
+  try {
+    const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/merged-events/batch-status', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ merged_ids: ids, manual_status: 'ignored' })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert('批量忽略失败: ' + (data.error || '未知'));
+      return;
+    }
+    // 更新本地数据
+    for (const r of alertResults) {
+      if (ids.includes(r.id)) {
+        r.manual_status = 'ignored';
+        r.effective_status = 'ignored';
+      }
+    }
+    selectedAlertIds.clear();
+    updateBatchButtons();
+    renderAlertGrid();
+    recomputeMetrics();
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+  } finally {
+    batchBtn.disabled = false;
+    batchBtn.textContent = '批量忽略';
+  }
+}
+
+async function batchDeleteSelected() {
+  if (selectedAlertIds.size === 0) return;
+  if (!confirm(`确定要删除 ${selectedAlertIds.size} 条告警记录吗？此操作不可撤销，删除后这些告警将不再出现在评测结果中。`)) return;
+
+  const ids = Array.from(selectedAlertIds);
+  const batchBtn = document.getElementById('btn-batch-delete');
+  batchBtn.disabled = true;
+  batchBtn.textContent = '删除中…';
+
+  try {
+    const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/merged-events/batch-delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ merged_ids: ids })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert('批量删除失败: ' + (data.error || '未知'));
+      return;
+    }
+    // 从本地数据中移除
+    alertResults = alertResults.filter(r => !ids.includes(r.id));
+    selectedAlertIds.clear();
+    updateBatchButtons();
+    renderAlertGrid();
+    recomputeMetrics();
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+  } finally {
+    batchBtn.disabled = false;
+    batchBtn.textContent = '批量删除';
   }
 }
 

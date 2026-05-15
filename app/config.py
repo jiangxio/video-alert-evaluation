@@ -17,7 +17,7 @@ class Config:
     UPLOAD_FOLDER = str(UPLOAD_FOLDER)
     UPLOAD_VIDEOS = str(UPLOAD_VIDEOS)
     UPLOAD_ALERTS = str(UPLOAD_ALERTS)
-    MAX_CONTENT_LENGTH = 1200 * 1024 * 1024  # 1.2GB max upload
+    MAX_CONTENT_LENGTH = int(1.3 * 1024 * 1024 * 1024)  # 1.3GB max upload
 
     # 项目路径
     PROJECT_ROOT = str(BASE_DIR)

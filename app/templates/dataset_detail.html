@@ -517,11 +517,17 @@ async function uploadFiles(files) {
 }
 
 // ── 关闭 Modal（点击背景） ────────────────────────────────────────────────────
-document.getElementById('detail-modal').addEventListener('click', function(e) {
+document.getElementById('detail-modal').addEventListener('mousedown', function(e) {
   if (e.target === this) closeDetailModal();
 });
-document.getElementById('ocr-modal').addEventListener('click', function(e) {
+document.querySelector('#detail-modal .modal-box').addEventListener('mousedown', function(e) {
+  e.stopPropagation();
+});
+document.getElementById('ocr-modal').addEventListener('mousedown', function(e) {
   if (e.target === this) closeOcrModal();
+});
+document.querySelector('#ocr-modal .ocr-modal-box').addEventListener('mousedown', function(e) {
+  e.stopPropagation();
 });
 
 function escHtml(s) {

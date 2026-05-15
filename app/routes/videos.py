@@ -27,7 +27,7 @@ def allowed_file(filename, allowed_extensions):
 
 def extract_video_id(filename):
     """从文件名提取视频ID"""
-    match = re.match(r'(\d{2,3})', filename)
+    match = re.match(r'(\d{10})(?=\D|$)', Path(filename).stem)
     if match:
         return match.group(1)
     return None
@@ -318,10 +318,11 @@ def upload_video():
     duration = get_video_duration(str(save_path))
     already_watermarked = request.form.get('already_watermarked') in ('1', 'true', 'on')
 
+    video_id_confirmed = 1 if already_watermarked and video_id else 0
     cursor.execute('''
-        INSERT INTO videos (filename, original_path, video_id, file_size, duration)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (filename, str(save_path), video_id, file_size, duration))
+        INSERT INTO videos (filename, original_path, video_id, file_size, duration, video_id_confirmed)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (filename, str(save_path), video_id, file_size, duration, video_id_confirmed))
     video_db_id = cursor.lastrowid
 
     if already_watermarked:

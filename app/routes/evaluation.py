@@ -127,6 +127,10 @@ def list_tasks():
             cursor.execute('SELECT name FROM datasets WHERE id = ?', (t['dataset_id'],))
             d = cursor.fetchone()
             t['dataset_name'] = d['name'] if d else None
+        if t.get('alert_eval_set_id'):
+            cursor.execute('SELECT name FROM eval_alert_sets WHERE id = ?', (t['alert_eval_set_id'],))
+            d = cursor.fetchone()
+            t['alert_eval_set_name'] = d['name'] if d else None
         if t.get('eval_set_id'):
             cursor.execute('SELECT name FROM eval_video_sets WHERE id = ?', (t['eval_set_id'],))
             d = cursor.fetchone()
@@ -161,8 +165,9 @@ def create_task():
         return jsonify({'error': '任务名称不能为空'}), 400
 
     dataset_id = data.get('dataset_id')
-    if not dataset_id:
-        return jsonify({'error': '请选择告警数据集'}), 400
+    alert_eval_set_id = data.get('alert_eval_set_id')
+    if not dataset_id and not alert_eval_set_id:
+        return jsonify({'error': '请选择告警数据集或告警评测集'}), 400
 
     eval_set_id = data.get('eval_set_id')
     if not eval_set_id:
@@ -171,9 +176,15 @@ def create_task():
     db = get_db()
     cursor = db.cursor()
 
-    cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
-    if not cursor.fetchone():
-        return jsonify({'error': '告警数据集不存在'}), 404
+    if dataset_id:
+        cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': '告警数据集不存在'}), 404
+
+    if alert_eval_set_id:
+        cursor.execute('SELECT id FROM eval_alert_sets WHERE id = ?', (alert_eval_set_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': '告警评测集不存在'}), 404
 
     cursor.execute('SELECT id FROM eval_video_sets WHERE id = ?', (eval_set_id,))
     if not cursor.fetchone():
@@ -181,13 +192,14 @@ def create_task():
 
     cursor.execute('''
         INSERT INTO eval_tasks
-        (name, notes, dataset_id, eval_set_id, merge_interval_sec, event_start_sec,
+        (name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec,
          event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         name,
         data.get('notes', ''),
         dataset_id,
+        alert_eval_set_id,
         eval_set_id,
         data.get('merge_interval_sec', 5.0),
         0,
@@ -274,6 +286,7 @@ def _analyze_merged_events(task_id):
         return None
 
     dataset_id = task['dataset_id']
+    alert_eval_set_id = task['alert_eval_set_id'] if 'alert_eval_set_id' in task.keys() else None
     eval_set_id = task['eval_set_id']
     merge_interval = task['merge_interval_sec']
     ev_interval = task['event_interval_sec']
@@ -296,8 +309,8 @@ def _analyze_merged_events(task_id):
     if not eval_video_db_ids:
         return {'merged_alerts': [], 'gt_events': []}
 
-    # ── 获取告警数据集中所有已 OCR 的图片 ─────────────────────────────────────
-    cursor.execute('''
+    # ── 获取告警来源中的所有已 OCR 图片 ───────────────────────────────────────
+    alert_sql = '''
         SELECT a.id, a.filename, a.file_path, a.event_label, a.alert_type,
                o.video_id, o.timestamp_seconds
         FROM alert_images a
@@ -308,10 +321,29 @@ def _analyze_merged_events(task_id):
                 SELECT MAX(id) FROM ocr_results GROUP BY alert_image_id
             )
         ) o ON o.alert_image_id = a.id
-        WHERE a.dataset_id = ?
-          AND o.video_id IS NOT NULL
+        WHERE o.video_id IS NOT NULL
           AND o.timestamp_seconds IS NOT NULL
-    ''', (dataset_id,))
+    '''
+    alert_params = []
+    if alert_eval_set_id:
+        cursor.execute('SELECT dataset_ids FROM eval_alert_sets WHERE id = ?', (alert_eval_set_id,))
+        alert_set = cursor.fetchone()
+        if not alert_set:
+            return {'merged_alerts': [], 'gt_events': []}
+        try:
+            alert_dataset_ids = json.loads(alert_set['dataset_ids'] or '[]')
+        except Exception:
+            alert_dataset_ids = []
+        if not alert_dataset_ids:
+            return {'merged_alerts': [], 'gt_events': []}
+        placeholders = ','.join('?' for _ in alert_dataset_ids)
+        alert_sql += f' AND a.dataset_id IN ({placeholders})'
+        alert_params.extend(alert_dataset_ids)
+    else:
+        alert_sql += ' AND a.dataset_id = ?'
+        alert_params.append(dataset_id)
+
+    cursor.execute(alert_sql, alert_params)
     alert_images = [dict(r) for r in cursor.fetchall()]
 
     # ── 按 (video_id, event_type) 分组 ────────────────────────────────────────

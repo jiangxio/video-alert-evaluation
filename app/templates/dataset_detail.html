@@ -35,6 +35,7 @@
     cursor:pointer; border:2px solid transparent; border-radius:6px;
     overflow:hidden; transition:border-color .15s;
     background:#f5f5f5;
+    position:relative;
   }
   .img-cell:hover { border-color:#3498db; }
   .img-cell img {
@@ -79,6 +80,7 @@
   .btn-danger:hover { background:#c0392b; }
   .btn-secondary { background:#7f8c8d; }
   .btn-secondary:hover { background:#636e72; }
+  .action-select { padding:0.35rem 0.5rem; border:1px solid #ccc; border-radius:4px; font-size:0.88rem; background:#fff; }
 </style>
 
 <div class="breadcrumb">
@@ -108,6 +110,15 @@
       失败时停止
     </label>
     <span id="ocr-summary"></span>
+  </div>
+
+  <div class="toolbar" style="background:#f8f9fa;padding:0.7rem;border-radius:6px;">
+    <span style="color:#555;">标注筛选：</span>
+    <select id="labelFilter" class="action-select" onchange="filterImages()">
+      <option value="all">全部图片</option>
+      <option value="unlabeled">未标注</option>
+      <option value="labeled">已标注</option>
+    </select>
   </div>
 
   <div class="img-grid" id="img-grid">
@@ -176,7 +187,18 @@ let ocrPollTimer = null;
 async function loadImages() {
   const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/images`);
   allImages = await res.json();
-  renderGrid(allImages);
+  filterImages();
+}
+
+function filterImages() {
+  const mode = document.getElementById('labelFilter').value;
+  const filtered = allImages.filter(img => {
+    const hasLabel = !!(img.event_label || img.alert_type);
+    if (mode === 'unlabeled') return !hasLabel;
+    if (mode === 'labeled') return hasLabel;
+    return true;
+  });
+  renderGrid(filtered);
 }
 
 function renderGrid(images) {

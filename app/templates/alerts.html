@@ -11,12 +11,29 @@
   .dataset-card {
     background:white; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.1);
     padding:1.2rem; display:flex; flex-direction:column; gap:0.5rem;
+    position:relative;
   }
+  .dataset-card.selected { box-shadow:0 0 0 2px rgba(52,152,219,0.3), 0 2px 8px rgba(0,0,0,.1); }
+  .dataset-checkbox { position:absolute; top:10px; right:10px; width:18px; height:18px; }
   .dataset-card h3 { margin:0; font-size:1.05rem; color:#2c3e50; }
   .dataset-meta { font-size:0.82rem; color:#888; }
   .dataset-notes { font-size:0.88rem; color:#555; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .dataset-count { font-size:0.88rem; color:#3498db; font-weight:600; }
   .dataset-actions { display:flex; gap:0.5rem; margin-top:0.4rem; }
+  .section-title { display:flex; justify-content:space-between; align-items:center; margin:1.8rem 0 1rem; }
+  .section-title h3 { margin:0; font-size:1.1rem; color:#2c3e50; }
+  .eval-set-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:1.2rem; }
+  .eval-set-card {
+    background:white; border-radius:8px; border:1px solid #e6eef5;
+    padding:1rem; display:flex; flex-direction:column; gap:0.45rem;
+  }
+  .eval-set-card h4 { margin:0; font-size:1rem; color:#2c3e50; }
+  .eval-set-actions { display:flex; gap:0.5rem; margin-top:0.3rem; flex-wrap:wrap; }
+  .eval-toolbar {
+    display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;
+    background:#f8f9fa; padding:0.7rem; border-radius:6px; margin:1rem 0;
+  }
+  .action-select { padding:0.35rem 0.5rem; border:1px solid #ccc; border-radius:4px; font-size:0.88rem; background:#fff; }
 
   .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
   .btn-danger { background:#e74c3c; }
@@ -71,6 +88,31 @@
       <p style="font-size:0.88rem;">点击右上角"新建数据集"开始</p>
     </div>
   </div>
+
+  <div class="eval-toolbar">
+    <span style="color:#555;font-size:0.88rem;">评测集操作：</span>
+    <select id="evalSetSelect" class="action-select">
+      <option value="">选择评测集...</option>
+    </select>
+    <button class="btn btn-sm" onclick="addDatasetsToEvalSet()">添加</button>
+    <button class="btn btn-sm btn-secondary" onclick="removeDatasetsFromEvalSet()">移出</button>
+    <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.85rem;cursor:pointer;">
+      <input type="checkbox" id="selectAllDatasets" onchange="toggleSelectAllDatasets()"> 全选数据集
+    </label>
+    <span id="selectedDatasetCount" style="font-size:0.88rem;color:#666;"></span>
+  </div>
+
+  <div class="section-title">
+    <h3>告警评测集</h3>
+    <button class="btn btn-sm btn-success" onclick="openCreateEvalSetModal()">+ 新建评测集</button>
+  </div>
+  <div id="eval-set-container">
+    <p id="eval-set-loading-msg">加载中…</p>
+    <div class="eval-set-grid" id="eval-set-grid"></div>
+    <div id="eval-set-empty-state" style="display:none;text-align:center;color:#aaa;padding:1.5rem;">
+      暂无评测集。先选择上方数据集，再点击“新建评测集”。
+    </div>
+  </div>
 </div>
 
 <!-- 新建数据集 Modal -->
@@ -103,14 +145,37 @@
     </div>
   </div>
 </div>
+
+<!-- 新建评测集 Modal -->
+<div class="modal-bg" id="create-eval-set-modal">
+  <div class="modal-box">
+    <h3>新建告警评测集</h3>
+    <div class="form-group">
+      <label>名称 <span style="color:#e74c3c">*</span></label>
+      <input type="text" id="new-eval-set-name" placeholder="输入评测集名称">
+    </div>
+    <div class="form-group">
+      <label>备注</label>
+      <textarea id="new-eval-set-notes" placeholder="可选备注信息"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeCreateEvalSetModal()">取消</button>
+      <button class="btn btn-success" onclick="createEvalSet()">创建</button>
+    </div>
+  </div>
+</div>
 <style>
 @keyframes pulse { from { opacity:.5; } to { opacity:1; } }
 </style>
 
 <script>
+let allDatasets = [];
+let selectedDatasetIds = new Set();
+
 async function loadDatasets() {
   const res = await fetch('/alerts/api/datasets');
   const datasets = await res.json();
+  allDatasets = datasets;
 
   document.getElementById('loading-msg').style.display = 'none';
   const grid = document.getElementById('dataset-grid');
@@ -123,8 +188,9 @@ async function loadDatasets() {
   for (const d of datasets) {
     const date = new Date(d.created_at).toLocaleDateString('zh-CN');
     const card = document.createElement('div');
-    card.className = 'dataset-card';
+    card.className = 'dataset-card' + (selectedDatasetIds.has(d.id) ? ' selected' : '');
     card.innerHTML = `
+      <input type="checkbox" class="dataset-checkbox" ${selectedDatasetIds.has(d.id) ? 'checked' : ''} data-id="${d.id}">
       <h3>${escHtml(d.name)}</h3>
       <div class="dataset-meta">${date}</div>
       <div class="dataset-count">共 ${d.image_count} 张图片</div>
@@ -135,6 +201,114 @@ async function loadDatasets() {
       </div>
     `;
     grid.appendChild(card);
+  }
+  grid.querySelectorAll('.dataset-checkbox').forEach(input => {
+    input.addEventListener('change', () => {
+      const id = parseInt(input.dataset.id, 10);
+      if (input.checked) selectedDatasetIds.add(id);
+      else selectedDatasetIds.delete(id);
+      updateSelectedDatasetCount();
+      loadDatasets();
+    });
+  });
+  updateSelectedDatasetCount();
+}
+
+async function loadEvalSets() {
+  const res = await fetch('/alerts/api/eval-sets');
+  const data = await res.json();
+  const sets = data.sets || [];
+
+  document.getElementById('eval-set-loading-msg').style.display = 'none';
+  const grid = document.getElementById('eval-set-grid');
+  const empty = document.getElementById('eval-set-empty-state');
+  const select = document.getElementById('evalSetSelect');
+
+  grid.innerHTML = '';
+  select.innerHTML = '<option value="">选择评测集...</option>' +
+    sets.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
+  if (!sets.length) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+
+  for (const s of sets) {
+    const date = new Date(s.created_at).toLocaleDateString('zh-CN');
+    const card = document.createElement('div');
+    card.className = 'eval-set-card';
+    card.innerHTML = `
+      <h4>${escHtml(s.name)}</h4>
+      <div class="dataset-meta">${date}</div>
+      <div class="dataset-count">共 ${s.dataset_count || 0} 个数据集 · ${s.image_count || 0} 张图片</div>
+      ${s.dataset_names?.length ? `<div class="dataset-notes" title="${escHtml(s.dataset_names.join('、'))}">${escHtml(s.dataset_names.join('、'))}</div>` : ''}
+      ${s.notes ? `<div class="dataset-notes" title="${escHtml(s.notes)}">${escHtml(s.notes)}</div>` : ''}
+      <div class="eval-set-actions">
+        <button class="btn btn-sm js-rename-eval-set" data-id="${s.id}" data-name="${escHtml(s.name)}">修改</button>
+        <button class="btn btn-sm btn-danger js-delete-eval-set" data-id="${s.id}" data-name="${escHtml(s.name)}">删除</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+  grid.querySelectorAll('.js-rename-eval-set').forEach(btn => {
+    btn.addEventListener('click', () => renameEvalSet(btn.dataset.id, btn.dataset.name));
+  });
+  grid.querySelectorAll('.js-delete-eval-set').forEach(btn => {
+    btn.addEventListener('click', () => deleteEvalSet(btn.dataset.id, btn.dataset.name));
+  });
+}
+
+function updateSelectedDatasetCount() {
+  const count = selectedDatasetIds.size;
+  document.getElementById('selectedDatasetCount').textContent = count ? `已选 ${count} 个数据集` : '';
+}
+
+function toggleSelectAllDatasets() {
+  const checked = document.getElementById('selectAllDatasets').checked;
+  if (checked) {
+    allDatasets.forEach(d => selectedDatasetIds.add(d.id));
+  } else {
+    selectedDatasetIds.clear();
+  }
+  loadDatasets();
+}
+
+async function addDatasetsToEvalSet() {
+  const setId = document.getElementById('evalSetSelect').value;
+  if (!setId) { alert('请选择评测集'); return; }
+  if (!selectedDatasetIds.size) { alert('请至少选择一个数据集'); return; }
+  const res = await fetch('/alerts/api/eval-sets/batch-add', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({set_id: parseInt(setId, 10), dataset_ids: Array.from(selectedDatasetIds)})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    alert(`成功添加 ${data.added_count} 个数据集到评测集`);
+    selectedDatasetIds.clear();
+    document.getElementById('selectAllDatasets').checked = false;
+    loadDatasets();
+    loadEvalSets();
+  } else {
+    alert(data.error || '添加失败');
+  }
+}
+
+async function removeDatasetsFromEvalSet() {
+  const setId = document.getElementById('evalSetSelect').value;
+  if (!setId) { alert('请选择评测集'); return; }
+  if (!selectedDatasetIds.size) { alert('请至少选择一个数据集'); return; }
+  const res = await fetch('/alerts/api/eval-sets/batch-remove', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({set_id: parseInt(setId, 10), dataset_ids: Array.from(selectedDatasetIds)})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    alert(`成功移出 ${data.removed_count} 个数据集`);
+    selectedDatasetIds.clear();
+    document.getElementById('selectAllDatasets').checked = false;
+    loadDatasets();
+    loadEvalSets();
+  } else {
+    alert(data.error || '移出失败');
   }
 }
 
@@ -202,21 +376,37 @@ async function createDataset() {
     const form = new FormData();
     form.append('file', zipFile);
 
-    const ir = await fetch(`/alerts/api/datasets/${datasetId}/import`, {
-      method: 'POST', body: form
-    });
-    const idata = await ir.json();
+    let ir;
+    let idata = {};
+    try {
+      ir = await fetch(`/alerts/api/datasets/${datasetId}/import`, {
+        method: 'POST', body: form
+      });
+      try {
+        idata = await ir.json();
+      } catch (e) {
+        idata = {};
+      }
+    } catch (e) {
+      idata = {error: e.message || '请求失败'};
+    }
 
     document.getElementById('import-bar').style.animation = 'none';
     document.getElementById('import-bar').style.width = '100%';
-    document.getElementById('import-bar').style.background = ir.ok ? '#27ae60' : '#e74c3c';
+    document.getElementById('import-bar').style.background = ir && ir.ok ? '#27ae60' : '#e74c3c';
 
-    if (ir.ok) {
+    if (ir && ir.ok) {
       let msg = `✔ 成功导入 ${idata.imported} 张图片`;
       if (idata.skipped > 0) msg += `，跳过 ${idata.skipped} 张（重名）`;
       document.getElementById('import-status').textContent = msg;
     } else {
-      document.getElementById('import-status').textContent = '✘ 导入失败: ' + (idata.error || '未知');
+      let errorMsg = idata.error || '未知';
+      if (ir && ir.status === 413) {
+        errorMsg = '文件超过服务器上传限制';
+      } else if (ir && ir.statusText) {
+        errorMsg = idata.error || ir.statusText;
+      }
+      document.getElementById('import-status').textContent = '✘ 导入失败: ' + errorMsg;
     }
 
     // 等 1.2s 让用户看到结果再关闭
@@ -225,6 +415,66 @@ async function createDataset() {
 
   closeCreateModal();
   loadDatasets();
+}
+
+function openCreateEvalSetModal() {
+  document.getElementById('new-eval-set-name').value = '';
+  document.getElementById('new-eval-set-notes').value = '';
+  document.getElementById('create-eval-set-modal').classList.add('open');
+  setTimeout(() => document.getElementById('new-eval-set-name').focus(), 50);
+}
+
+function closeCreateEvalSetModal() {
+  document.getElementById('create-eval-set-modal').classList.remove('open');
+}
+
+async function createEvalSet() {
+  const name = document.getElementById('new-eval-set-name').value.trim();
+  if (!name) { alert('请输入评测集名称'); return; }
+  const notes = document.getElementById('new-eval-set-notes').value.trim();
+
+  const res = await fetch('/alerts/api/eval-sets', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, notes, dataset_ids: Array.from(selectedDatasetIds)})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    closeCreateEvalSetModal();
+    selectedDatasetIds.clear();
+    document.getElementById('selectAllDatasets').checked = false;
+    loadDatasets();
+    loadEvalSets();
+  } else {
+    alert(data.error || '创建失败');
+  }
+}
+
+async function renameEvalSet(id, oldName) {
+  const newName = prompt('请输入新的评测集名称:', oldName || '');
+  if (!newName || !newName.trim()) return;
+  const res = await fetch(`/alerts/api/eval-sets/${id}`, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: newName.trim()})
+  });
+  if (res.ok) {
+    loadEvalSets();
+  } else {
+    const data = await res.json();
+    alert(data.error || '修改失败');
+  }
+}
+
+async function deleteEvalSet(id, name) {
+  if (!confirm(`确定要删除评测集 "${name || ''}" 吗？\n注意：只会删除评测集本身，不会删除图片。`)) return;
+  const res = await fetch(`/alerts/api/eval-sets/${id}`, {method:'DELETE'});
+  if (res.ok) {
+    loadEvalSets();
+  } else {
+    const data = await res.json();
+    alert(data.error || '删除失败');
+  }
 }
 
 async function deleteDataset(id, btn) {
@@ -260,9 +510,19 @@ document.getElementById('create-modal').addEventListener('mousedown', function(e
 document.querySelector('#create-modal .modal-box').addEventListener('mousedown', function(e) {
   e.stopPropagation();
 });
+document.getElementById('create-eval-set-modal').addEventListener('mousedown', function(e) {
+  if (e.target === this) closeCreateEvalSetModal();
+});
+document.querySelector('#create-eval-set-modal .modal-box').addEventListener('mousedown', function(e) {
+  e.stopPropagation();
+});
 document.getElementById('new-name').addEventListener('keydown', e => {
   if (e.key === 'Enter') createDataset();
   if (e.key === 'Escape') closeCreateModal();
+});
+document.getElementById('new-eval-set-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') createEvalSet();
+  if (e.key === 'Escape') closeCreateEvalSetModal();
 });
 
 function escHtml(s) {
@@ -270,5 +530,6 @@ function escHtml(s) {
 }
 
 loadDatasets();
+loadEvalSets();
 </script>
 {% endblock %}

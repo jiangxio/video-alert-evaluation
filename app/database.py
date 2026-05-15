@@ -119,6 +119,23 @@ def init_db():
         )
     ''')
 
+    # 告警评测集表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS eval_alert_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            notes TEXT,
+            dataset_ids TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 为 eval_alert_sets 追加 dataset_ids 列（兼容之前按图片保存的版本）
+    try:
+        cursor.execute('ALTER TABLE eval_alert_sets ADD COLUMN dataset_ids TEXT')
+    except Exception:
+        pass  # 列已存在
+
     # 视频事件标注表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS events (
@@ -170,6 +187,7 @@ def init_db():
             name TEXT NOT NULL,
             notes TEXT,
             dataset_id INTEGER REFERENCES datasets(id),
+            alert_eval_set_id INTEGER REFERENCES eval_alert_sets(id),
             eval_set_id INTEGER REFERENCES eval_video_sets(id),
             merge_interval_sec REAL DEFAULT 5.0,
             event_start_sec REAL DEFAULT 5.0,
@@ -185,6 +203,12 @@ def init_db():
     # 为 eval_tasks 追加 eval_set_id 列（兼容已有数据）
     try:
         cursor.execute('ALTER TABLE eval_tasks ADD COLUMN eval_set_id INTEGER REFERENCES eval_video_sets(id)')
+    except Exception:
+        pass  # 列已存在
+
+    # 为 eval_tasks 追加 alert_eval_set_id 列（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE eval_tasks ADD COLUMN alert_eval_set_id INTEGER REFERENCES eval_alert_sets(id)')
     except Exception:
         pass  # 列已存在
 
@@ -293,6 +317,7 @@ def init_db():
         'finalized INTEGER DEFAULT 0',
         'accuracy REAL',
         'recall REAL',
+        'avg_fp_per_hour REAL',
         'event_metrics TEXT',
     ]:
         try:

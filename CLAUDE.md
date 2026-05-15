@@ -32,8 +32,8 @@ python scripts/ocr_easy.py report/402_1774925112_103.png
 
 ### Web Platform
 ```bash
-pip install -r requirements.txt
-python run.py    # Starts Flask on 0.0.0.0:8080
+source .venv/bin/activate            # 进入虚拟环境
+python run.py                        # Starts Flask on 0.0.0.0:8080
 ```
 
 ## Architecture

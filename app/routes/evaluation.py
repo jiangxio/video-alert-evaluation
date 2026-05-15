@@ -384,6 +384,16 @@ def _analyze_merged_events(task_id):
     ''', eval_video_db_ids)
     gt_events_raw = [dict(r) for r in cursor.fetchall()]
 
+    # 同一 video_id 可能对应多条 videos 记录，去重避免 GT 事件重复展示
+    seen = set()
+    gt_events_dedup = []
+    for ev in gt_events_raw:
+        key = (ev.get('video_id'), ev.get('event_type'), ev.get('start_seconds'), ev.get('end_seconds'))
+        if key not in seen:
+            seen.add(key)
+            gt_events_dedup.append(ev)
+    gt_events_raw = gt_events_dedup
+
     # ── 为每个 GT 事件找中间帧 ─────────────────────────────────────────────────
     gt_events = []
     for ev in gt_events_raw:
@@ -683,6 +693,7 @@ def get_results(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     # ── 告警检测结果 ───────────────────────────────────────────────────────────
+    # 注意：同一个 video_id 可能在 videos 表中有多条记录，先子查询去重
     cursor.execute('''
         SELECT m.id, m.video_id, m.event_type, m.image_ids,
                m.representative_image_id, m.ts_start, m.ts_end,
@@ -691,7 +702,10 @@ def get_results(task_id):
                o.timestamp_seconds
         FROM eval_merged_events m
         LEFT JOIN alert_images a ON a.id = m.representative_image_id
-        LEFT JOIN videos v ON v.video_id = m.video_id
+        LEFT JOIN (
+            SELECT id, video_id FROM videos
+            WHERE id IN (SELECT MAX(id) FROM videos GROUP BY video_id)
+        ) v ON v.video_id = m.video_id
         LEFT JOIN (
             SELECT alert_image_id, timestamp_seconds
             FROM ocr_results
@@ -709,10 +723,14 @@ def get_results(task_id):
         r['effective_status'] = _get_effective_status(r)
 
     # ── GT 事件得分 ────────────────────────────────────────────────────────────
+    # 注意：同一个 video_id 可能在 videos 表中有多条记录，先子查询去重
     cursor.execute('''
         SELECT g.*, v.id as video_db_id
         FROM eval_gt_events g
-        LEFT JOIN videos v ON v.video_id = g.video_id
+        LEFT JOIN (
+            SELECT id, video_id FROM videos
+            WHERE id IN (SELECT MAX(id) FROM videos GROUP BY video_id)
+        ) v ON v.video_id = g.video_id
         WHERE g.task_id = ?
         ORDER BY g.video_id, g.event_type, g.start_sec
     ''', (task_id,))

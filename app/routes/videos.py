@@ -234,7 +234,7 @@ def list_watermarked_videos():
         query_params.extend([like, like])
 
     # 查询打水印视频，关联原视频信息和事件类型
-    # 只取每个原始视频的最新打水印版本
+    # 只取每个原始视频的最新打水印版本（用 MAX(id) 避免 created_at 相同导致重复）
     cursor.execute(f'''
         SELECT
             w.id as wm_id, w.filename as wm_filename, w.output_path, w.file_size as wm_file_size,
@@ -244,10 +244,10 @@ def list_watermarked_videos():
         FROM watermarked_videos w
         JOIN videos v ON v.id = w.original_video_id
         LEFT JOIN events e ON e.video_db_id = v.id
-        WHERE w.created_at = (
-            SELECT MAX(w2.created_at)
+        WHERE w.id IN (
+            SELECT MAX(w2.id)
             FROM watermarked_videos w2
-            WHERE w2.original_video_id = w.original_video_id
+            GROUP BY w2.original_video_id
         )
         {where_conditions}
         GROUP BY w.id

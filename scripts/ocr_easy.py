@@ -77,6 +77,8 @@ def parse_watermark_text(text):
     cleaned = re.sub(r'[|lI]', ' ', cleaned)
     # 把字母 O 替换成数字 0（OCR 容易把 0 认成 O）
     cleaned = re.sub(r'[Oo]', '0', cleaned)
+    # 把逗号归一化为点（OCR 容易把小数点 . 认成逗号 ,）
+    cleaned = re.sub(r',', '.', cleaned)
 
     # ── 时间戳清洗（多阶段，按 OCR 常见误识别逐一修正） ──────────────────────
     # 阶段1: 合并连续标点（如 ".:" ":." ".."）
@@ -115,8 +117,20 @@ def parse_watermark_text(text):
             cleaned
         )
 
-    # 阶段6: 兜底C — 冒号被OCR识别为数字3（如 00331331.333 → 00:31:31.333）
-    m = re.search(r'\b(\d{2})3(\d{2})3(\d{2})\.(\d{3})\b', cleaned)
+    # 阶段6: 兜底C — 冒号被OCR识别为数字2或3（如 00331331.333 → 00:31:31.333, 00331222.133 → 00:31:22.133）
+    m = re.search(r'\b(\d{2})[23](\d{2})[23](\d{2})\.(\d{3})\b', cleaned)
+    if m:
+        hh, mm, ss, ms = m.group(1), m.group(2), m.group(3), m.group(4)
+        hh_int, mm_int, ss_int = int(hh), int(mm), int(ss)
+        if hh_int < 24 and mm_int < 60 and ss_int < 60:
+            cleaned = re.sub(
+                re.escape(m.group(0)),
+                f'{hh}:{mm}:{ss}.{ms}',
+                cleaned
+            )
+
+    # 阶段7: 兜底D — 第一个冒号变空格、第二个冒号变点（如 00 34.50.133 → 00:34:50.133）
+    m = re.search(r'\b(\d{2})\s+(\d{2})\.(\d{2})\.(\d{3})\b', cleaned)
     if m:
         hh, mm, ss, ms = m.group(1), m.group(2), m.group(3), m.group(4)
         hh_int, mm_int, ss_int = int(hh), int(mm), int(ss)

@@ -18,9 +18,9 @@ DEFAULT_CONFIG = {
     'font_size': 32,
     'font_color': 'white',
     'box_color': 'black',
-    'box_border_width': 0,
-    'watermark_x': 0,
-    'watermark_y': 0,
+    'box_border_width': 12,
+    'watermark_x': 20,
+    'watermark_y': 20,
     'video_codec': 'libx264',
     'crf': 23,
     'preset': 'medium',
@@ -44,26 +44,6 @@ _FONT_CANDIDATES = {
         'C:/Windows/Fonts/calibrib.ttf',
     ],
 }
-
-
-_FFMPEG = None  # 延迟查找
-
-
-def find_ffmpeg():
-    """查找 ffmpeg，优先使用 conda 环境中的版本（支持 drawtext）"""
-    global _FFMPEG
-    if _FFMPEG is not None:
-        return _FFMPEG
-    candidates = [
-        Path.home() / 'miniconda3' / 'envs' / 'pingce' / 'bin' / 'ffmpeg',
-        Path.home() / 'anaconda3' / 'envs' / 'pingce' / 'bin' / 'ffmpeg',
-    ]
-    for p in candidates:
-        if p.exists():
-            _FFMPEG = str(p)
-            return _FFMPEG
-    _FFMPEG = 'ffmpeg'
-    return _FFMPEG
 
 
 def find_font():
@@ -224,7 +204,7 @@ def build_ffmpeg_cmd(input_path, output_path, video_id,
     has_audio = _has_audio_stream(input_path)
 
     cmd = [
-        find_ffmpeg(), '-y',
+        'ffmpeg', '-y',
         '-i', _to_ffmpeg_path(input_path),
         '-vf', vf,
         '-c:v', config['video_codec'],

@@ -85,9 +85,15 @@
       <label>备注</label>
       <textarea id="new-notes" placeholder="可选备注信息"></textarea>
     </div>
-    <div class="form-group">
-      <label>选择告警数据集 <span style="color:#e74c3c">*</span></label>
-      <select id="new-dataset"></select>
+    <div class="form-row">
+      <div class="form-group">
+        <label>告警数据集</label>
+        <select id="new-dataset" onchange="onAlertSourceChanged('dataset')"></select>
+      </div>
+      <div class="form-group">
+        <label>告警评测集</label>
+        <select id="new-alert-eval-set" onchange="onAlertSourceChanged('eval_set')"></select>
+      </div>
     </div>
     <div class="form-group">
       <label>选择评测视频集 <span style="color:#e74c3c">*</span></label>
@@ -134,6 +140,7 @@
 
 <script>
 let datasets = [];
+let alert_eval_sets = [];
 let eval_sets = [];
 
 async function loadDatasets() {
@@ -146,6 +153,29 @@ async function loadDatasets() {
     opt.value = d.id;
     opt.textContent = `${d.name} (${d.image_count || 0}张图片)`;
     sel.appendChild(opt);
+  }
+}
+
+async function loadAlertEvalSets() {
+  const res = await fetch('/alerts/api/eval-sets');
+  const data = await res.json();
+  alert_eval_sets = data.sets || [];
+  const sel = document.getElementById('new-alert-eval-set');
+  sel.innerHTML = '<option value="">请选择告警评测集</option>';
+  for (const s of alert_eval_sets) {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.image_count || 0}张图片)`;
+    sel.appendChild(opt);
+  }
+}
+
+function onAlertSourceChanged(source) {
+  if (source === 'dataset' && document.getElementById('new-dataset').value) {
+    document.getElementById('new-alert-eval-set').value = '';
+  }
+  if (source === 'eval_set' && document.getElementById('new-alert-eval-set').value) {
+    document.getElementById('new-dataset').value = '';
   }
 }
 
@@ -194,7 +224,9 @@ async function loadTasks() {
     const card = document.createElement('div');
     card.className = 'task-card';
     const date = t.created_at ? new Date(t.created_at).toLocaleDateString('zh-CN') : '-';
-    const dsName = t.dataset_name || '-';
+    const alertSource = t.alert_eval_set_name
+      ? `告警评测集：${t.alert_eval_set_name}`
+      : `告警数据集：${t.dataset_name || '-'}`;
     const esName = t.eval_set_name || '-';
     let st = t.status || 'created';
     if (st === 'done' && t.finalized) {
@@ -202,7 +234,7 @@ async function loadTasks() {
     }
     card.innerHTML = `
       <h3>${escHtml(t.name)}</h3>
-      <div class="task-meta">${date} · 告警数据集：${escHtml(dsName)}<br>评测集：${escHtml(esName)}</div>
+      <div class="task-meta">${date} · ${escHtml(alertSource)}<br>视频评测集：${escHtml(esName)}</div>
       ${t.notes ? `<div class="task-notes" title="${escHtml(t.notes)}">${escHtml(t.notes)}</div>` : ''}
       <div class="task-status ${statusClass[st] || ''}">${statusText[st] || st}</div>
       <div style="margin-top:0.5rem;display:flex;gap:0.5rem;">
@@ -234,6 +266,7 @@ function openCreateModal() {
   document.getElementById('new-name').value = '';
   document.getElementById('new-notes').value = '';
   document.getElementById('new-dataset').value = '';
+  document.getElementById('new-alert-eval-set').value = '';
   document.getElementById('new-eval-set').value = '';
   document.getElementById('new-merge-interval').value = '5.0';
   document.getElementById('new-ev-interval').value = '10.0';
@@ -255,14 +288,16 @@ async function createTask() {
   const name = document.getElementById('new-name').value.trim();
   if (!name) { alert('请输入任务名称'); return; }
   const dataset_id = parseInt(document.getElementById('new-dataset').value || '0');
-  if (!dataset_id) { alert('请选择告警数据集'); return; }
+  const alert_eval_set_id = parseInt(document.getElementById('new-alert-eval-set').value || '0');
+  if (!dataset_id && !alert_eval_set_id) { alert('请选择告警数据集或告警评测集'); return; }
   const eval_set_id = parseInt(document.getElementById('new-eval-set').value || '0');
   if (!eval_set_id) { alert('请选择评测视频集'); return; }
 
   const payload = {
     name,
     notes: document.getElementById('new-notes').value.trim(),
-    dataset_id,
+    dataset_id: dataset_id || null,
+    alert_eval_set_id: alert_eval_set_id || null,
     eval_set_id,
     merge_interval_sec: parseFloat(document.getElementById('new-merge-interval').value),
     event_interval_sec: parseFloat(document.getElementById('new-ev-interval').value),
@@ -289,6 +324,7 @@ function escHtml(s) {
 }
 
 loadDatasets();
+loadAlertEvalSets();
 loadEvalSets();
 loadTasks();
 </script>

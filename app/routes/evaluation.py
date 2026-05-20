@@ -127,6 +127,10 @@ def list_tasks():
             cursor.execute('SELECT name FROM datasets WHERE id = ?', (t['dataset_id'],))
             d = cursor.fetchone()
             t['dataset_name'] = d['name'] if d else None
+        if t.get('alert_eval_set_id'):
+            cursor.execute('SELECT name FROM eval_alert_sets WHERE id = ?', (t['alert_eval_set_id'],))
+            d = cursor.fetchone()
+            t['alert_eval_set_name'] = d['name'] if d else None
         if t.get('eval_set_id'):
             cursor.execute('SELECT name FROM eval_video_sets WHERE id = ?', (t['eval_set_id'],))
             d = cursor.fetchone()
@@ -161,8 +165,9 @@ def create_task():
         return jsonify({'error': '任务名称不能为空'}), 400
 
     dataset_id = data.get('dataset_id')
-    if not dataset_id:
-        return jsonify({'error': '请选择告警数据集'}), 400
+    alert_eval_set_id = data.get('alert_eval_set_id')
+    if not dataset_id and not alert_eval_set_id:
+        return jsonify({'error': '请选择告警数据集或告警评测集'}), 400
 
     eval_set_id = data.get('eval_set_id')
     if not eval_set_id:
@@ -171,9 +176,15 @@ def create_task():
     db = get_db()
     cursor = db.cursor()
 
-    cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
-    if not cursor.fetchone():
-        return jsonify({'error': '告警数据集不存在'}), 404
+    if dataset_id:
+        cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': '告警数据集不存在'}), 404
+
+    if alert_eval_set_id:
+        cursor.execute('SELECT id FROM eval_alert_sets WHERE id = ?', (alert_eval_set_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': '告警评测集不存在'}), 404
 
     cursor.execute('SELECT id FROM eval_video_sets WHERE id = ?', (eval_set_id,))
     if not cursor.fetchone():
@@ -181,13 +192,14 @@ def create_task():
 
     cursor.execute('''
         INSERT INTO eval_tasks
-        (name, notes, dataset_id, eval_set_id, merge_interval_sec, event_start_sec,
+        (name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec,
          event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         name,
         data.get('notes', ''),
         dataset_id,
+        alert_eval_set_id,
         eval_set_id,
         data.get('merge_interval_sec', 5.0),
         0,
@@ -274,6 +286,7 @@ def _analyze_merged_events(task_id):
         return None
 
     dataset_id = task['dataset_id']
+    alert_eval_set_id = task['alert_eval_set_id'] if 'alert_eval_set_id' in task.keys() else None
     eval_set_id = task['eval_set_id']
     merge_interval = task['merge_interval_sec']
     ev_interval = task['event_interval_sec']
@@ -296,8 +309,8 @@ def _analyze_merged_events(task_id):
     if not eval_video_db_ids:
         return {'merged_alerts': [], 'gt_events': []}
 
-    # ── 获取告警数据集中所有已 OCR 的图片 ─────────────────────────────────────
-    cursor.execute('''
+    # ── 获取告警来源中的所有已 OCR 图片 ───────────────────────────────────────
+    alert_sql = '''
         SELECT a.id, a.filename, a.file_path, a.event_label, a.alert_type,
                o.video_id, o.timestamp_seconds
         FROM alert_images a
@@ -308,10 +321,29 @@ def _analyze_merged_events(task_id):
                 SELECT MAX(id) FROM ocr_results GROUP BY alert_image_id
             )
         ) o ON o.alert_image_id = a.id
-        WHERE a.dataset_id = ?
-          AND o.video_id IS NOT NULL
+        WHERE o.video_id IS NOT NULL
           AND o.timestamp_seconds IS NOT NULL
-    ''', (dataset_id,))
+    '''
+    alert_params = []
+    if alert_eval_set_id:
+        cursor.execute('SELECT dataset_ids FROM eval_alert_sets WHERE id = ?', (alert_eval_set_id,))
+        alert_set = cursor.fetchone()
+        if not alert_set:
+            return {'merged_alerts': [], 'gt_events': []}
+        try:
+            alert_dataset_ids = json.loads(alert_set['dataset_ids'] or '[]')
+        except Exception:
+            alert_dataset_ids = []
+        if not alert_dataset_ids:
+            return {'merged_alerts': [], 'gt_events': []}
+        placeholders = ','.join('?' for _ in alert_dataset_ids)
+        alert_sql += f' AND a.dataset_id IN ({placeholders})'
+        alert_params.extend(alert_dataset_ids)
+    else:
+        alert_sql += ' AND a.dataset_id = ?'
+        alert_params.append(dataset_id)
+
+    cursor.execute(alert_sql, alert_params)
     alert_images = [dict(r) for r in cursor.fetchall()]
 
     # ── 按 (video_id, event_type) 分组 ────────────────────────────────────────
@@ -351,6 +383,16 @@ def _analyze_merged_events(task_id):
         ORDER BY v.video_id, e.event_type, e.start_seconds
     ''', eval_video_db_ids)
     gt_events_raw = [dict(r) for r in cursor.fetchall()]
+
+    # 同一 video_id 可能对应多条 videos 记录，去重避免 GT 事件重复展示
+    seen = set()
+    gt_events_dedup = []
+    for ev in gt_events_raw:
+        key = (ev.get('video_id'), ev.get('event_type'), ev.get('start_seconds'), ev.get('end_seconds'))
+        if key not in seen:
+            seen.add(key)
+            gt_events_dedup.append(ev)
+    gt_events_raw = gt_events_dedup
 
     # ── 为每个 GT 事件找中间帧 ─────────────────────────────────────────────────
     gt_events = []
@@ -651,6 +693,7 @@ def get_results(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     # ── 告警检测结果 ───────────────────────────────────────────────────────────
+    # 注意：同一个 video_id 可能在 videos 表中有多条记录，先子查询去重
     cursor.execute('''
         SELECT m.id, m.video_id, m.event_type, m.image_ids,
                m.representative_image_id, m.ts_start, m.ts_end,
@@ -659,7 +702,10 @@ def get_results(task_id):
                o.timestamp_seconds
         FROM eval_merged_events m
         LEFT JOIN alert_images a ON a.id = m.representative_image_id
-        LEFT JOIN videos v ON v.video_id = m.video_id
+        LEFT JOIN (
+            SELECT id, video_id FROM videos
+            WHERE id IN (SELECT MAX(id) FROM videos GROUP BY video_id)
+        ) v ON v.video_id = m.video_id
         LEFT JOIN (
             SELECT alert_image_id, timestamp_seconds
             FROM ocr_results
@@ -677,10 +723,14 @@ def get_results(task_id):
         r['effective_status'] = _get_effective_status(r)
 
     # ── GT 事件得分 ────────────────────────────────────────────────────────────
+    # 注意：同一个 video_id 可能在 videos 表中有多条记录，先子查询去重
     cursor.execute('''
         SELECT g.*, v.id as video_db_id
         FROM eval_gt_events g
-        LEFT JOIN videos v ON v.video_id = g.video_id
+        LEFT JOIN (
+            SELECT id, video_id FROM videos
+            WHERE id IN (SELECT MAX(id) FROM videos GROUP BY video_id)
+        ) v ON v.video_id = g.video_id
         WHERE g.task_id = ?
         ORDER BY g.video_id, g.event_type, g.start_sec
     ''', (task_id,))

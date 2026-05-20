@@ -28,4 +28,10 @@ def create_app(config_class=Config):
         from flask import render_template
         return render_template('index.html')
 
+    @app.errorhandler(413)
+    def request_entity_too_large(error):
+        from flask import jsonify
+        max_mb = app.config.get('MAX_CONTENT_LENGTH', 0) / 1024 / 1024
+        return jsonify({'error': f'文件超过上传限制（最大 {max_mb:.0f} MB）'}), 413
+
     return app

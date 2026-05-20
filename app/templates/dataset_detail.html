@@ -35,6 +35,7 @@
     cursor:pointer; border:2px solid transparent; border-radius:6px;
     overflow:hidden; transition:border-color .15s;
     background:#f5f5f5;
+    position:relative;
   }
   .img-cell:hover { border-color:#3498db; }
   .img-cell img {
@@ -79,8 +80,7 @@
   .btn-danger:hover { background:#c0392b; }
   .btn-secondary { background:#7f8c8d; }
   .btn-secondary:hover { background:#636e72; }
-
-  @keyframes spin { to { transform:rotate(360deg); } }
+  .action-select { padding:0.35rem 0.5rem; border:1px solid #ccc; border-radius:4px; font-size:0.88rem; background:#fff; }
 </style>
 
 <div class="breadcrumb">
@@ -98,9 +98,8 @@
   {% endif %}
 
   <div class="upload-area" id="upload-area">
-    <p>拖拽文件到这里上传，或 <strong>点击选择文件</strong></p>
-    <p style="font-size:0.8rem;color:#aaa;margin-top:0.3rem;">支持 PNG / JPG / GIF / BMP 图片，以及 .zip / .tar / .tar.gz / .tgz 压缩包</p>
-    <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.bmp,.zip,.tar,.gz,.tgz" multiple class="hidden">
+    <p>拖拽图片到这里，或 <strong>点击选择文件</strong>（支持多选）</p>
+    <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.bmp" multiple class="hidden">
   </div>
   <div id="upload-msg"></div>
 
@@ -111,6 +110,15 @@
       失败时停止
     </label>
     <span id="ocr-summary"></span>
+  </div>
+
+  <div class="toolbar" style="background:#f8f9fa;padding:0.7rem;border-radius:6px;">
+    <span style="color:#555;">标注筛选：</span>
+    <select id="labelFilter" class="action-select" onchange="filterImages()">
+      <option value="all">全部图片</option>
+      <option value="unlabeled">未标注</option>
+      <option value="labeled">已标注</option>
+    </select>
   </div>
 
   <div class="img-grid" id="img-grid">
@@ -179,7 +187,18 @@ let ocrPollTimer = null;
 async function loadImages() {
   const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/images`);
   allImages = await res.json();
-  renderGrid(allImages);
+  filterImages();
+}
+
+function filterImages() {
+  const mode = document.getElementById('labelFilter').value;
+  const filtered = allImages.filter(img => {
+    const hasLabel = !!(img.event_label || img.alert_type);
+    if (mode === 'unlabeled') return !hasLabel;
+    if (mode === 'labeled') return hasLabel;
+    return true;
+  });
+  renderGrid(filtered);
 }
 
 function renderGrid(images) {
@@ -502,68 +521,19 @@ fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
 async function uploadFiles(files) {
   if (!files.length) return;
   const msg = document.getElementById('upload-msg');
+  msg.innerHTML = `<div style="color:#555;font-size:.88rem;">上传中…</div>`;
 
-  // 分离图片和压缩包
-  const imageFiles = [], archiveFiles = [];
-  for (const f of files) {
-    const name = f.name.toLowerCase();
-    if (name.endsWith('.zip') || name.endsWith('.tar') || name.endsWith('.tar.gz') || name.endsWith('.tgz')) {
-      archiveFiles.push(f);
-    } else {
-      imageFiles.push(f);
-    }
-  }
+  const form = new FormData();
+  for (const f of files) form.append('image', f);
 
-  let totalImported = 0, totalSkipped = 0;
-  let results = [];   // [{type:'ok'|'err', text}]
-  let errors = [];
+  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/upload`, {method:'POST', body: form});
+  const data = await res.json();
 
-  // 上传图片
-  if (imageFiles.length) {
-    msg.innerHTML = `<div style="color:#555;font-size:.88rem;">正在上传 ${imageFiles.length} 张图片… <span class="loading" style="display:inline-block;width:14px;height:14px;border:2px solid #3498db;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;"></span></div>`;
-
-    const form = new FormData();
-    for (const f of imageFiles) form.append('image', f);
-    const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/upload`, {method:'POST', body: form});
-    const data = await res.json();
-    if (data.uploaded?.length) {
-      totalImported += data.uploaded.length;
-      results.push({type:'ok', text: `上传 ${data.uploaded.length} 张图片`});
-    }
-    if (data.errors?.length) errors.push(...data.errors);
-  }
-
-  // 逐个导入压缩包
-  for (const f of archiveFiles) {
-    msg.innerHTML = `<div style="color:#555;font-size:.88rem;">正在导入压缩包 <strong>${escHtml(f.name)}</strong> … <span class="loading" style="display:inline-block;width:14px;height:14px;border:2px solid #3498db;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;"></span></div>`;
-
-    const form = new FormData();
-    form.append('file', f);
-    const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/import`, {method:'POST', body: form});
-    const data = await res.json();
-    if (data.success) {
-      const imported = data.imported || 0;
-      const skipped = data.skipped || 0;
-      totalImported += imported;
-      totalSkipped += skipped;
-      let text = `${escHtml(f.name)} → 导入 ${imported} 张`;
-      if (skipped) text += `，跳过 ${skipped} 张（重名）`;
-      results.push({type:'ok', text});
-    } else {
-      errors.push(`${f.name}: ${data.error || '导入失败'}`);
-    }
-  }
-
-  // 汇总显示
   let html = '';
-  for (const r of results) {
-    html += `<div style="color:#27ae60;font-size:.88rem;">✔ ${r.text}</div>`;
-  }
-  if (errors.length) {
-    html += errors.map(e => `<div style="color:#e74c3c;font-size:.85rem;">✘ ${escHtml(e)}</div>`).join('');
-  }
-  msg.innerHTML = html || '<div style="color:#aaa;font-size:.85rem;">未识别到有效文件</div>';
-  setTimeout(() => { msg.innerHTML = ''; }, 8000);
+  if (data.uploaded?.length) html += `<div style="color:#27ae60;font-size:.88rem;">✔ 成功上传 ${data.uploaded.length} 张</div>`;
+  if (data.errors?.length) html += data.errors.map(e => `<div style="color:#e74c3c;font-size:.85rem;">✘ ${escHtml(e)}</div>`).join('');
+  msg.innerHTML = html;
+  setTimeout(() => { msg.innerHTML = ''; }, 5000);
   fileInput.value = '';
   loadImages();
 }

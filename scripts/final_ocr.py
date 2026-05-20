@@ -20,7 +20,7 @@ def get_watermark_text(image_path):
         from PIL import Image, ImageEnhance, ImageOps
         img = Image.open(image_path).convert('L')
         w, h = img.size
-        crop = img.crop((0, 0, min(700, w), min(120, h)))
+        crop = img.crop((0, 0, min(450, w), min(40, h)))
         enhancer = ImageEnhance.Contrast(crop)
         img_enhanced = enhancer.enhance(2.5)
         img_inverted = ImageOps.invert(img_enhanced)

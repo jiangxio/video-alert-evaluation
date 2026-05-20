@@ -120,9 +120,9 @@ def delete_dataset(dataset_id):
     return jsonify({'success': True})
 
 
-def _extract_archive(archive_path, dest_dir):
+def _extract_archive(archive_path, dest_dir, filename=None):
     """根据扩展名自动解压 zip / tar / tar.gz 到目标目录"""
-    name = archive_path.lower()
+    name = (filename or archive_path).lower()
     if name.endswith('.zip'):
         with zipfile.ZipFile(archive_path, 'r') as zf:
             zf.extractall(dest_dir)
@@ -172,7 +172,7 @@ def import_zip(dataset_id):
         ext = os.path.splitext(f.filename)[1]
         archive_path = os.path.join(tmp_dir, 'upload' + ext)
         f.save(archive_path)
-        _extract_archive(archive_path, tmp_dir)
+        _extract_archive(archive_path, tmp_dir, f.filename)
 
         # 定位图片搜索根目录（处理压缩包内套单层文件夹的情况）
         search_root = _find_image_root(tmp_dir)
@@ -275,6 +275,175 @@ def list_dataset_images(dataset_id):
         img['ocr'] = dict(ocr) if ocr else None
         images.append(img)
     return jsonify(images)
+
+
+# ── 告警评测集管理 ───────────────────────────────────────────────────────────
+
+def _parse_id_list(raw):
+    if not raw:
+        return []
+    try:
+        ids = json.loads(raw)
+        return ids if isinstance(ids, list) else []
+    except Exception:
+        return []
+
+
+@bp.route('/api/eval-sets', methods=['GET'])
+def list_alert_eval_sets():
+    """获取所有告警评测集"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_alert_sets ORDER BY created_at DESC')
+
+    result = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        dataset_ids = _parse_id_list(item.get('dataset_ids'))
+        item['dataset_ids'] = dataset_ids
+        item['dataset_count'] = len(dataset_ids)
+        item['image_count'] = 0
+        item['dataset_names'] = []
+        if dataset_ids:
+            placeholders = ','.join('?' for _ in dataset_ids)
+            cursor.execute(f'''
+                SELECT d.id, d.name, COUNT(a.id) AS image_count
+                FROM datasets d
+                LEFT JOIN alert_images a ON a.dataset_id = d.id
+                WHERE d.id IN ({placeholders})
+                GROUP BY d.id
+            ''', dataset_ids)
+            rows = cursor.fetchall()
+            item['image_count'] = sum(r['image_count'] or 0 for r in rows)
+            names_by_id = {r['id']: r['name'] for r in rows}
+            item['dataset_names'] = [names_by_id.get(i) for i in dataset_ids if names_by_id.get(i)]
+        result.append(item)
+
+    return jsonify({'sets': result})
+
+
+@bp.route('/api/eval-sets', methods=['POST'])
+def create_alert_eval_set():
+    """创建新的告警评测集"""
+    data = request.get_json() or {}
+    name = data.get('name', '').strip()
+    dataset_ids = data.get('dataset_ids', [])
+
+    if not name:
+        return jsonify({'error': '评测集名称不能为空'}), 400
+    if not isinstance(dataset_ids, list):
+        dataset_ids = []
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        'INSERT INTO eval_alert_sets (name, notes, dataset_ids) VALUES (?, ?, ?)',
+        (name, data.get('notes', ''), json.dumps(dataset_ids))
+    )
+    db.commit()
+
+    return jsonify({'success': True, 'id': cursor.lastrowid})
+
+
+@bp.route('/api/eval-sets/batch-add', methods=['POST'])
+def batch_add_to_alert_eval_set():
+    """批量添加告警数据集到评测集"""
+    data = request.get_json() or {}
+    set_id = data.get('set_id')
+    dataset_ids = data.get('dataset_ids', [])
+
+    if not set_id:
+        return jsonify({'error': '请选择评测集'}), 400
+    if not dataset_ids:
+        return jsonify({'error': '请选择要添加的数据集'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_alert_sets WHERE id = ?', (set_id,))
+    eval_set = cursor.fetchone()
+    if not eval_set:
+        return jsonify({'error': '评测集不存在'}), 404
+
+    current_ids = _parse_id_list(eval_set['dataset_ids'])
+    added_count = 0
+    for dataset_id in dataset_ids:
+        if dataset_id not in current_ids:
+            current_ids.append(dataset_id)
+            added_count += 1
+
+    cursor.execute(
+        'UPDATE eval_alert_sets SET dataset_ids = ? WHERE id = ?',
+        (json.dumps(current_ids), set_id)
+    )
+    db.commit()
+    return jsonify({'success': True, 'added_count': added_count})
+
+
+@bp.route('/api/eval-sets/batch-remove', methods=['POST'])
+def batch_remove_from_alert_eval_set():
+    """批量从告警评测集移出数据集"""
+    data = request.get_json() or {}
+    set_id = data.get('set_id')
+    dataset_ids = data.get('dataset_ids', [])
+
+    if not set_id:
+        return jsonify({'error': '请选择评测集'}), 400
+    if not dataset_ids:
+        return jsonify({'error': '请选择要移出的数据集'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM eval_alert_sets WHERE id = ?', (set_id,))
+    eval_set = cursor.fetchone()
+    if not eval_set:
+        return jsonify({'error': '评测集不存在'}), 404
+
+    current_ids = _parse_id_list(eval_set['dataset_ids'])
+    removed_count = 0
+    for dataset_id in dataset_ids:
+        if dataset_id in current_ids:
+            current_ids.remove(dataset_id)
+            removed_count += 1
+
+    cursor.execute(
+        'UPDATE eval_alert_sets SET dataset_ids = ? WHERE id = ?',
+        (json.dumps(current_ids), set_id)
+    )
+    db.commit()
+    return jsonify({'success': True, 'removed_count': removed_count})
+
+
+@bp.route('/api/eval-sets/<int:set_id>', methods=['PUT'])
+def rename_alert_eval_set(set_id):
+    """重命名告警评测集"""
+    data = request.get_json() or {}
+    new_name = data.get('name', '').strip()
+    if not new_name:
+        return jsonify({'error': '名称不能为空'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_alert_sets WHERE id = ?', (set_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '评测集不存在'}), 404
+
+    cursor.execute('UPDATE eval_alert_sets SET name = ? WHERE id = ?', (new_name, set_id))
+    db.commit()
+    return jsonify({'success': True})
+
+
+@bp.route('/api/eval-sets/<int:set_id>', methods=['DELETE'])
+def delete_alert_eval_set(set_id):
+    """删除告警评测集"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_alert_sets WHERE id = ?', (set_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '评测集不存在'}), 404
+
+    cursor.execute('DELETE FROM eval_alert_sets WHERE id = ?', (set_id,))
+    db.commit()
+    return jsonify({'success': True})
 
 
 @bp.route('/api/datasets/<int:dataset_id>/upload', methods=['POST'])

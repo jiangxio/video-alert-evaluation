@@ -27,7 +27,7 @@ def allowed_file(filename, allowed_extensions):
 
 def extract_video_id(filename):
     """从文件名提取视频ID"""
-    match = re.match(r'(\d{2,3})', filename)
+    match = re.match(r'(\d{10})(?=\D|$)', Path(filename).stem)
     if match:
         return match.group(1)
     return None
@@ -234,20 +234,21 @@ def list_watermarked_videos():
         query_params.extend([like, like])
 
     # 查询打水印视频，关联原视频信息和事件类型
-    # 只取每个原始视频的最新打水印版本
+    # 只取每个原始视频的最新打水印版本（用 MAX(id) 避免 created_at 相同导致重复）
     cursor.execute(f'''
         SELECT
             w.id as wm_id, w.filename as wm_filename, w.output_path, w.file_size as wm_file_size,
             w.thumbnail_path, w.resolution, w.duration as wm_duration,
+            w.ocr_check_status,
             v.id as video_id, v.video_id as vid, v.duration as orig_duration,
             GROUP_CONCAT(DISTINCT e.event_type) as event_types
         FROM watermarked_videos w
         JOIN videos v ON v.id = w.original_video_id
         LEFT JOIN events e ON e.video_db_id = v.id
-        WHERE w.created_at = (
-            SELECT MAX(w2.created_at)
+        WHERE w.id IN (
+            SELECT MAX(w2.id)
             FROM watermarked_videos w2
-            WHERE w2.original_video_id = w.original_video_id
+            GROUP BY w2.original_video_id
         )
         {where_conditions}
         GROUP BY w.id
@@ -279,7 +280,8 @@ def list_watermarked_videos():
             'resolution': row['resolution'],
             'duration': row['wm_duration'] or row['orig_duration'],
             'event_types': row['event_types'].split(',') if row['event_types'] else [],
-            'has_ground_truth': has_gt_json
+            'has_ground_truth': has_gt_json,
+            'ocr_check_status': row['ocr_check_status'],
         }
         result.append(item)
 
@@ -318,10 +320,11 @@ def upload_video():
     duration = get_video_duration(str(save_path))
     already_watermarked = request.form.get('already_watermarked') in ('1', 'true', 'on')
 
+    video_id_confirmed = 1 if already_watermarked and video_id else 0
     cursor.execute('''
-        INSERT INTO videos (filename, original_path, video_id, file_size, duration)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (filename, str(save_path), video_id, file_size, duration))
+        INSERT INTO videos (filename, original_path, video_id, file_size, duration, video_id_confirmed)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (filename, str(save_path), video_id, file_size, duration, video_id_confirmed))
     video_db_id = cursor.lastrowid
 
     if already_watermarked:
@@ -796,11 +799,12 @@ def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_roo
             resolution = get_video_resolution(output_path)
             duration = get_video_duration(output_path)
 
+            ocr_status = result.get('ocr_check_status')
             cursor.execute('''
                 INSERT INTO watermarked_videos
-                (original_video_id, filename, output_path, file_size, resolution, duration)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (video_id, filename, str(output_path), file_size, resolution, duration))
+                (original_video_id, filename, output_path, file_size, resolution, duration, ocr_check_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (video_id, filename, str(output_path), file_size, resolution, duration, ocr_status))
             wm_db_id = cursor.lastrowid
             conn.commit()
 

@@ -8,6 +8,7 @@ ground_truth/
 ground_truth_frames/
 thumbnails/
 auto_annotation_frames/
+generated_videos/
 
 # 数据库
 *.db

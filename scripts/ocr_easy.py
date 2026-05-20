@@ -77,9 +77,55 @@ def parse_watermark_text(text):
     cleaned = re.sub(r'[|lI]', ' ', cleaned)
     # 把字母 O 替换成数字 0（OCR 容易把 0 认成 O）
     cleaned = re.sub(r'[Oo]', '0', cleaned)
-    # 自动纠正：把时间戳里的冒号/点混用统一为 HH:MM:SS.sss
-    # 支持 00:02:27.440 / 00.02.27.440 / 00:02.27.440 等变体
+
+    # ── 时间戳清洗（多阶段，按 OCR 常见误识别逐一修正） ──────────────────────
+    # 阶段1: 合并连续标点（如 ".:" ":." ".."）
+    cleaned = re.sub(r'[.:]{2,}', lambda m: ':' if ':' in m.group() else '.', cleaned)
+
+    # 阶段2: 部分归一化后的残留（如 00.03:17.933 → 00:03:17.933）
+    cleaned = re.sub(r'(\d{2})\.(\d{2}):(\d{2})\.(\d{3})', r'\1:\2:\3.\4', cleaned)
+
+    # 阶段3: 标准全点/冒号分隔 → HH:MM:SS.sss
     cleaned = re.sub(r'(\d{2})[:.](\d{2})[:.](\d{2})[:.](\d{3})', r'\1:\2:\3.\4', cleaned)
+
+    # 阶段4: 兜底A — 前段粘连 HHMM[噪声][.:]SS.ms
+    #   00330.02.800  → HH=00 MM=30 SS=02 ms=800
+    #   00331:21.200  → HH=00 MM=31 SS=21 ms=200
+    m = re.search(r'\b(\d{4,5})[.:](\d{2})\.(\d{3})\b', cleaned)
+    if m:
+        first, ss, ms = m.group(1), m.group(2), m.group(3)
+        hh = first[:2]
+        mm = first[-2:]
+        cleaned = re.sub(
+            re.escape(m.group(0)),
+            f'{hh}:{mm}:{ss}.{ms}',
+            cleaned
+        )
+
+    # 阶段5: 兜底B — 中间数字粘连 HH.MMSS[噪声].ms
+    #   00.01331.267 → HH=00 MM=01 SS=31 ms=267
+    m = re.search(r'(\d{2})[.:](\d{3,5})[.:](\d{3})', cleaned)
+    if m:
+        hh, middle, ms = m.group(1), m.group(2), m.group(3)
+        mm = middle[:2]
+        ss = middle[-2:]
+        cleaned = re.sub(
+            re.escape(m.group(0)),
+            f'{hh}:{mm}:{ss}.{ms}',
+            cleaned
+        )
+
+    # 阶段6: 兜底C — 冒号被OCR识别为数字3（如 00331331.333 → 00:31:31.333）
+    m = re.search(r'\b(\d{2})3(\d{2})3(\d{2})\.(\d{3})\b', cleaned)
+    if m:
+        hh, mm, ss, ms = m.group(1), m.group(2), m.group(3), m.group(4)
+        hh_int, mm_int, ss_int = int(hh), int(mm), int(ss)
+        if hh_int < 24 and mm_int < 60 and ss_int < 60:
+            cleaned = re.sub(
+                re.escape(m.group(0)),
+                f'{hh}:{mm}:{ss}.{ms}',
+                cleaned
+            )
 
     # 提取视频ID（恰好10位数字）
     id_match = re.search(r'\b(\d{10})\b', cleaned)

@@ -169,7 +169,8 @@ def import_zip(dataset_id):
 
     tmp_dir = tempfile.mkdtemp()
     try:
-        archive_path = os.path.join(tmp_dir, 'upload')
+        ext = os.path.splitext(f.filename)[1]
+        archive_path = os.path.join(tmp_dir, 'upload' + ext)
         f.save(archive_path)
         _extract_archive(archive_path, tmp_dir)
 

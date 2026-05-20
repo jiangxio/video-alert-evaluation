@@ -239,6 +239,7 @@ def list_watermarked_videos():
         SELECT
             w.id as wm_id, w.filename as wm_filename, w.output_path, w.file_size as wm_file_size,
             w.thumbnail_path, w.resolution, w.duration as wm_duration,
+            w.ocr_check_status,
             v.id as video_id, v.video_id as vid, v.duration as orig_duration,
             GROUP_CONCAT(DISTINCT e.event_type) as event_types
         FROM watermarked_videos w
@@ -279,7 +280,8 @@ def list_watermarked_videos():
             'resolution': row['resolution'],
             'duration': row['wm_duration'] or row['orig_duration'],
             'event_types': row['event_types'].split(',') if row['event_types'] else [],
-            'has_ground_truth': has_gt_json
+            'has_ground_truth': has_gt_json,
+            'ocr_check_status': row['ocr_check_status'],
         }
         result.append(item)
 
@@ -797,11 +799,12 @@ def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_roo
             resolution = get_video_resolution(output_path)
             duration = get_video_duration(output_path)
 
+            ocr_status = result.get('ocr_check_status')
             cursor.execute('''
                 INSERT INTO watermarked_videos
-                (original_video_id, filename, output_path, file_size, resolution, duration)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (video_id, filename, str(output_path), file_size, resolution, duration))
+                (original_video_id, filename, output_path, file_size, resolution, duration, ocr_check_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (video_id, filename, str(output_path), file_size, resolution, duration, ocr_status))
             wm_db_id = cursor.lastrowid
             conn.commit()
 

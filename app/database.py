@@ -336,6 +336,12 @@ def init_db():
         except Exception:
             pass  # 列已存在
 
+    # 为 watermarked_videos 追加 OCR 验证状态字段
+    try:
+        cursor.execute('ALTER TABLE watermarked_videos ADD COLUMN ocr_check_status TEXT')
+    except Exception:
+        pass  # 列已存在
+
     # 为 videos 表追加 video_id_confirmed 字段（兼容已有数据）
     try:
         cursor.execute('ALTER TABLE videos ADD COLUMN video_id_confirmed INTEGER DEFAULT 0')

@@ -16,7 +16,7 @@ from pathlib import Path
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / 'scripts'
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
-from process_single import build_ffmpeg_cmd, find_font, DEFAULT_CONFIG  # noqa: E402
+from process_single import build_ffmpeg_cmd, find_font, DEFAULT_CONFIG, _verify_ocr  # noqa: E402
 
 
 # task_id -> Popen
@@ -154,12 +154,22 @@ def add_watermark(video_path, output_dir, video_id=None,
     stderr = ''.join(stderr_chunks)
 
     success = returncode == 0 and not cancelled
+    ocr_status = None
+    if success and output_path.exists():
+        try:
+            ocr_status, ocr_warning = _verify_ocr(output_path, video_id, reader=_get_ocr_reader())
+            if ocr_status != 'passed' and ocr_warning:
+                stderr = (stderr + '\n[OCR验证警告] ' + ocr_warning) if stderr else '[OCR验证警告] ' + ocr_warning
+        except Exception:
+            pass
+
     return {
         'success': success,
         'cancelled': cancelled,
         'stderr': stderr,
         'returncode': returncode,
         'output_path': str(output_path) if success else None,
+        'ocr_check_status': ocr_status,
     }
 
 

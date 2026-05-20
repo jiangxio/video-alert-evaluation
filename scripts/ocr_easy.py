@@ -37,8 +37,8 @@ def preprocess_and_ocr(image_path, reader=None):
     img = Image.open(image_path).convert('L')
     w, h = img.size
 
-    # 裁剪左上角（只裁剪水印部分，避免后面的字母干扰，10位ID + 时间戳约需550px）
-    crop = img.crop((0, 0, min(540, w), min(50, h)))
+    # 裁剪左上角（只裁剪水印部分，避免后面的字母干扰）
+    crop = img.crop((0, 0, min(450, w), min(40, h)))
 
     # 增强对比度
     enhancer = ImageEnhance.Contrast(crop)
@@ -73,8 +73,6 @@ def parse_watermark_text(text):
         return result
 
     cleaned = re.sub(r'\s+', ' ', text.strip())
-    # 把 | 或 l（L小写）或 I（i大写）替换成空格（OCR 容易把 | 认成 l 或 I）
-    cleaned = re.sub(r'[|lI]', ' ', cleaned)
     # 把字母 O 替换成数字 0（OCR 容易把 0 认成 O）
     cleaned = re.sub(r'[Oo]', '0', cleaned)
     # 自动纠正：把时间戳里的冒号/点混用统一为 HH:MM:SS.sss

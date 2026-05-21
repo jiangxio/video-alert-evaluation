@@ -117,6 +117,7 @@
     <select id="labelFilter" class="action-select" onchange="filterImages()">
       <option value="all">全部图片</option>
       <option value="unlabeled">未标注</option>
+      <option value="failed">标注失败</option>
       <option value="labeled">已标注</option>
     </select>
   </div>
@@ -193,9 +194,9 @@ async function loadImages() {
 function filterImages() {
   const mode = document.getElementById('labelFilter').value;
   const filtered = allImages.filter(img => {
-    const hasLabel = !!(img.event_label || img.alert_type);
-    if (mode === 'unlabeled') return !hasLabel;
-    if (mode === 'labeled') return hasLabel;
+    if (mode === 'unlabeled') return !img.ocr;
+    if (mode === 'failed') return img.ocr && !img.ocr.success;
+    if (mode === 'labeled') return img.ocr && img.ocr.success;
     return true;
   });
   renderGrid(filtered);
@@ -222,10 +223,17 @@ function renderGrid(images) {
     cell.dataset.id = img.id;
     cell.onclick = () => openDetail(img.id);
 
-    const label = img.event_label || img.alert_type || '';
+    let labelText;
+    if (!img.ocr) {
+      labelText = '未标注';
+    } else if (!img.ocr.success) {
+      labelText = '标注失败';
+    } else {
+      labelText = img.ocr.video_id || '已标注';
+    }
     cell.innerHTML = `
       <img src="/alerts/api/images/${img.id}/file" loading="lazy" alt="${escHtml(img.filename)}">
-      <div class="img-label${label ? '' : ' no-label'}">${escHtml(label || '未标记')}</div>
+      <div class="img-label${img.ocr && img.ocr.success ? '' : ' no-label'}">${escHtml(labelText)}</div>
     `;
     grid.appendChild(cell);
   }

@@ -172,11 +172,14 @@ def _verify_ocr(output_path, expected_video_id, reader=None):
 
 def build_ffmpeg_cmd(input_path, output_path, video_id,
                      *, font_file=None, config=None, progress_pipe=False,
-                     tpad_duration=5):
+                     tpad_duration=None):
     """构建 FFmpeg drawtext 命令
 
     progress_pipe=True 时追加 ``-progress pipe:1``，让 FFmpeg 把
     ``out_time_us``、``progress`` 等字段写到 stdout，调用方可解析实时进度。
+
+    tpad_duration 为大于 0 的值时，在开头插入对应秒数的黑帧并延迟音频；
+    为 None 或 0 时，不插入黑帧，也不延迟音频。
     """
     if font_file is None:
         font_file = find_font()
@@ -198,8 +201,11 @@ def build_ffmpeg_cmd(input_path, output_path, video_id,
         f"boxborderw={config['box_border_width']}"
     )
 
-    # tpad 在开头插入黑帧，然后 drawtext 叠加
-    vf = f"tpad=start_duration={tpad_duration}:color=black,{drawtext}"
+    if tpad_duration:
+        # 在开头插入黑帧，然后 drawtext 叠加
+        vf = f"tpad=start_duration={tpad_duration}:color=black,{drawtext}"
+    else:
+        vf = drawtext
 
     has_audio = _has_audio_stream(input_path)
 
@@ -215,8 +221,10 @@ def build_ffmpeg_cmd(input_path, output_path, video_id,
         '-loglevel', 'error',
     ]
 
-    if has_audio:
-        cmd.extend(['-af', 'adelay=5000|5000', '-c:a', 'aac', '-b:a', '128k'])
+    if has_audio and tpad_duration:
+        cmd.extend(['-af', f'adelay={tpad_duration * 1000}|{tpad_duration * 1000}', '-c:a', 'aac', '-b:a', '128k'])
+    elif has_audio:
+        cmd.extend(['-c:a', config['audio_codec']])
     else:
         cmd.extend(['-an'])
 
@@ -227,7 +235,8 @@ def build_ffmpeg_cmd(input_path, output_path, video_id,
     return cmd
 
 
-def add_watermark(input_video, output_dir=None, video_id=None, reader=None):
+def add_watermark(input_video, output_dir=None, video_id=None, reader=None,
+                  tpad_duration=None):
     """给视频添加左上角文字水印，返回结果字典"""
     input_path = Path(input_video)
     if not input_path.exists():
@@ -252,9 +261,14 @@ def add_watermark(input_video, output_dir=None, video_id=None, reader=None):
     print(f"处理视频: {input_video}")
     print(f"  视频ID: {video_id}")
     print(f"  输出到: {output_path}")
+    if tpad_duration:
+        print(f"  开头黑帧: {tpad_duration}秒")
+    else:
+        print(f"  开头黑帧: 无")
 
     cmd = build_ffmpeg_cmd(str(input_path), str(output_path), video_id,
-                           font_file=font_file, config=DEFAULT_CONFIG)
+                           font_file=font_file, config=DEFAULT_CONFIG,
+                           tpad_duration=tpad_duration)
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -290,9 +304,12 @@ def main():
     parser.add_argument('input_video', help='输入视频文件路径')
     parser.add_argument('--output-dir', help='输出目录（默认: 项目根目录/output）')
     parser.add_argument('--video-id', help='视频ID（默认从文件名提取）')
+    parser.add_argument('--tpad-duration', type=float, default=5,
+                        help='开头插入黑帧时长（秒），默认 5，设为 0 则不插入')
     args = parser.parse_args()
 
-    result = add_watermark(args.input_video, args.output_dir, args.video_id)
+    result = add_watermark(args.input_video, args.output_dir, args.video_id,
+                           tpad_duration=args.tpad_duration if args.tpad_duration > 0 else None)
     sys.exit(0 if result['success'] else 1)
 
 

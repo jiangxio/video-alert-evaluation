@@ -125,6 +125,11 @@
     <span>已打水印</span>
     <span class="hint">勾选后，上传的视频会直接显示为已打水印，不再进入打水印队列。</span>
   </label>
+  <label class="upload-options">
+    <input type="checkbox" id="insertBlackFrame">
+    <span>打水印时开头插入黑帧</span>
+    <span class="hint">勾选后，打水印前会在视频开头插入5秒黑帧并延迟音频。</span>
+  </label>
 
   <div class="search-bar">
     <input type="text" id="searchInput" placeholder="搜索文件名或video_id..." oninput="searchVideos()">
@@ -375,8 +380,14 @@ async function applyWatermark(videoId) {
   watermarkingVideos.set(videoId, { task_id: null, progress: 0, status: 'queued' });
   renderTable(allVideos);
 
+  const tpadDuration = document.getElementById('insertBlackFrame').checked ? 5 : null;
+
   try {
-    const res = await fetch(`/videos/api/${videoId}/watermark`, {method:'POST'});
+    const res = await fetch(`/videos/api/${videoId}/watermark`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tpad_duration: tpadDuration})
+    });
     const data = await res.json();
     if (!res.ok) {
       if (res.status === 429 && data.task_id) {

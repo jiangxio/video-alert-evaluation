@@ -596,6 +596,16 @@ def confirm_video_id(video_id):
 @bp.route('/api/<int:video_id>/watermark', methods=['POST'])
 def apply_watermark(video_id):
     """给视频添加水印（异步队列处理，一次只运行一个）"""
+    data = request.get_json() or {}
+    tpad_duration = data.get('tpad_duration')
+    if tpad_duration is not None:
+        try:
+            tpad_duration = float(tpad_duration)
+            if tpad_duration <= 0:
+                tpad_duration = None
+        except (TypeError, ValueError):
+            tpad_duration = None
+
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
@@ -642,6 +652,7 @@ def apply_watermark(video_id):
                 'video_id_str': video['video_id'],
                 'project_root': current_app.config['PROJECT_ROOT'],
                 'output_dir': current_app.config['OUTPUT_DIR'],
+                'tpad_duration': tpad_duration,
             })
             return jsonify({'success': True, 'task_id': task_id, 'status': 'queued'})
         else:
@@ -653,7 +664,7 @@ def apply_watermark(video_id):
     output_dir = current_app.config['OUTPUT_DIR']
     thread = threading.Thread(
         target=_do_watermark_async,
-        args=(task_id, video_id, video['original_path'], video['video_id'], project_root, output_dir)
+        args=(task_id, video_id, video['original_path'], video['video_id'], project_root, output_dir, tpad_duration)
     )
     thread.start()
 
@@ -678,10 +689,11 @@ def _start_next_watermark_task():
         video_id = next_item['video_id']
         project_root = next_item['project_root']
         output_dir = next_item['output_dir']
+        tpad_duration = next_item.get('tpad_duration')
 
     thread = threading.Thread(
         target=_do_watermark_async,
-        args=(next_tid, video_id, video_path, video_id_str, project_root, output_dir)
+        args=(next_tid, video_id, video_path, video_id_str, project_root, output_dir, tpad_duration)
     )
     thread.start()
 
@@ -745,7 +757,7 @@ def cancel_watermark_task(task_id):
     return jsonify({'success': ok})
 
 
-def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_root, output_dir):
+def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_root, output_dir, tpad_duration=None):
     """后台异步执行打水印"""
     import sqlite3
 
@@ -771,6 +783,7 @@ def _do_watermark_async(task_id, video_id, video_path, video_id_str, project_roo
             video_id=video_id_str,
             task_id=task_id,
             progress_callback=progress_cb,
+            tpad_duration=tpad_duration,
         )
 
         if result.get('cancelled'):

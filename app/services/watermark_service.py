@@ -48,7 +48,7 @@ def _probe_duration(video_path):
 
 
 def add_watermark(video_path, output_dir, video_id=None,
-                  task_id=None, progress_callback=None):
+                  task_id=None, progress_callback=None, tpad_duration=None):
     """给视频添加水印，支持实时进度回调和外部取消
 
     :param video_path: 输入视频路径
@@ -56,6 +56,7 @@ def add_watermark(video_path, output_dir, video_id=None,
     :param video_id: 视频ID（用于水印文字与输出文件名），默认从文件名提取
     :param task_id: 用于 :func:`cancel_task` 反向找到 Popen，None 则不可取消
     :param progress_callback: ``callable(pct: int)``，pct ∈ [0, 99]
+    :param tpad_duration: 开头插入黑帧时长（秒），None/0 表示不插入
     :return: ``{'success': bool, 'cancelled': bool, 'stderr': str, 'output_path': str|None}``
     """
     video_path = Path(video_path)
@@ -82,6 +83,7 @@ def add_watermark(video_path, output_dir, video_id=None,
     cmd = build_ffmpeg_cmd(
         str(video_path), str(output_path), video_id,
         font_file=font_file, config=DEFAULT_CONFIG, progress_pipe=True,
+        tpad_duration=tpad_duration,
     )
 
     try:

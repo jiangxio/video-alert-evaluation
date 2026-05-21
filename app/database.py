@@ -395,6 +395,20 @@ def init_db():
         )
     ''')
 
+    # 测前分析记录表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pre_analysis_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            eval_video_set_id INTEGER NOT NULL REFERENCES eval_video_sets(id),
+            merge_interval_sec REAL DEFAULT 5.0,
+            event_interval_sec REAL DEFAULT 10.0,
+            trigger_rate REAL DEFAULT 0.5,
+            min_event_duration_sec REAL DEFAULT 0,
+            result_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     # 常用查询索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_alert_image ON ocr_results(alert_image_id)')
@@ -405,6 +419,7 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_eval_gt_task ON eval_gt_events(task_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_task_video ON auto_annotation_tasks(video_db_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_frames_task ON auto_annotation_frames(task_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_pre_analysis_set ON pre_analysis_records(eval_video_set_id)')
 
     db.commit()
     db.close()

@@ -190,6 +190,11 @@
         <button class="btn btn-sm btn-secondary" onclick="batchRemoveFromEvalSet()">移出</button>
         <button class="btn btn-sm btn-danger" onclick="deleteEvalSet()">删除</button>
         <button class="btn btn-sm btn-success" onclick="showCreateEvalSetModal()">新建</button>
+        <button class="btn btn-sm" style="background:#9b59b6;color:white;" onclick="openPreAnalysisModal()">测前分析</button>
+      </div>
+      <div style="flex-basis:100%;font-size:0.82rem;color:#666;margin-top:0.3rem;padding-left:0.2rem;">
+        测前分析：在正式评测前检查评测集的 GT 质量、事件分布和参数合理性，避免做无用功。
+        <span id="analysisCountHint" style="color:#9b59b6;font-weight:600;"></span>
       </div>
       <div style="flex-basis:100%;"></div>
       <!-- 筛选/选择行 -->
@@ -248,6 +253,46 @@
   </div>
 </div>
 
+<!-- 测前分析弹窗 -->
+<div class="modal-overlay" id="preAnalysisModal">
+  <div class="modal-content" style="min-width:420px;max-width:500px;">
+    <h3 style="margin-top:0;">测前分析</h3>
+    <div style="margin-bottom:0.8rem;font-size:0.85rem;color:#666;">
+      选择评测集并设置参数，提前检查 GT 质量和事件分布。
+    </div>
+    <div style="margin-bottom:0.8rem;">
+      <label>评测集 <span style="color:#e74c3c">*</span></label>
+      <select id="preAnalysisSet" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;font-size:0.95rem;">
+        <option value="">请选择评测集...</option>
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:0.8rem;">
+      <div>
+        <label>事件间隔（秒）</label>
+        <input type="number" id="preInterval" value="10.0" min="0.1" step="0.5" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+      </div>
+      <div>
+        <label>触发率（0-1）</label>
+        <input type="number" id="preTriggerRate" value="0.5" min="0" max="1" step="0.01" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:1rem;">
+      <div>
+        <label>合并间隔（秒）</label>
+        <input type="number" id="preMergeInterval" value="5.0" min="0" step="0.5" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+      </div>
+      <div>
+        <label>最小事件时长（秒）</label>
+        <input type="number" id="preMinDuration" value="0" min="0" step="0.5" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+      </div>
+    </div>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="closePreAnalysisModal()">取消</button>
+      <button class="btn" style="background:#9b59b6;color:white;" onclick="runPreAnalysis()" id="preAnalysisBtn">开始分析</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let allVideos = [];
 let selectedIds = new Set();
@@ -261,7 +306,7 @@ async function loadVideos() {
 }
 
 async function loadEvalSets() {
-  const res = await fetch('/videos/api/eval-sets');
+  const res = await fetch('/evaluation/api/eval-sets/with-analysis-count');
   const data = await res.json();
   evalSets = data.sets || [];
   const select = document.getElementById('evalSetSelect');
@@ -274,6 +319,10 @@ async function loadEvalSets() {
   filterSelect.innerHTML = '<option value="">全部视频</option>' +
     evalSets.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   filterSelect.value = currentFilter; // 保持当前选择
+
+  // 更新测前分析按钮旁的提示
+  const selectedSetId = select.value;
+  updateAnalysisHint(selectedSetId);
 }
 
 let _searchTimeout = null;
@@ -753,6 +802,79 @@ async function deleteGeneratedVideo(id) {
 document.getElementById('createSetModal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeCreateModal();
 });
+document.getElementById('preAnalysisModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closePreAnalysisModal();
+});
+
+// 评测集选择变化时更新分析次数提示
+document.getElementById('evalSetSelect').addEventListener('change', (e) => {
+  updateAnalysisHint(e.target.value);
+});
+
+function updateAnalysisHint(setId) {
+  const hint = document.getElementById('analysisCountHint');
+  if (!setId) {
+    hint.textContent = '';
+    return;
+  }
+  const set = evalSets.find(s => s.id == setId);
+  if (set && set.analysis_count > 0) {
+    hint.textContent = `（该评测集已分析 ${set.analysis_count} 次）`;
+  } else {
+    hint.textContent = '（该评测集尚未做过测前分析）';
+  }
+}
+
+function openPreAnalysisModal() {
+  const setId = document.getElementById('evalSetSelect').value;
+  const select = document.getElementById('preAnalysisSet');
+  select.innerHTML = '<option value="">请选择评测集...</option>' +
+    evalSets.map(s => `<option value="${s.id}" ${s.id == setId ? 'selected' : ''}>${escHtml(s.name)} (${s.video_count}个视频)</option>`).join('');
+  document.getElementById('preAnalysisModal').classList.add('visible');
+}
+
+function closePreAnalysisModal() {
+  document.getElementById('preAnalysisModal').classList.remove('visible');
+}
+
+async function runPreAnalysis() {
+  const setId = document.getElementById('preAnalysisSet').value;
+  if (!setId) {
+    alert('请选择评测集');
+    return;
+  }
+  const btn = document.getElementById('preAnalysisBtn');
+  btn.disabled = true;
+  btn.textContent = '分析中...';
+
+  const payload = {
+    eval_video_set_id: parseInt(setId),
+    merge_interval_sec: parseFloat(document.getElementById('preMergeInterval').value),
+    event_interval_sec: parseFloat(document.getElementById('preInterval').value),
+    trigger_rate: parseFloat(document.getElementById('preTriggerRate').value),
+    min_event_duration_sec: parseFloat(document.getElementById('preMinDuration').value),
+  };
+
+  try {
+    const res = await fetch('/evaluation/api/pre-analysis', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      closePreAnalysisModal();
+      window.location.href = `/evaluation/pre-analysis/${data.record_id}`;
+    } else {
+      alert(data.error || '分析失败');
+    }
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '开始分析';
+  }
+}
 
 loadVideos();
 loadEvalSets();

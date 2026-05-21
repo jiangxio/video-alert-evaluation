@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}测前分析历史{% endblock %}
+
+{% block content %}
+<style>
+  .breadcrumb { font-size:0.88rem; color:#888; margin-bottom:1rem; }
+  .breadcrumb a { color:#3498db; text-decoration:none; }
+
+  .help-box {
+    background: #f0f7ff;
+    border-left: 4px solid #3498db;
+    padding: 0.8rem 1rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+    font-size: 0.88rem;
+    color: #444;
+  }
+
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .filter-group {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .filter-group select {
+    padding: 0.4rem 0.6rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 0.9rem;
+  }
+
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  .history-table th {
+    background: #f0f0f0;
+    padding: 0.7rem 0.6rem;
+    text-align: left;
+    font-weight: 600;
+    color: #555;
+    border-bottom: 2px solid #ddd;
+  }
+  .history-table td {
+    padding: 0.6rem;
+    border-bottom: 1px solid #eee;
+    vertical-align: middle;
+  }
+  .history-table tr:hover { background: #fafafa; }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .badge-info { background: #e8f4f8; color: #3498db; }
+
+  .empty-state { text-align: center; padding: 3rem; color: #888; }
+
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; }
+  .page-header h2 { margin:0; }
+</style>
+
+<div class="breadcrumb">
+  <a href="/">首页</a> &rsaquo;
+  <a href="/evaluation/">评测任务</a> &rsaquo;
+  测前分析历史
+</div>
+
+<div class="card">
+  <div class="page-header">
+    <h2>测前分析历史记录</h2>
+  </div>
+
+  <div class="help-box">
+    <strong>说明：</strong>此处展示所有视频评测集的测前分析历史。测前分析用于在正式评测前检查评测集的 Ground Truth 质量、事件分布和参数合理性。
+  </div>
+
+  <div class="toolbar">
+    <div class="filter-group">
+      <span style="font-size:0.9rem;color:#555;">筛选评测集：</span>
+      <select id="set-filter" onchange="filterRecords()">
+        <option value="">全部评测集</option>
+      </select>
+    </div>
+  </div>
+
+  <table class="history-table" id="history-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>评测集</th>
+        <th>参数</th>
+        <th>事件总数</th>
+        <th>视频总时长</th>
+        <th>整体覆盖率</th>
+        <th>分析时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="empty-state" class="empty-state" style="display:none;">
+    <p>暂无测前分析记录</p>
+    <p style="font-size:0.85rem;">请在视频管理页的"评测集操作"中创建测前分析</p>
+  </div>
+</div>
+
+<script>
+let allRecords = [];
+let evalSets = [];
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function formatDuration(sec) {
+  if (!sec) return '0:00';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+  return `${m}:${s.toString().padStart(2,'0')}`;
+}
+
+async function loadEvalSets() {
+  const res = await fetch('/evaluation/api/eval-sets');
+  const data = await res.json();
+  evalSets = data.sets || [];
+  const sel = document.getElementById('set-filter');
+  sel.innerHTML = '<option value="">全部评测集</option>' +
+    evalSets.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
+}
+
+async function loadRecords() {
+  const res = await fetch('/evaluation/api/pre-analysis');
+  const data = await res.json();
+  allRecords = data.records || [];
+  renderTable();
+}
+
+function filterRecords() {
+  renderTable();
+}
+
+function renderTable() {
+  const setId = document.getElementById('set-filter').value;
+  const records = setId
+    ? allRecords.filter(r => r.eval_video_set_id == setId)
+    : allRecords;
+
+  const tbody = document.querySelector('#history-table tbody');
+  const empty = document.getElementById('empty-state');
+
+  if (records.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    document.getElementById('history-table').style.display = 'none';
+    return;
+  }
+
+  empty.style.display = 'none';
+  document.getElementById('history-table').style.display = 'table';
+
+  tbody.innerHTML = records.map(r => {
+    const result = r.result || {};
+    const stats = result.event_type_stats || {};
+    const totalEvents = Object.values(stats).reduce((s, v) => s + (v.total_count || 0), 0);
+    const coverage = result.video_coverage || {};
+    const coverageRate = ((coverage.overall_coverage_rate || 0) * 100).toFixed(1);
+    const date = r.created_at ? new Date(r.created_at).toLocaleString('zh-CN') : '-';
+    return `
+      <tr>
+        <td>${r.id}</td>
+        <td><strong>${escHtml(r.eval_set_name || '-')}</strong></td>
+        <td>
+          <span class="badge badge-info">间隔${r.event_interval_sec}s</span>
+          <span class="badge badge-info">触发率${r.trigger_rate}</span>
+          <span class="badge badge-info">最小${r.min_event_duration_sec}s</span>
+        </td>
+        <td>${totalEvents}</td>
+        <td>${formatDuration(result.total_video_duration || 0)}</td>
+        <td>${coverageRate}%</td>
+        <td>${date}</td>
+        <td>
+          <a href="/evaluation/pre-analysis/${r.id}" class="btn btn-sm">查看报告</a>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+loadEvalSets();
+loadRecords();
+</script>
+{% endblock %}

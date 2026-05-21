@@ -1524,3 +1524,478 @@ def serve_gt_frame(frame_id):
         return 'File not found', 404
 
     return send_file_with_cache(str(file_path))
+
+
+# ── 测前分析 ──────────────────────────────────────────────────────────────────
+
+def _merge_intervals(intervals):
+    """合并重叠或相邻的时间区间，返回 [(start, end), ...]"""
+    if not intervals:
+        return []
+    sorted_intervals = sorted(intervals, key=lambda x: x[0])
+    merged = [list(sorted_intervals[0])]
+    for start, end in sorted_intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def _run_pre_analysis(eval_video_set_id, merge_interval_sec, event_interval_sec,
+                      trigger_rate, min_event_duration_sec):
+    """
+    执行测前分析，返回结果字典。
+    """
+    db = get_db()
+    cursor = db.cursor()
+
+    # 获取评测视频集
+    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (eval_video_set_id,))
+    eval_set = cursor.fetchone()
+    if not eval_set:
+        return {'error': '评测视频集不存在'}
+
+    video_db_ids = []
+    if eval_set['video_ids']:
+        try:
+            video_db_ids = json.loads(eval_set['video_ids'])
+        except Exception:
+            video_db_ids = []
+
+    if not video_db_ids:
+        return {'error': '评测视频集为空'}
+
+    # 获取所有视频信息
+    placeholders = ','.join('?' for _ in video_db_ids)
+    cursor.execute(f'''
+        SELECT id, video_id, filename, duration FROM videos WHERE id IN ({placeholders})
+    ''', video_db_ids)
+    videos = {row['id']: dict(row) for row in cursor.fetchall()}
+
+    # 从 DB 获取事件（按 video_db_id）
+    cursor.execute(f'''
+        SELECT video_db_id, event_type, start_seconds, end_seconds
+        FROM events WHERE video_db_id IN ({placeholders})
+    ''', video_db_ids)
+    db_events_raw = [dict(r) for r in cursor.fetchall()]
+
+    # DB 事件按 video_db_id + type 分组计数
+    db_counts_by_video = {}  # video_db_id -> type -> count
+    for ev in db_events_raw:
+        vid = ev['video_db_id']
+        et = ev['event_type']
+        db_counts_by_video.setdefault(vid, {}).setdefault(et, 0)
+        db_counts_by_video[vid][et] += 1
+
+    # 读取 GT 文件并计算指标
+    gt_dir = Path(current_app.config['GROUND_TRUTH_DIR'])
+    all_event_types = _get_all_event_types()
+
+    # 初始化类型统计
+    event_type_stats = {}
+    for et in all_event_types:
+        event_type_stats[et] = {
+            'total_count': 0,
+            'total_duration': 0.0,
+            'durations': [],
+            'expected_alert_count': 0,
+            'filtered_count': 0,
+        }
+
+    per_video_coverage = []
+    missing_gt_videos = []
+    total_video_duration = 0.0
+
+    for vid in video_db_ids:
+        video = videos.get(vid)
+        if not video:
+            continue
+
+        video_id = video['video_id'] or ''
+        duration = video['duration'] or 0.0
+        total_video_duration += duration
+
+        # 读取 GT 文件
+        gt_file = gt_dir / f"{video_id}.json"
+        gt_events = []
+        if gt_file.exists():
+            try:
+                with open(gt_file, 'r', encoding='utf-8') as f:
+                    gt_data = json.load(f)
+                gt_events = gt_data.get('events', [])
+            except Exception:
+                gt_events = []
+
+        if not gt_events:
+            missing_gt_videos.append(video_id)
+            per_video_coverage.append({
+                'video_id': video_id,
+                'video_db_id': vid,
+                'duration': duration,
+                'has_gt': False,
+                'gt_coverage_seconds': 0.0,
+                'coverage_rate': 0.0,
+                'event_count': 0,
+            })
+            continue
+
+        # 计算该视频的 GT 覆盖时长（合并所有事件区间，跨类型）
+        all_intervals = [(e['start'], e['end']) for e in gt_events if 'start' in e and 'end' in e]
+        merged_intervals = _merge_intervals(all_intervals)
+        gt_coverage_seconds = sum(end - start for start, end in merged_intervals)
+        coverage_rate = gt_coverage_seconds / duration if duration > 0 else 0.0
+
+        event_count = len(gt_events)
+        per_video_coverage.append({
+            'video_id': video_id,
+            'video_db_id': vid,
+            'duration': duration,
+            'has_gt': True,
+            'gt_coverage_seconds': round(gt_coverage_seconds, 2),
+            'coverage_rate': round(coverage_rate, 4),
+            'event_count': event_count,
+        })
+
+        # 统计每个类型
+        for ev in gt_events:
+            et = ev.get('type', '')
+            if et not in event_type_stats:
+                continue
+            start = ev.get('start', 0)
+            end = ev.get('end', 0)
+            dur = end - start
+
+            event_type_stats[et]['total_count'] += 1
+            event_type_stats[et]['total_duration'] += dur
+            event_type_stats[et]['durations'].append(dur)
+
+            # 参数敏感性：是否被 min_event_duration_sec 过滤
+            if dur < min_event_duration_sec:
+                event_type_stats[et]['filtered_count'] += 1
+            else:
+                # 理论告警数预估
+                expected = calc_expected_count(start, end, event_interval_sec, trigger_rate, min_event_duration_sec)
+                event_type_stats[et]['expected_alert_count'] += expected
+
+    # 计算持续时间分布和最终类型统计
+    final_type_stats = {}
+    for et, stats in event_type_stats.items():
+        durations = stats['durations']
+        if not durations:
+            continue
+        durations_sorted = sorted(durations)
+        n = len(durations_sorted)
+        median = durations_sorted[n // 2] if n % 2 == 1 else (durations_sorted[n // 2 - 1] + durations_sorted[n // 2]) / 2
+
+        final_type_stats[et] = {
+            'total_count': stats['total_count'],
+            'total_duration': round(stats['total_duration'], 2),
+            'min_duration': round(min(durations), 2),
+            'max_duration': round(max(durations), 2),
+            'avg_duration': round(sum(durations) / len(durations), 2),
+            'median_duration': round(median, 2),
+            'expected_alert_count': stats['expected_alert_count'],
+            'filtered_count': stats['filtered_count'],
+            'remaining_count': stats['total_count'] - stats['filtered_count'],
+        }
+
+    # 计算总计覆盖率
+    total_gt_coverage = sum(v['gt_coverage_seconds'] for v in per_video_coverage)
+    overall_coverage_rate = total_gt_coverage / total_video_duration if total_video_duration > 0 else 0.0
+
+    # GT/DB 一致性对比
+    gt_db_diff = {}
+    inconsistent_videos = []
+    for vid in video_db_ids:
+        video = videos.get(vid)
+        if not video:
+            continue
+        video_id = video['video_id'] or ''
+        gt_file = gt_dir / f"{video_id}.json"
+        gt_counts = {}
+        if gt_file.exists():
+            try:
+                with open(gt_file, 'r', encoding='utf-8') as f:
+                    gt_data = json.load(f)
+                for ev in gt_data.get('events', []):
+                    et = ev.get('type', '')
+                    if et:
+                        gt_counts[et] = gt_counts.get(et, 0) + 1
+            except Exception:
+                pass
+
+        db_counts = db_counts_by_video.get(vid, {})
+        has_inconsistency = False
+        for et in all_event_types:
+            gt_c = gt_counts.get(et, 0)
+            db_c = db_counts.get(et, 0)
+            if gt_c > 0 or db_c > 0:
+                if et not in gt_db_diff:
+                    gt_db_diff[et] = {'gt_file': 0, 'db': 0, 'match': True}
+                gt_db_diff[et]['gt_file'] += gt_c
+                gt_db_diff[et]['db'] += db_c
+                if gt_c != db_c:
+                    has_inconsistency = True
+
+        if has_inconsistency:
+            inconsistent_videos.append({
+                'video_db_id': vid,
+                'video_id': video_id,
+            })
+
+    for et in list(gt_db_diff.keys()):
+        gt_db_diff[et]['match'] = gt_db_diff[et]['gt_file'] == gt_db_diff[et]['db']
+
+    return {
+        'event_type_stats': final_type_stats,
+        'total_video_duration': round(total_video_duration, 2),
+        'video_coverage': {
+            'total_coverage_seconds': round(total_gt_coverage, 2),
+            'overall_coverage_rate': round(overall_coverage_rate, 4),
+        },
+        'per_video_coverage': per_video_coverage,
+        'gt_db_diff': gt_db_diff,
+        'missing_gt_videos': missing_gt_videos,
+        'inconsistent_videos': inconsistent_videos,
+    }
+
+
+@bp.route('/pre-analysis')
+def pre_analysis_history_page():
+    """测前分析历史记录列表页"""
+    return render_template('pre_analysis_history.html')
+
+
+@bp.route('/pre-analysis/<int:record_id>')
+def pre_analysis_detail_page(record_id):
+    """测前分析详情页"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM pre_analysis_records WHERE id = ?', (record_id,))
+    record = cursor.fetchone()
+    if not record:
+        return '分析记录不存在', 404
+    return render_template('pre_analysis.html', record=dict(record))
+
+
+@bp.route('/api/pre-analysis', methods=['POST'])
+def create_pre_analysis():
+    """执行测前分析并保存记录"""
+    data = request.get_json() or {}
+    eval_video_set_id = data.get('eval_video_set_id')
+    if not eval_video_set_id:
+        return jsonify({'error': '请选择评测视频集'}), 400
+
+    merge_interval_sec = float(data.get('merge_interval_sec', 5.0))
+    event_interval_sec = float(data.get('event_interval_sec', 10.0))
+    trigger_rate = float(data.get('trigger_rate', 0.5))
+    min_event_duration_sec = float(data.get('min_event_duration_sec', 0))
+
+    result = _run_pre_analysis(
+        eval_video_set_id, merge_interval_sec, event_interval_sec,
+        trigger_rate, min_event_duration_sec
+    )
+    if 'error' in result:
+        return jsonify({'error': result['error']}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''
+        INSERT INTO pre_analysis_records
+        (eval_video_set_id, merge_interval_sec, event_interval_sec, trigger_rate, min_event_duration_sec, result_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (
+        eval_video_set_id, merge_interval_sec, event_interval_sec,
+        trigger_rate, min_event_duration_sec,
+        json.dumps(result, ensure_ascii=False)
+    ))
+    db.commit()
+    record_id = cursor.lastrowid
+
+    return jsonify({'success': True, 'record_id': record_id, 'result': result})
+
+
+@bp.route('/api/pre-analysis', methods=['GET'])
+def list_pre_analysis():
+    """列出所有测前分析历史记录"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT p.*, e.name as eval_set_name
+        FROM pre_analysis_records p
+        LEFT JOIN eval_video_sets e ON e.id = p.eval_video_set_id
+        ORDER BY p.created_at DESC
+    ''')
+    records = []
+    for row in cursor.fetchall():
+        r = dict(row)
+        try:
+            r['result'] = json.loads(r['result_json'])
+        except Exception:
+            r['result'] = {}
+        del r['result_json']
+        records.append(r)
+    return jsonify({'records': records})
+
+
+@bp.route('/api/pre-analysis/<int:record_id>', methods=['GET'])
+def get_pre_analysis(record_id):
+    """获取单个测前分析详情"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT p.*, e.name as eval_set_name
+        FROM pre_analysis_records p
+        LEFT JOIN eval_video_sets e ON e.id = p.eval_video_set_id
+        WHERE p.id = ?
+    ''', (record_id,))
+    row = cursor.fetchone()
+    if not row:
+        return jsonify({'error': '分析记录不存在'}), 404
+
+    r = dict(row)
+    try:
+        r['result'] = json.loads(r['result_json'])
+    except Exception:
+        r['result'] = {}
+    del r['result_json']
+    return jsonify(r)
+
+
+@bp.route('/api/pre-analysis/by-set/<int:set_id>', methods=['GET'])
+def list_pre_analysis_by_set(set_id):
+    """获取某个评测集的测前分析历史"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT p.*, e.name as eval_set_name
+        FROM pre_analysis_records p
+        LEFT JOIN eval_video_sets e ON e.id = p.eval_video_set_id
+        WHERE p.eval_video_set_id = ?
+        ORDER BY p.created_at DESC
+    ''', (set_id,))
+    records = []
+    for row in cursor.fetchall():
+        r = dict(row)
+        try:
+            r['result'] = json.loads(r['result_json'])
+        except Exception:
+            r['result'] = {}
+        del r['result_json']
+        records.append(r)
+    return jsonify({'records': records})
+
+
+@bp.route('/api/eval-sets/with-analysis-count', methods=['GET'])
+def list_eval_sets_with_analysis_count():
+    """获取所有评测视频集，附带分析次数"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT e.*, COUNT(p.id) as analysis_count
+        FROM eval_video_sets e
+        LEFT JOIN pre_analysis_records p ON p.eval_video_set_id = e.id
+        GROUP BY e.id
+        ORDER BY e.created_at DESC
+    ''')
+    sets = []
+    for row in cursor.fetchall():
+        s = dict(row)
+        if s.get('video_ids'):
+            try:
+                s['video_ids'] = json.loads(s['video_ids'])
+            except Exception:
+                s['video_ids'] = []
+        else:
+            s['video_ids'] = []
+        s['video_count'] = len(s['video_ids'])
+        s['analysis_count'] = row['analysis_count'] or 0
+        sets.append(s)
+    return jsonify({'sets': sets})
+
+
+@bp.route('/api/sync-gt', methods=['POST'])
+def sync_ground_truth():
+    """同步 Ground Truth：JSON 文件与 DB 标注互相同步"""
+    data = request.get_json() or {}
+    video_db_id = data.get('video_db_id')
+    direction = data.get('direction')  # 'db_to_gt' or 'gt_to_db'
+
+    if not video_db_id:
+        return jsonify({'error': '缺少视频ID'}), 400
+    if direction not in ('db_to_gt', 'gt_to_db'):
+        return jsonify({'error': '同步方向必须是 db_to_gt 或 gt_to_db'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_db_id,))
+    video = cursor.fetchone()
+    if not video:
+        return jsonify({'error': '视频不存在'}), 404
+
+    vid = video['video_id']
+    if not vid:
+        return jsonify({'error': '视频ID未设置'}), 400
+
+    gt_dir = Path(current_app.config['GROUND_TRUTH_DIR'])
+    gt_file = gt_dir / f"{vid}.json"
+
+    if direction == 'db_to_gt':
+        # 以 DB 标注为准，生成 JSON 文件
+        # 先读取当前 DB 事件
+        cursor.execute(
+            'SELECT event_type, start_seconds, end_seconds FROM events WHERE video_db_id = ? ORDER BY start_seconds',
+            (video_db_id,)
+        )
+        events = cursor.fetchall()
+
+        gt_data = {
+            'file': video['filename'],
+            'id': vid,
+            'events': [
+                {'type': e['event_type'], 'start': e['start_seconds'], 'end': e['end_seconds']}
+                for e in events
+            ]
+        }
+
+        gt_dir.mkdir(parents=True, exist_ok=True)
+        with open(str(gt_file), 'w', encoding='utf-8') as f:
+            json.dump(gt_data, f, ensure_ascii=False, indent=2)
+
+        return jsonify({
+            'success': True,
+            'message': f'已将 {len(events)} 条标注同步到 GT 文件',
+            'event_count': len(events),
+        })
+
+    else:
+        # 以 GT 文件为准，同步到 DB 标注
+        if not gt_file.exists():
+            return jsonify({'error': 'GT 文件不存在'}), 404
+
+        try:
+            with open(str(gt_file), 'r', encoding='utf-8') as f:
+                gt_data = json.load(f)
+        except Exception as e:
+            return jsonify({'error': f'读取 GT 文件失败: {str(e)}'}), 500
+
+        events = gt_data.get('events', [])
+
+        # 删除旧的 DB 事件
+        cursor.execute('DELETE FROM events WHERE video_db_id = ?', (video_db_id,))
+
+        added = 0
+        for event in events:
+            cursor.execute(
+                'INSERT INTO events (video_db_id, event_type, start_seconds, end_seconds, gt_frames_status) VALUES (?, ?, ?, ?, ?)',
+                (video_db_id, event.get('type'), event.get('start'), event.get('end'), 'pending')
+            )
+            added += 1
+
+        db.commit()
+        return jsonify({
+            'success': True,
+            'message': f'已将 {added} 条事件从 GT 文件同步到标注',
+            'added': added,
+        })

@@ -434,7 +434,80 @@ def delete_image(image_id):
     return jsonify({'success': True})
 
 
-# ── OCR ───────────────────────────────────────────────────────────────────────
+@bp.route('/api/images/batch-delete', methods=['POST'])
+def batch_delete_images():
+    """批量删除图片"""
+    data = request.get_json() or {}
+    image_ids = data.get('image_ids', [])
+    if not image_ids:
+        return jsonify({'error': '未指定图片'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    deleted = 0
+    for img_id in image_ids:
+        cursor.execute('SELECT file_path FROM alert_images WHERE id = ?', (img_id,))
+        row = cursor.fetchone()
+        if row:
+            try:
+                os.unlink(row['file_path'])
+            except Exception:
+                pass
+            cursor.execute('DELETE FROM alert_images WHERE id = ?', (img_id,))
+            deleted += 1
+    db.commit()
+    return jsonify({'success': True, 'deleted': deleted})
+
+
+@bp.route('/api/images/batch-download', methods=['POST'])
+def batch_download_images():
+    """批量下载图片为 zip 包"""
+    import io
+    import zipfile as zf
+
+    data = request.get_json() or {}
+    image_ids = data.get('image_ids', [])
+    if not image_ids:
+        return jsonify({'error': '未指定图片'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    buf = io.BytesIO()
+    added = 0
+    seen_names = set()
+    import uuid as _uuid
+
+    with zf.ZipFile(buf, 'w', zf.ZIP_DEFLATED) as zout:
+        for img_id in image_ids:
+            cursor.execute(
+                'SELECT file_path, filename FROM alert_images WHERE id = ?', (img_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                continue
+            path = Path(row['file_path'])
+            if not path.exists():
+                continue
+            # 防重名
+            name = row['filename']
+            base, ext = os.path.splitext(name)
+            while name in seen_names:
+                name = f'{base}_{_uuid.uuid4().hex[:6]}{ext}'
+            seen_names.add(name)
+            zout.write(str(path), name)
+            added += 1
+
+    if added == 0:
+        return jsonify({'error': '没有可下载的图片'}), 404
+
+    buf.seek(0)
+    from flask import send_file as _send_file
+    return _send_file(
+        buf,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=f'images_{added}.zip'
+    )
 
 @bp.route('/api/images/<int:image_id>/ocr', methods=['POST'])
 def ocr_single(image_id):
@@ -518,19 +591,30 @@ def ocr_batch(dataset_id):
     if not cursor.fetchone():
         return jsonify({'error': '数据集不存在'}), 404
 
-    cursor.execute(
-        'SELECT id, file_path FROM alert_images WHERE dataset_id = ?',
-        (dataset_id,)
-    )
-    images = [dict(r) for r in cursor.fetchall()]
-    if not images:
-        return jsonify({'error': '数据集内没有图片'}), 400
-
-    # 获取 stop_on_failure 参数，默认为 False
+    # 获取参数
+    only_missing = False
     stop_on_failure = False
     if request.is_json:
         data = request.get_json() or {}
         stop_on_failure = data.get('stop_on_failure', False)
+        only_missing = data.get('only_missing', False)
+
+    if only_missing:
+        cursor.execute('''
+            SELECT a.id, a.file_path FROM alert_images a
+            WHERE a.dataset_id = ?
+            AND a.id NOT IN (
+                SELECT alert_image_id FROM ocr_results WHERE success = 1
+            )
+        ''', (dataset_id,))
+    else:
+        cursor.execute(
+            'SELECT id, file_path FROM alert_images WHERE dataset_id = ?',
+            (dataset_id,)
+        )
+    images = [dict(r) for r in cursor.fetchall()]
+    if not images:
+        return jsonify({'error': '数据集内没有图片' if not only_missing else '没有需要补充OCR的图片'}), 400
 
     with _ocr_lock:
         if _ocr_progress.get(dataset_id, {}).get('running'):

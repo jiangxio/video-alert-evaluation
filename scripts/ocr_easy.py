@@ -79,8 +79,13 @@ def parse_watermark_text(text):
     cleaned = re.sub(r'[Oo]', '0', cleaned)
     # 把逗号归一化为点（OCR 容易把小数点 . 认成逗号 ,）
     cleaned = re.sub(r',', '.', cleaned)
+    # 把 * 归一化为冒号（OCR 容易把第二个冒号 : 认成 *）
+    cleaned = re.sub(r'\*', ':', cleaned)
 
     # ── 时间戳清洗（多阶段，按 OCR 常见误识别逐一修正） ──────────────────────
+    # 阶段0: 补齐单数 HH（如 0:00:08.808 → 00:00:08.808）
+    cleaned = re.sub(r'\b(\d):(\d{2}):(\d{2})\.(\d{3})\b', r'0\1:\2:\3.\4', cleaned)
+
     # 阶段1: 合并连续标点（如 ".:" ":." ".."）
     cleaned = re.sub(r'[.:]{2,}', lambda m: ':' if ':' in m.group() else '.', cleaned)
 
@@ -131,6 +136,31 @@ def parse_watermark_text(text):
 
     # 阶段7: 兜底D — 第一个冒号变空格、第二个冒号变点（如 00 34.50.133 → 00:34:50.133）
     m = re.search(r'\b(\d{2})\s+(\d{2})\.(\d{2})\.(\d{3})\b', cleaned)
+    if m:
+        hh, mm, ss, ms = m.group(1), m.group(2), m.group(3), m.group(4)
+        hh_int, mm_int, ss_int = int(hh), int(mm), int(ss)
+        if hh_int < 24 and mm_int < 60 and ss_int < 60:
+            cleaned = re.sub(
+                re.escape(m.group(0)),
+                f'{hh}:{mm}:{ss}.{ms}',
+                cleaned
+            )
+
+    # 阶段8: 兜底E — 第一个冒号变点、第二个冒号消失，SS+ms粘连（如 00.015164 → 00:01:51.164）
+    m = re.search(r'\b(\d{2})\.(\d{2})\s+(\d{5})\b', cleaned)
+    if m:
+        hh, mm, tail = m.group(1), m.group(2), m.group(3)
+        ss, ms = tail[:2], tail[2:]
+        hh_int, mm_int, ss_int = int(hh), int(mm), int(ss)
+        if hh_int < 24 and mm_int < 60 and ss_int < 60:
+            cleaned = re.sub(
+                re.escape(m.group(0)),
+                f'{hh}:{mm}:{ss}.{ms}',
+                cleaned
+            )
+
+    # 阶段9: 兜底F — 全部粘连无分隔符 HHMMSSms（如 000140100 → 00:01:40.100）
+    m = re.search(r'\b(\d{2})(\d{2})(\d{2})(\d{3})\b', cleaned)
     if m:
         hh, mm, ss, ms = m.group(1), m.group(2), m.group(3), m.group(4)
         hh_int, mm_int, ss_int = int(hh), int(mm), int(ss)

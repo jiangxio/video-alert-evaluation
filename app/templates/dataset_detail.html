@@ -35,6 +35,7 @@
     cursor:pointer; border:2px solid transparent; border-radius:6px;
     overflow:hidden; transition:border-color .15s;
     background:#f5f5f5;
+    position:relative;
   }
   .img-cell:hover { border-color:#3498db; }
   .img-cell img {
@@ -81,6 +82,23 @@
   .btn-secondary:hover { background:#636e72; }
 
   @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* 筛选工具栏 */
+  .filter-bar { display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap; background:#f8f9fa; padding:0.7rem; border-radius:6px; margin:0.8rem 0; }
+  .filter-bar label { font-size:0.82rem; color:#666; white-space:nowrap; }
+  .filter-bar select, .filter-bar input { padding:0.3rem 0.5rem; border:1px solid #ccc; border-radius:4px; font-size:0.85rem; }
+  .filter-bar input[type=text] { width:120px; }
+  .filter-bar input[type=number] { width:80px; }
+
+  /* 批量操作栏 */
+  .batch-bar { display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap; margin-bottom:0.8rem; }
+  .batch-bar.hidden { display:none; }
+  .batch-count { font-size:0.88rem; color:#3498db; font-weight:600; }
+
+  /* 图片格子复选框 */
+  .cell-checkbox { position:absolute; top:4px; left:4px; width:16px; height:16px; cursor:pointer; z-index:2; accent-color:#3498db; }
+  .cell-checkbox.hidden { display:none; }
+  .img-cell.selected { border-color:#3498db; box-shadow:0 0 0 2px rgba(52,152,219,.3); }
 </style>
 
 <div class="breadcrumb">
@@ -104,8 +122,42 @@
   </div>
   <div id="upload-msg"></div>
 
+  <!-- 筛选工具栏 -->
+  <div class="filter-bar">
+    <label>事件类型</label>
+    <select id="filterEventType" onchange="applyFilters()">
+      <option value="">全部</option>
+    </select>
+    <label>Video ID</label>
+    <input type="text" id="filterVideoId" placeholder="10位数字" oninput="applyFilters()">
+    <label>时间戳(s)</label>
+    <input type="number" id="filterTsMin" placeholder="最小" step="any" onchange="applyFilters()">
+    <span style="color:#888;">-</span>
+    <input type="number" id="filterTsMax" placeholder="最大" step="any" onchange="applyFilters()">
+    <label>OCR状态</label>
+    <select id="filterOcrStatus" onchange="applyFilters()">
+      <option value="">全部</option>
+      <option value="yes">已执行</option>
+      <option value="no">未执行</option>
+    </select>
+    <button class="btn btn-sm btn-secondary" onclick="resetFilters()">清除筛选</button>
+    <span style="font-size:0.85rem;color:#888;" id="filter-count"></span>
+  </div>
+
+  <!-- 批量操作栏 -->
+  <div class="batch-bar hidden" id="batch-bar">
+    <label style="font-size:0.85rem;cursor:pointer;user-select:none;">
+      <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()"> 全选可见
+    </label>
+    <span class="batch-count" id="batch-count"></span>
+    <button class="btn btn-sm" onclick="batchDownloadSelected()">批量下载</button>
+    <button class="btn btn-sm btn-danger" onclick="batchDeleteSelected()">批量删除</button>
+  </div>
+
   <div class="toolbar">
-    <button class="btn btn-sm" onclick="openOcrModal()">全部执行 OCR</button>
+    <button class="btn btn-sm" onclick="openOcrModal(false)">全部执行 OCR</button>
+    <button class="btn btn-sm btn-success" onclick="openOcrModal(true)">补充执行 OCR</button>
+    <button class="btn btn-sm btn-secondary" id="btn-select-mode" onclick="toggleSelectMode()">批量选择</button>
     <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.85rem;">
       <input type="checkbox" id="stop-on-failure">
       失败时停止
@@ -174,41 +226,209 @@ let EVENT_TYPES = [];  // 从配置文件动态加载
 let allImages = [];
 let currentImageId = null;
 let ocrPollTimer = null;
+let selectedImageIds = new Set();
+let selectMode = false;  // 是否显示复选框
 
 // ── 加载图片 ──────────────────────────────────────────────────────────────────
 async function loadImages() {
   const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/images`);
   allImages = await res.json();
-  renderGrid(allImages);
+  applyFilters();
+}
+
+function getFilteredImages() {
+  const eventType = document.getElementById('filterEventType').value;
+  const videoId = document.getElementById('filterVideoId').value.trim();
+  const tsMin = parseFloat(document.getElementById('filterTsMin').value) || null;
+  const tsMax = parseFloat(document.getElementById('filterTsMax').value) || null;
+  const ocrStatus = document.getElementById('filterOcrStatus').value;
+
+  return allImages.filter(img => {
+    if (eventType && img.event_label !== eventType && img.alert_type !== eventType) return false;
+    if (videoId && (!img.ocr || !img.ocr.video_id || !img.ocr.video_id.includes(videoId))) return false;
+    if (tsMin !== null && (!img.ocr || img.ocr.timestamp_seconds == null || img.ocr.timestamp_seconds < tsMin)) return false;
+    if (tsMax !== null && (!img.ocr || img.ocr.timestamp_seconds == null || img.ocr.timestamp_seconds > tsMax)) return false;
+    if (ocrStatus === 'yes' && (!img.ocr || !img.ocr.success)) return false;
+    if (ocrStatus === 'no' && img.ocr && img.ocr.success) return false;
+    return true;
+  });
+}
+
+function applyFilters() {
+  const filtered = getFilteredImages();
+  document.getElementById('filter-count').textContent = filtered.length !== allImages.length ? `显示 ${filtered.length}/${allImages.length} 张` : '';
+  // 清除不可见图片的选中状态
+  const filteredIds = new Set(filtered.map(i => i.id));
+  for (const id of selectedImageIds) {
+    if (!filteredIds.has(id)) selectedImageIds.delete(id);
+  }
+  renderGrid(filtered);
+}
+
+function resetFilters() {
+  document.getElementById('filterEventType').value = '';
+  document.getElementById('filterVideoId').value = '';
+  document.getElementById('filterTsMin').value = '';
+  document.getElementById('filterTsMax').value = '';
+  document.getElementById('filterOcrStatus').value = '';
+  applyFilters();
 }
 
 function renderGrid(images) {
   const grid = document.getElementById('img-grid');
   const empty = document.getElementById('empty-grid');
-  document.getElementById('img-count-badge').textContent = `共 ${images.length} 张`;
+  document.getElementById('img-count-badge').textContent = `共 ${allImages.length} 张`;
 
   // 移除旧的图片格子（保留 empty-grid）
   grid.querySelectorAll('.img-cell').forEach(el => el.remove());
 
-  if (!images.length) { empty.style.display = 'block'; return; }
+  if (!images.length) { empty.style.display = 'block'; updateBatchBar(); return; }
   empty.style.display = 'none';
 
-  const ocrOk = images.filter(i => i.ocr && i.ocr.success).length;
+  const ocrOk = allImages.filter(i => i.ocr && i.ocr.success).length;
   document.getElementById('ocr-summary').textContent =
-    ocrOk ? `已完成 OCR ${ocrOk} / ${images.length} 张` : '';
+    ocrOk ? `已完成 OCR ${ocrOk} / ${allImages.length} 张` : '';
 
   for (const img of images) {
     const cell = document.createElement('div');
     cell.className = 'img-cell' + (img.ocr ? (img.ocr.success ? ' ocr-ok' : ' ocr-fail') : '');
+    if (selectedImageIds.has(img.id)) cell.classList.add('selected');
     cell.dataset.id = img.id;
-    cell.onclick = () => openDetail(img.id);
+
+    // 复选框
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'cell-checkbox' + (selectMode ? '' : ' hidden');
+    cb.checked = selectedImageIds.has(img.id);
+    cb.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSelectImage(img.id, cb.checked);
+    });
+    cell.appendChild(cb);
+
+    // 点击图片区域打开详情（不点复选框）
+    cell.addEventListener('click', (e) => {
+      if (e.target.tagName !== 'INPUT') openDetail(img.id);
+    });
 
     const label = img.event_label || img.alert_type || '';
-    cell.innerHTML = `
-      <img src="/alerts/api/images/${img.id}/file" loading="lazy" alt="${escHtml(img.filename)}">
-      <div class="img-label${label ? '' : ' no-label'}">${escHtml(label || '未标记')}</div>
-    `;
+    const imgEl = document.createElement('img');
+    imgEl.src = `/alerts/api/images/${img.id}/file`;
+    imgEl.loading = 'lazy';
+    imgEl.alt = img.filename;
+    cell.appendChild(imgEl);
+
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'img-label' + (label ? '' : ' no-label');
+    labelDiv.textContent = label || '未标记';
+    cell.appendChild(labelDiv);
+
     grid.appendChild(cell);
+  }
+  updateBatchBar();
+}
+
+// ── 批量操作 ──────────────────────────────────────────────────────────────────
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  if (!selectMode) {
+    selectedImageIds.clear();
+  }
+  const btn = document.getElementById('btn-select-mode');
+  btn.textContent = selectMode ? '取消选择' : '批量选择';
+  btn.classList.toggle('btn-secondary', !selectMode);
+  btn.classList.toggle('btn-warning', selectMode);
+  applyFilters();
+}
+
+function toggleSelectImage(imageId, checked) {
+  if (checked) selectedImageIds.add(imageId);
+  else selectedImageIds.delete(imageId);
+  applyFilters();
+}
+
+function toggleSelectAll() {
+  const checked = document.getElementById('selectAllCheckbox').checked;
+  const visibleIds = new Set(getFilteredImages().map(i => i.id));
+  if (checked) {
+    for (const id of visibleIds) selectedImageIds.add(id);
+  } else {
+    for (const id of visibleIds) selectedImageIds.delete(id);
+  }
+  // 直接重新渲染网格（不走 applyFilters，避免 updateBatchBar 重置 checkbox 状态）
+  renderGrid(getFilteredImages());
+  // 手动更新批次计数，保留 checkbox 当前状态
+  _updateBatchCount();
+}
+
+function _updateBatchCount() {
+  const count = selectedImageIds.size;
+  document.getElementById('batch-count').textContent = count ? `已选 ${count} 张` : '未选中图片';
+}
+
+function updateBatchBar() {
+  const bar = document.getElementById('batch-bar');
+  const count = selectedImageIds.size;
+  document.getElementById('batch-count').textContent = count ? `已选 ${count} 张` : '未选中图片';
+
+  // 根据当前可见图片的选中情况同步 checkbox 状态
+  const visibleIds = getFilteredImages().map(i => i.id);
+  const cb = document.getElementById('selectAllCheckbox');
+  if (visibleIds.length > 0 && visibleIds.every(id => selectedImageIds.has(id))) {
+    cb.checked = true;
+    cb.indeterminate = false;
+  } else if (visibleIds.some(id => selectedImageIds.has(id))) {
+    cb.checked = false;
+    cb.indeterminate = true;   // 部分选中显示半选状态
+  } else {
+    cb.checked = false;
+    cb.indeterminate = false;
+  }
+
+  bar.classList.toggle('hidden', !selectMode);
+}
+
+async function batchDownloadSelected() {
+  const ids = Array.from(selectedImageIds);
+  if (!ids.length) return;
+
+  const res = await fetch('/alerts/api/images/batch-download', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({image_ids: ids})
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert('下载失败: ' + (data.error || '未知错误'));
+    return;
+  }
+  // 触发浏览器下载
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `images_${ids.length}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function batchDeleteSelected() {
+  const ids = Array.from(selectedImageIds);
+  if (!ids.length) return;
+  if (!confirm(`确认删除选中的 ${ids.length} 张图片？此操作不可撤销。`)) return;
+
+  const res = await fetch('/alerts/api/images/batch-delete', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({image_ids: ids})
+  });
+  const data = await res.json();
+  if (res.ok) {
+    selectedImageIds.clear();
+    toggleSelectMode();  // 退出选择模式
+    loadImages();
+  } else {
+    alert('删除失败: ' + (data.error || '未知错误'));
   }
 }
 
@@ -398,7 +618,7 @@ async function saveManualOcr() {
 }
 
 // ── 批量 OCR ──────────────────────────────────────────────────────────────────
-async function openOcrModal() {
+async function openOcrModal(onlyMissing = false) {
   document.getElementById('ocr-log').innerHTML = '';
   document.getElementById('ocr-bar').style.width = '0%';
   document.getElementById('ocr-progress-text').textContent = '启动中…';
@@ -410,7 +630,7 @@ async function openOcrModal() {
   const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/batch`, {
     method:'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({stop_on_failure: stopOnFailure})
+    body: JSON.stringify({stop_on_failure: stopOnFailure, only_missing: onlyMissing})
   });
   const data = await res.json();
   if (!res.ok) {
@@ -593,13 +813,23 @@ async function init() {
   EVENT_TYPES = types.map(t => t.name);
 
   // 动态填充详情弹窗的事件类型下拉框
-  const sel = document.getElementById('detail-label');
-  sel.innerHTML = '<option value="">未标记</option>';
+  const detailSel = document.getElementById('detail-label');
+  detailSel.innerHTML = '<option value="">未标记</option>';
+
+  // 动态填充筛选工具栏的事件类型下拉框
+  const filterSel = document.getElementById('filterEventType');
+  filterSel.innerHTML = '<option value="">全部</option>';
+
   for (const t of types) {
-    const opt = document.createElement('option');
-    opt.value = t.name;
-    opt.textContent = `${t.name}  (${t.id})`;
-    sel.appendChild(opt);
+    const opt1 = document.createElement('option');
+    opt1.value = t.name;
+    opt1.textContent = `${t.name}  (${t.id})`;
+    detailSel.appendChild(opt1);
+
+    const opt2 = document.createElement('option');
+    opt2.value = t.name;
+    opt2.textContent = `${t.name}  (${t.id})`;
+    filterSel.appendChild(opt2);
   }
 
   await loadImages();

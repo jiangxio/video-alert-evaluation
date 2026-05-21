@@ -1138,16 +1138,18 @@ def get_event_gt_frames(video_id, event_id):
 
 
 def _capture_gt_frames_async(video_db_id, event_id, event_type, start_sec, end_sec, project_root):
-    """后台异步：在事件范围内每秒截取一帧，保存为 GT 帧"""
+    """后台异步：在事件范围内截取 GT 帧，按视频ID+时间秒命名以支持跨事件复用。
+
+    帧数控制在 60 以内，长事件自动均匀间隔采样。
+    """
+    import math
     import sqlite3
 
-    # 后台线程需要自己创建数据库连接
     conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     try:
-        # 更新状态为 processing
         cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('processing', event_id))
         conn.commit()
 
@@ -1158,7 +1160,8 @@ def _capture_gt_frames_async(video_db_id, event_id, event_type, start_sec, end_s
             conn.commit()
             return
 
-        # 优先使用打水印后的视频
+        video_id_str = video['video_id']
+
         cursor.execute('''
             SELECT output_path FROM watermarked_videos
             WHERE original_video_id = ?
@@ -1171,34 +1174,50 @@ def _capture_gt_frames_async(video_db_id, event_id, event_type, start_sec, end_s
             conn.commit()
             return
 
-        # 创建输出目录（使用传入的 project_root）
-        frames_dir = Path(project_root) / 'ground_truth_frames' / video['video_id']
+        frames_dir = Path(project_root) / 'ground_truth_frames' / video_id_str
         frames_dir.mkdir(parents=True, exist_ok=True)
 
-        # 用 FFmpeg 每秒截一帧
-        for t in range(int(start_sec), int(end_sec) + 1):
-            filename = f'{event_id}_{t}.png'
+        # 计算采样时间点，控制在 60 帧以内
+        total_seconds = int(end_sec) - int(start_sec) + 1
+        if total_seconds <= 60:
+            timestamps = list(range(int(start_sec), int(end_sec) + 1))
+        else:
+            interval = math.ceil(total_seconds / 60)
+            timestamps = list(range(int(start_sec), int(end_sec) + 1, interval))
+
+        for t in timestamps:
+            filename = f'{video_id_str}_{t}.png'
             out_path = frames_dir / filename
 
-            # 检查是否已经存在（防重复）
-            if out_path.exists():
-                # 检查数据库中是否已有记录
-                cursor.execute('''
-                    SELECT id FROM gt_frames
-                    WHERE event_id = ? AND timestamp_sec = ?
-                ''', (event_id, float(t)))
-                if cursor.fetchone():
-                    continue  # 已存在，跳过
+            # 先检查数据库中是否已有该视频+时间戳的帧（任意事件均可复用）
+            cursor.execute('''
+                SELECT id, file_path FROM gt_frames
+                WHERE video_db_id = ? AND timestamp_sec = ?
+                LIMIT 1
+            ''', (video_db_id, float(t)))
+            existing = cursor.fetchone()
 
-            try:
-                subprocess.run([
-                    'ffmpeg', '-ss', str(t), '-i', str(video_path),
-                    '-vframes', '1', '-y', '-f', 'image2',
-                    '-loglevel', 'error',
-                    str(out_path)
-                ], timeout=30, check=True)
-            except Exception:
+            if existing and Path(existing['file_path']).exists():
+                # 复用已有帧文件，插入新记录关联当前 event
+                cursor.execute('''
+                    INSERT INTO gt_frames
+                    (video_db_id, event_id, event_type, timestamp_sec, file_path, filename)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (video_db_id, event_id, event_type, float(t), existing['file_path'], filename))
+                conn.commit()
                 continue
+
+            # 文件不存在或数据库无记录，需要生成
+            if not out_path.exists():
+                try:
+                    subprocess.run([
+                        'ffmpeg', '-ss', str(t), '-i', str(video_path),
+                        '-vframes', '1', '-y', '-f', 'image2',
+                        '-loglevel', 'error',
+                        str(out_path)
+                    ], timeout=30, check=True)
+                except Exception:
+                    continue
 
             if out_path.exists():
                 cursor.execute('''
@@ -1208,12 +1227,10 @@ def _capture_gt_frames_async(video_db_id, event_id, event_type, start_sec, end_s
                 ''', (video_db_id, event_id, event_type, float(t), str(out_path), filename))
                 conn.commit()
 
-        # 完成
         cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('done', event_id))
         conn.commit()
 
-    except Exception as e:
-        # 出错
+    except Exception:
         cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
         conn.commit()
     finally:

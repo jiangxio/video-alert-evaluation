@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-一次性迁移脚本：将所有 ground truth 时间偏移 +5 秒。
-用于配合"视频开头增加 5 秒空白页"的改动。
+一次性迁移脚本：将所有 ground truth 时间偏移 -5 秒。
+用于回退"视频开头增加 5 秒空白页"的改动。
 """
 import json
 import sqlite3
@@ -14,7 +14,7 @@ DB_PATH = PROJECT_ROOT / 'benchmark.db'
 
 
 def migrate_json_files():
-    """偏移所有 ground_truth/*.json 的 start/end +5 秒"""
+    """偏移所有 ground_truth/*.json 的 start/end -5 秒"""
     if not GT_DIR.exists():
         print("ground_truth 目录不存在，跳过 JSON 迁移")
         return 0
@@ -29,10 +29,10 @@ def migrate_json_files():
             modified = False
             for evt in events:
                 if 'start' in evt:
-                    evt['start'] = round(evt['start'] + 5, 3)
+                    evt['start'] = round(evt['start'] - 5, 3)
                     modified = True
                 if 'end' in evt:
-                    evt['end'] = round(evt['end'] + 5, 3)
+                    evt['end'] = round(evt['end'] - 5, 3)
                     modified = True
 
             if modified:
@@ -48,7 +48,7 @@ def migrate_json_files():
 
 
 def migrate_db():
-    """偏移数据库 events 和 ground_truth 表的时间 +5 秒"""
+    """偏移数据库 events 和 ground_truth 表的时间 -5 秒"""
     if not DB_PATH.exists():
         print("数据库不存在，跳过数据库迁移")
         return 0, 0
@@ -57,11 +57,11 @@ def migrate_db():
     cursor = conn.cursor()
 
     # 1. events 表
-    cursor.execute("UPDATE events SET start_seconds = start_seconds + 5, end_seconds = end_seconds + 5")
+    cursor.execute("UPDATE events SET start_seconds = start_seconds - 5, end_seconds = end_seconds - 5")
     events_updated = cursor.rowcount
 
     # 2. ground_truth 表
-    cursor.execute("UPDATE ground_truth SET start_seconds = start_seconds + 5, end_seconds = end_seconds + 5")
+    cursor.execute("UPDATE ground_truth SET start_seconds = start_seconds - 5, end_seconds = end_seconds - 5")
     gt_updated = cursor.rowcount
 
     conn.commit()
@@ -72,10 +72,10 @@ def migrate_db():
 
 
 if __name__ == '__main__':
-    print("开始 ground truth +5 秒迁移...")
+    print("开始 ground truth -5 秒回退...")
     print("-" * 40)
     migrate_json_files()
     print("-" * 40)
     migrate_db()
     print("-" * 40)
-    print("迁移完成。请确认所有视频已重新打水印（带 5 秒空白页）。")
+    print("回退完成。请确认所有视频已重新打水印（不带 5 秒空白页）。")

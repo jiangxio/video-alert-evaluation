@@ -75,9 +75,9 @@ def parse_watermark_text(text):
     cleaned = re.sub(r'\s+', ' ', text.strip())
     # 把字母 O 替换成数字 0（OCR 容易把 0 认成 O）
     cleaned = re.sub(r'[Oo]', '0', cleaned)
-    # 自动纠正：把时间戳里的冒号/点混用统一为 HH:MM:SS.sss
-    # 支持 00:02:27.440 / 00.02.27.440 / 00:02.27.440 等变体
-    cleaned = re.sub(r'(\d{2})[:.](\d{2})[:.](\d{2})[:.](\d{3})', r'\1:\2:\3.\4', cleaned)
+    # 自动纠正：把时间戳里的冒号/点/3 混用统一为 HH:MM:SS.sss
+    # 支持 00:02:27.440 / 00.02.27.440 / 00:02.27.440 / 00.01334.733 等变体
+    cleaned = re.sub(r'(\d{2})[:.](\d{2})[.:3](\d{2})\.(\d{3})', r'\1:\2:\3.\4', cleaned)
 
     # 提取视频ID（恰好10位数字）
     id_match = re.search(r'\b(\d{10})\b', cleaned)

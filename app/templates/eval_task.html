@@ -300,6 +300,7 @@
     <div id="finalize-bar" style="display:none; text-align:right; margin-bottom:0.8rem;">
       <button class="btn btn-success" id="btn-finalize" onclick="doFinalize()">确认结果</button>
       <span id="finalized-label" style="display:none; color:#27ae60; font-weight:600;">✓ 已确认</span>
+      <button class="btn btn-sm" id="btn-unconfirm" style="display:none; background:#e74c3c; color:white; margin-left:0.5rem;" onclick="doUnconfirm()">取消确认</button>
     </div>
 
     <!-- 共用过滤栏 -->
@@ -356,6 +357,7 @@
           <button class="btn btn-sm btn-secondary" id="rg-btn-miss" onclick="setGtFilter('miss')">漏检</button>
           <button class="btn btn-sm btn-secondary" id="rg-btn-hit" onclick="setGtFilter('hit')">命中</button>
         </div>
+        <span style="font-size:0.8rem;color:#888;">* 表示预期触发次数已手动修改</span>
       </div>
       <div class="img-grid" id="gt-result-grid"></div>
     </div>
@@ -892,7 +894,8 @@ function renderGtGrid() {
 
     const isFull = actual >= confirmed;
     const badgeCls = isFull ? 'badge-hit' : (actual > 0 ? 'badge-partial' : 'badge-miss');
-    const badgeText = actual + '/' + confirmed;
+    const isModified = r.confirmed_count !== undefined && r.confirmed_count !== null && r.confirmed_count !== r.expected_count;
+    const badgeText = actual + '/' + confirmed + (isModified ? '*' : '');
 
     const cell = document.createElement('div');
     cell.className = 'img-cell';
@@ -973,6 +976,44 @@ async function updateManualStatus(mergedId, status) {
   }
 }
 
+// ── 保存 GT 事件计数修改 ────────────────────────────────────────────────────────
+async function saveGtEventCounts(gtId) {
+  const confirmedInput = document.getElementById('gt-confirmed-input');
+  if (!confirmedInput) return;
+
+  const confirmedCount = parseInt(confirmedInput.value, 10);
+  if (isNaN(confirmedCount) || confirmedCount < 0) {
+    alert('请输入有效的非负整数');
+    return;
+  }
+
+  try {
+    const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/gt-events/' + gtId, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmed_count: confirmedCount })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert('保存失败: ' + (data.error || '未知'));
+      return;
+    }
+    // 更新本地数据
+    const r = gtResults.find(x => x.id === gtId);
+    if (r) {
+      r.confirmed_count = confirmedCount;
+    }
+    // 刷新 GT 网格和指标
+    renderGtGrid();
+    recomputeMetrics();
+    // 刷新弹窗内容
+    renderImageModal();
+    alert('保存成功');
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+  }
+}
+
 function recomputeMetrics() {
   const totalDuration = window.evalTotalDuration || 0;
   const totalDurationHours = totalDuration / 3600;
@@ -988,8 +1029,35 @@ function recomputeMetrics() {
   const avgFp = totalDurationHours > 0 ? fp / totalDurationHours : 0;
   window.evalAvgFpPerHour = avgFp;
   window.evalAccuracy = accuracy;
-  // 召回率不受告警状态修改影响，保留已有值
-  renderMetrics(accuracy, window.evalRecall, avgFp);
+
+  // 重新计算召回率（与后端逻辑保持一致）
+  const gtByType = {};
+  for (const g of gtResults) {
+    const confirmed = g.confirmed_count != null ? g.confirmed_count : (g.expected_count || 1);
+    const actual = g.actual_count || 0;
+    const et = g.event_type;
+    if (!et) continue;
+    if (!gtByType[et]) gtByType[et] = { confirmed: 0, hit: 0 };
+    if (confirmed === 0) {
+      if (actual > 0) {
+        gtByType[et].confirmed += 1;
+        gtByType[et].hit += 1;
+      }
+    } else {
+      gtByType[et].confirmed += confirmed;
+      gtByType[et].hit += Math.min(actual, confirmed);
+    }
+  }
+  const typeRecalls = [];
+  for (const vals of Object.values(gtByType)) {
+    if (vals.confirmed > 0) {
+      typeRecalls.push(vals.hit / vals.confirmed);
+    }
+  }
+  const recall = typeRecalls.length > 0 ? typeRecalls.reduce((a, b) => a + b, 0) / typeRecalls.length : null;
+  window.evalRecall = recall;
+
+  renderMetrics(accuracy, recall, avgFp);
 }
 
 function showAlertImageInModalById(mergedId) {
@@ -1286,6 +1354,7 @@ function renderImageModal() {
   let timeText = '—';
   let statusText = '—';
 
+  let gtEditHtml = '';
   if (currentImageType === 'alert') {
     imgSrc = item.representative_image_id
       ? '/alerts/api/images/' + item.representative_image_id + '/file'
@@ -1298,9 +1367,23 @@ function renderImageModal() {
       : '';
     timeText = formatTime(item.start_sec) + ' – ' + formatTime(item.end_sec) +
       ' (' + (item.start_sec != null ? item.start_sec + 's' : '-') + ' – ' + (item.end_sec != null ? item.end_sec + 's' : '-') + ')';
-    const confirmed = item.confirmed_count || item.expected_count || 1;
+    const confirmed = item.confirmed_count != null ? item.confirmed_count : (item.expected_count || 1);
     const actual = item.actual_count || 0;
     statusText = actual >= confirmed ? '命中' : (actual > 0 ? '部分命中' : '漏检');
+
+    const expectedVal = item.expected_count != null ? item.expected_count : 1;
+    gtEditHtml = `
+      <div class="image-view-meta">
+        <label>预期触发次数</label>
+        <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
+          <input type="number" min="0" step="1" id="gt-confirmed-input" value="${confirmed}" style="width:60px;padding:0.25rem;border:1px solid #ddd;border-radius:4px;font-size:0.85rem;">
+          <span style="font-size:0.8rem;color:#888;">(原始: ${expectedVal})</span>
+        </div>
+      </div>
+      <div class="image-view-meta" style="margin-top:0.3rem;">
+        <button class="btn btn-sm btn-success" onclick="saveGtEventCounts(${item.id})">保存修改</button>
+      </div>
+    `;
   }
 
   body.innerHTML = `
@@ -1317,6 +1400,7 @@ function renderImageModal() {
         <div class="image-view-meta"><label>事件类型</label><span>${escHtml(item.event_type||'—')}</span></div>
         <div class="image-view-meta"><label>时间</label><span>${escHtml(timeText)}</span></div>
         <div class="image-view-meta"><label>状态</label><span>${escHtml(statusText)}</span></div>
+        ${gtEditHtml}
         <div style="margin-top:auto; display:flex; justify-content:center; align-items:center; gap:0.5rem;">
           <a class="btn btn-sm btn-success" href="/videos/${item.video_db_id}/annotate/?from_eval_task=${TASK_ID}">重新标注</a>
           <button class="btn btn-sm btn-secondary" onclick="closeImageViewModal()">关闭</button>
@@ -1366,7 +1450,7 @@ document.querySelector('#imageViewModal .modal-content').addEventListener('mouse
 
 // ── 确认结果 ──────────────────────────────────────────────────────────────────
 async function doFinalize() {
-  if (!confirm('确认后无法重新执行评测，是否继续？')) return;
+  if (!confirm('确认后仍可取消重新评测，是否继续？')) return;
   const btn = document.getElementById('btn-finalize');
   btn.disabled = true; btn.textContent = '提交中…';
   try {
@@ -1381,11 +1465,32 @@ async function doFinalize() {
     document.querySelector('.stage-tabs').style.display = 'none';
     btn.style.display = 'none';
     document.getElementById('finalized-label').style.display = '';
+    document.getElementById('btn-unconfirm').style.display = '';
     window.evalAvgFpPerHour = data.avg_fp_per_hour != null ? data.avg_fp_per_hour : null;
     renderMetrics(data.accuracy, data.recall);
   } catch(e) {
     alert('请求失败: ' + e.message);
     btn.disabled = false; btn.textContent = '确认结果';
+  }
+}
+
+async function doUnconfirm() {
+  if (!confirm('取消确认后可重新执行评测，是否继续？')) return;
+  const btn = document.getElementById('btn-unconfirm');
+  btn.disabled = true; btn.textContent = '取消中…';
+  try {
+    const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/unconfirm', {method:'POST'});
+    const data = await res.json();
+    if (!res.ok) { alert('取消失败: ' + (data.error || '未知')); btn.disabled = false; btn.textContent = '取消确认'; return; }
+    // 恢复 UI
+    document.querySelector('.stage-tabs').style.display = '';
+    document.getElementById('btn-finalize').style.display = '';
+    document.getElementById('finalized-label').style.display = 'none';
+    btn.style.display = 'none';
+    alert(data.message || '已取消确认');
+  } catch(e) {
+    alert('请求失败: ' + e.message);
+    btn.disabled = false; btn.textContent = '取消确认';
   }
 }
 
@@ -1403,6 +1508,7 @@ if (isFinalized) {
     document.getElementById('finalized-label').style.display = '';
     document.getElementById('finalize-bar').style.display = '';
     document.getElementById('btn-finalize').style.display = 'none';
+    document.getElementById('btn-unconfirm').style.display = '';
   });
 } else if (initStatus === 'done') {
   goToStage('result');

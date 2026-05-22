@@ -312,13 +312,14 @@ def init_db():
         )
     ''')
 
-    # 为 eval_tasks 追加 finalized/accuracy/recall/event_metrics 列（兼容已有数据）
+    # 为 eval_tasks 追加 finalized/accuracy/recall/event_metrics/confirmed_at 列（兼容已有数据）
     for col_def in [
         'finalized INTEGER DEFAULT 0',
         'accuracy REAL',
         'recall REAL',
         'avg_fp_per_hour REAL',
         'event_metrics TEXT',
+        'confirmed_at TIMESTAMP',
     ]:
         try:
             cursor.execute(f'ALTER TABLE eval_tasks ADD COLUMN {col_def}')

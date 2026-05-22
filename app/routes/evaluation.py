@@ -566,7 +566,7 @@ def execute_task(task_id):
         cur = conn.cursor()
 
         # 加载合并告警和 GT 事件
-        cur.execute('SELECT * FROM eval_merged_events WHERE task_id = ?', (task_id,))
+        cur.execute('SELECT * FROM eval_merged_events WHERE task_id = ? ORDER BY ts_start, id', (task_id,))
         merged_list = [dict(m) for m in cur.fetchall()]
 
         cur.execute('SELECT * FROM eval_gt_events WHERE task_id = ?', (task_id,))
@@ -614,6 +614,9 @@ def execute_task(task_id):
                         is_fp = False
                         matched_gt_id = g['id']
                         gt_hit_counts[g['id']] = gt_hit_counts.get(g['id'], 0) + 1
+                        confirmed = g.get('confirmed_count') or 0
+                        if confirmed > 0 and gt_hit_counts[g['id']] > confirmed:
+                            is_fp = True
                         break
 
             # 更新 eval_merged_events
@@ -824,6 +827,41 @@ def update_manual_status(task_id, merged_id):
         return jsonify({'error': '记录不存在'}), 404
 
     return jsonify({'success': True, 'manual_status': manual_status})
+
+
+@bp.route('/api/tasks/<int:task_id>/gt-events/<int:gt_id>', methods=['PUT'])
+def update_gt_event_counts(task_id, gt_id):
+    """更新 GT 事件的预期触发数和实际命中数"""
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+
+    update_fields = []
+    update_values = []
+    if 'confirmed_count' in data:
+        update_fields.append('confirmed_count = ?')
+        update_values.append(int(data['confirmed_count']))
+    if 'actual_count' in data:
+        update_fields.append('actual_count = ?')
+        update_values.append(int(data['actual_count']))
+
+    if not update_fields:
+        return jsonify({'error': '缺少要更新的字段（confirmed_count 或 actual_count）'}), 400
+
+    update_values.append(gt_id)
+    update_values.append(task_id)
+    cursor.execute(
+        f'UPDATE eval_gt_events SET {", ".join(update_fields)} WHERE id = ? AND task_id = ?',
+        update_values
+    )
+    db.commit()
+    if cursor.rowcount == 0:
+        return jsonify({'error': '记录不存在'}), 404
+
+    return jsonify({'success': True})
 
 
 @bp.route('/api/tasks/<int:task_id>/check-updates', methods=['GET'])
@@ -1060,7 +1098,7 @@ def finalize_task(task_id):
     event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
 
     cursor.execute('''
-        UPDATE eval_tasks SET finalized=1, accuracy=?, recall=?, avg_fp_per_hour=?, event_metrics=? WHERE id=?
+        UPDATE eval_tasks SET finalized=1, accuracy=?, recall=?, avg_fp_per_hour=?, event_metrics=?, confirmed_at=CURRENT_TIMESTAMP WHERE id=?
     ''', (accuracy, recall, avg_fp_per_hour, event_metrics_json, task_id))
     db.commit()
 
@@ -1071,6 +1109,27 @@ def finalize_task(task_id):
         'avg_fp_per_hour': avg_fp_per_hour,
         'event_metrics': event_metrics
     })
+
+
+@bp.route('/api/tasks/<int:task_id>/unconfirm', methods=['POST'])
+def unconfirm_task(task_id):
+    """取消确认，允许重新执行评测"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id, finalized, status FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+    if not task['finalized']:
+        return jsonify({'error': '任务尚未确认'}), 400
+
+    cursor.execute('''
+        UPDATE eval_tasks
+        SET finalized=0, accuracy=NULL, recall=NULL, avg_fp_per_hour=NULL, event_metrics=NULL
+        WHERE id=?
+    ''', (task_id,))
+    db.commit()
+    return jsonify({'success': True, 'message': '已取消确认，可重新执行评测'})
 
 
 @bp.route('/api/tasks/<int:task_id>/event-metrics', methods=['GET'])

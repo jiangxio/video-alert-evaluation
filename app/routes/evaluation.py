@@ -1887,6 +1887,19 @@ def list_pre_analysis_by_set(set_id):
     return jsonify({'records': records})
 
 
+@bp.route('/api/pre-analysis/<int:record_id>', methods=['DELETE'])
+def delete_pre_analysis(record_id):
+    """删除测前分析记录"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM pre_analysis_records WHERE id = ?', (record_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '记录不存在'}), 404
+    cursor.execute('DELETE FROM pre_analysis_records WHERE id = ?', (record_id,))
+    db.commit()
+    return jsonify({'success': True, 'message': '记录已删除'})
+
+
 @bp.route('/api/eval-sets/with-analysis-count', methods=['GET'])
 def list_eval_sets_with_analysis_count():
     """获取所有评测视频集，附带分析次数"""

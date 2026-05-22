@@ -19,6 +19,10 @@ bp = Blueprint('videos', __name__, url_prefix='/videos')
 
 EVENT_TYPES = ['rat', 'smoke', 'use_phone', 'call_phone', 'chef', 'trash', 'mask', 'flame']
 
+# GT帧生成锁：每个 video_db_id 一个锁，确保同一视频的GT帧生成串行（避免并发重复生成）
+_gt_frame_locks = {}
+_gt_frame_locks_lock = threading.Lock()
+
 
 def allowed_file(filename, allowed_extensions):
     """检查文件扩展名"""
@@ -1028,7 +1032,7 @@ def add_event(video_id):
 
 @bp.route('/api/<int:video_id>/events/<int:event_id>/', methods=['DELETE'])
 def delete_event(video_id, event_id):
-    """删除事件（同时删除关联的GT帧，自动更新JSON）"""
+    """删除事件（删除关联的GT帧记录，仅当帧文件未被其他事件复用时才删除磁盘文件，自动更新JSON）"""
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT * FROM events WHERE id = ? AND video_db_id = ?', (event_id, video_id))
@@ -1036,17 +1040,22 @@ def delete_event(video_id, event_id):
     if not event:
         return jsonify({'error': '事件不存在'}), 404
 
-    # 先获取该事件对应的GT帧文件路径并删除磁盘文件
+    # 先获取该事件对应的GT帧文件路径
     cursor.execute('SELECT file_path FROM gt_frames WHERE event_id = ?', (event_id,))
     frames = cursor.fetchall()
-    for frame in frames:
-        try:
-            Path(frame['file_path']).unlink(missing_ok=True)
-        except Exception:
-            pass
 
-    # 删除数据库中的GT帧记录
+    # 删除数据库中的GT帧记录（该事件关联的）
     cursor.execute('DELETE FROM gt_frames WHERE event_id = ?', (event_id,))
+
+    # 对于每个帧文件，检查是否还有其他事件引用；只有未被复用时才删除磁盘文件
+    for frame in frames:
+        cursor.execute('SELECT COUNT(*) FROM gt_frames WHERE file_path = ?', (frame['file_path'],))
+        count = cursor.fetchone()[0]
+        if count == 0:
+            try:
+                Path(frame['file_path']).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     # 删除事件
     cursor.execute('DELETE FROM events WHERE id = ?', (event_id,))
@@ -1141,100 +1150,105 @@ def _capture_gt_frames_async(video_db_id, event_id, event_type, start_sec, end_s
     """后台异步：在事件范围内截取 GT 帧，按视频ID+时间秒命名以支持跨事件复用。
 
     帧数控制在 60 以内，长事件自动均匀间隔采样。
+    同一视频的多个事件串行执行，避免并发导致重复生成。
     """
     import math
     import sqlite3
 
-    conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    # 获取该视频的独占锁，确保同一视频的GT帧生成串行
+    with _gt_frame_locks_lock:
+        lock = _gt_frame_locks.setdefault(video_db_id, threading.Lock())
+    with lock:
+        conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
 
-    try:
-        cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('processing', event_id))
-        conn.commit()
-
-        cursor.execute('SELECT * FROM videos WHERE id = ?', (video_db_id,))
-        video = cursor.fetchone()
-        if not video or not video['video_id']:
-            cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
+        try:
+            cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('processing', event_id))
             conn.commit()
-            return
 
-        video_id_str = video['video_id']
-
-        cursor.execute('''
-            SELECT output_path FROM watermarked_videos
-            WHERE original_video_id = ?
-            ORDER BY created_at DESC LIMIT 1
-        ''', (video_db_id,))
-        wm = cursor.fetchone()
-        video_path = Path(wm['output_path']) if wm else Path(video['original_path'])
-        if not video_path.exists():
-            cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
-            conn.commit()
-            return
-
-        frames_dir = Path(project_root) / 'ground_truth_frames' / video_id_str
-        frames_dir.mkdir(parents=True, exist_ok=True)
-
-        # 计算采样时间点，控制在 60 帧以内
-        total_seconds = int(end_sec) - int(start_sec) + 1
-        if total_seconds <= 60:
-            timestamps = list(range(int(start_sec), int(end_sec) + 1))
-        else:
-            interval = math.ceil(total_seconds / 60)
-            timestamps = list(range(int(start_sec), int(end_sec) + 1, interval))
-
-        for t in timestamps:
-            filename = f'{video_id_str}_{t}.png'
-            out_path = frames_dir / filename
-
-            # 先检查数据库中是否已有该视频+时间戳的帧（任意事件均可复用）
-            cursor.execute('''
-                SELECT id, file_path FROM gt_frames
-                WHERE video_db_id = ? AND timestamp_sec = ?
-                LIMIT 1
-            ''', (video_db_id, float(t)))
-            existing = cursor.fetchone()
-
-            if existing and Path(existing['file_path']).exists():
-                # 复用已有帧文件，插入新记录关联当前 event
-                cursor.execute('''
-                    INSERT INTO gt_frames
-                    (video_db_id, event_id, event_type, timestamp_sec, file_path, filename)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (video_db_id, event_id, event_type, float(t), existing['file_path'], filename))
+            cursor.execute('SELECT * FROM videos WHERE id = ?', (video_db_id,))
+            video = cursor.fetchone()
+            if not video or not video['video_id']:
+                cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
                 conn.commit()
-                continue
+                return
 
-            # 文件不存在或数据库无记录，需要生成
-            if not out_path.exists():
-                try:
-                    subprocess.run([
-                        'ffmpeg', '-ss', str(t), '-i', str(video_path),
-                        '-vframes', '1', '-y', '-f', 'image2',
-                        '-loglevel', 'error',
-                        str(out_path)
-                    ], timeout=30, check=True)
-                except Exception:
+            video_id_str = video['video_id']
+
+            cursor.execute('''
+                SELECT output_path FROM watermarked_videos
+                WHERE original_video_id = ?
+                ORDER BY created_at DESC LIMIT 1
+            ''', (video_db_id,))
+            wm = cursor.fetchone()
+            video_path = Path(wm['output_path']) if wm else Path(video['original_path'])
+            if not video_path.exists():
+                cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
+                conn.commit()
+                return
+
+            frames_dir = Path(project_root) / 'ground_truth_frames' / video_id_str
+            frames_dir.mkdir(parents=True, exist_ok=True)
+
+            # 计算采样时间点，控制在 60 帧以内
+            total_seconds = int(end_sec) - int(start_sec) + 1
+            if total_seconds <= 60:
+                timestamps = list(range(int(start_sec), int(end_sec) + 1))
+            else:
+                interval = math.ceil(total_seconds / 60)
+                timestamps = list(range(int(start_sec), int(end_sec) + 1, interval))
+
+            for t in timestamps:
+                filename = f'{video_id_str}_{t}.png'
+                out_path = frames_dir / filename
+
+                # 先检查数据库中是否已有该视频+时间戳的帧（任意事件均可复用）
+                cursor.execute('''
+                    SELECT id, file_path FROM gt_frames
+                    WHERE video_db_id = ? AND timestamp_sec = ?
+                    LIMIT 1
+                ''', (video_db_id, float(t)))
+                existing = cursor.fetchone()
+
+                if existing and Path(existing['file_path']).exists():
+                    # 复用已有帧文件，插入新记录关联当前 event
+                    cursor.execute('''
+                        INSERT INTO gt_frames
+                        (video_db_id, event_id, event_type, timestamp_sec, file_path, filename)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (video_db_id, event_id, event_type, float(t), existing['file_path'], filename))
+                    conn.commit()
                     continue
 
-            if out_path.exists():
-                cursor.execute('''
-                    INSERT INTO gt_frames
-                    (video_db_id, event_id, event_type, timestamp_sec, file_path, filename)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (video_db_id, event_id, event_type, float(t), str(out_path), filename))
-                conn.commit()
+                # 文件不存在或数据库无记录，需要生成
+                if not out_path.exists():
+                    try:
+                        subprocess.run([
+                            'ffmpeg', '-ss', str(t), '-i', str(video_path),
+                            '-vframes', '1', '-y', '-f', 'image2',
+                            '-loglevel', 'error',
+                            str(out_path)
+                        ], timeout=30, check=True)
+                    except Exception:
+                        continue
 
-        cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('done', event_id))
-        conn.commit()
+                if out_path.exists():
+                    cursor.execute('''
+                        INSERT INTO gt_frames
+                        (video_db_id, event_id, event_type, timestamp_sec, file_path, filename)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (video_db_id, event_id, event_type, float(t), str(out_path), filename))
+                    conn.commit()
 
-    except Exception:
-        cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
-        conn.commit()
-    finally:
-        conn.close()
+            cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('done', event_id))
+            conn.commit()
+
+        except Exception:
+            cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 # ── Ground Truth JSON ─────────────────────────────────────────────────────────

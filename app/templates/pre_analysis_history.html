@@ -197,10 +197,34 @@ function renderTable() {
         <td>${date}</td>
         <td>
           <a href="/evaluation/pre-analysis/${r.id}" class="btn btn-sm">查看报告</a>
+          <button class="btn btn-sm" style="background:#e74c3c;color:white;" onclick="deleteRecord(${r.id}, this)">删除</button>
         </td>
       </tr>
     `;
   }).join('');
+}
+
+async function deleteRecord(recordId, btn) {
+  if (!confirm('确定要删除这条测前分析记录吗？此操作不可恢复。')) return;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = '删除中...';
+  try {
+    const res = await fetch(`/evaluation/api/pre-analysis/${recordId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      allRecords = allRecords.filter(r => r.id !== recordId);
+      renderTable();
+    } else {
+      alert(data.error || '删除失败');
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }
 
 loadEvalSets();

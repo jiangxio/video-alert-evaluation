@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Developer Workflow
+
+### 提交代码前必须征得用户同意
+
+**规则**：任何 `git commit` 或 `git push` 操作前，必须先向用户展示变更摘要并征得明确同意（如用户说"上库"、"提交"、"push"等）。
+
+**禁止**：
+- 未经用户确认就自动创建 commit
+- 未经用户确认就 push 到远程仓库
+- 把代码改动偷偷混在其他操作里提交
+
+**正确流程**：
+1. 完成代码修改后，展示 `git diff --stat` 或变更摘要
+2. 等待用户明确同意（"上库"、"提交吧"、"push"等）
+3. 征得同意后再执行 `git add` → `git commit` → `git push`
+
 ## Project Overview
 
 A video watermark benchmarking tool that tests OCR capabilities to extract video IDs and timestamps from video watermarks. The project has two interfaces: a CLI pipeline and a Flask web platform.

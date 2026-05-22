@@ -341,7 +341,7 @@ async function runSingleOcr() {
     // 同步本地数据
     const img = allImages.find(i => i.id === currentImageId);
     if (img) img.ocr = data.ocr;
-    renderGrid(allImages);
+    filterImages();
   }
 }
 
@@ -413,7 +413,7 @@ async function saveManualOcr() {
           success: success
         };
       }
-      renderGrid(allImages);
+      filterImages();
       alert('保存成功！');
     } else {
       alert('保存失败: ' + (data.error || '未知错误'));
@@ -501,7 +501,7 @@ function closeOcrModal() {
   // 通知后端中断（不等待完成）
   fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/cancel`, {method: 'POST'}).catch(() => {});
   document.getElementById('ocr-modal').classList.remove('open');
-  renderGrid(allImages);
+  filterImages();
 }
 
 function appendLog(text, type) {

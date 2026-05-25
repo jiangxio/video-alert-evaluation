@@ -754,6 +754,15 @@ def get_results(task_id):
         except Exception:
             pass
 
+    # ── 计算 GT 覆盖时长、覆盖率、理论告警数等统计 ──────────────────────────────
+    gt_event_count = len(gt_results)
+    gt_intervals = [(g['start_sec'], g['end_sec']) for g in gt_results
+                    if g.get('start_sec') is not None and g.get('end_sec') is not None]
+    merged_gt_intervals = _merge_intervals(gt_intervals)
+    gt_coverage_seconds = sum(end - start for start, end in merged_gt_intervals)
+    gt_coverage_rate = gt_coverage_seconds / total_duration if total_duration > 0 else 0.0
+    expected_alert_total = sum(g.get('expected_count', 0) or 0 for g in gt_results)
+
     # 计算平均误检数/小时（排除被忽略的记录）
     fp_count = sum(1 for r in alert_results if _get_effective_status(r) == 'false_positive')
     total_count = sum(1 for r in alert_results if _get_effective_status(r) != 'ignored')
@@ -800,7 +809,11 @@ def get_results(task_id):
         'total_duration': round(total_duration, 2),
         'avg_fp_per_hour': avg_fp_per_hour,
         'accuracy': accuracy,
-        'recall': recall
+        'recall': recall,
+        'gt_event_count': gt_event_count,
+        'gt_coverage_seconds': round(gt_coverage_seconds, 2),
+        'gt_coverage_rate': round(gt_coverage_rate, 4),
+        'expected_alert_total': expected_alert_total,
     })
 
 
@@ -1283,7 +1296,9 @@ def _get_font(size):
     return ImageFont.load_default()
 
 
-def _generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours=0):
+def _generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours=0,
+                           total_duration=0, gt_event_count=0, gt_coverage_seconds=0,
+                           gt_coverage_rate=0.0, expected_alert_total=0):
     """用 Pillow 生成评测报告图片"""
     from PIL import Image, ImageDraw
 
@@ -1305,14 +1320,31 @@ def _generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hou
     font_small = _get_font(18)
     font_table = _get_font(18)
 
+    def _fmt_duration(sec):
+        if sec <= 0:
+            return "0s"
+        h = int(sec // 3600)
+        m = int((sec % 3600) // 60)
+        s = int(sec % 60)
+        parts = []
+        if h > 0:
+            parts.append(f"{h}h")
+        if m > 0:
+            parts.append(f"{m}m")
+        if s > 0 or not parts:
+            parts.append(f"{s}s")
+        return " ".join(parts)
+
     # 预估高度
     row_height = 46
     header_height = 160
     overall_height = 140
+    stats_height = 120
+    desc_height = 70
     section_gap = 30
     table_header = 50
     table_rows = (len(event_metrics) + 1) * row_height  # +1 合计行
-    height = header_height + overall_height + section_gap + 60 + table_header + table_rows + margin * 2
+    height = header_height + overall_height + stats_height + desc_height + section_gap * 3 + 60 + table_header + table_rows + margin * 2
 
     img = Image.new('RGB', (width, height), bg_color)
     draw = ImageDraw.Draw(img)
@@ -1378,6 +1410,41 @@ def _generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hou
 
     # 分隔线
     y += section_gap
+    draw.line([margin, y, width - margin, y], fill=line_color, width=2)
+    y += section_gap
+
+    # 评测概况统计
+    draw.text((margin, y), "评测概况", font=font_subtitle, fill=text_dark)
+    y += 40
+
+    stat_card_w = (width - margin * 2 - 80) // 5
+    stat_items = [
+        ("视频总时长", _fmt_duration(total_duration)),
+        ("GT覆盖时长", _fmt_duration(gt_coverage_seconds)),
+        ("整体覆盖率", f"{(gt_coverage_rate * 100):.1f}%"),
+        ("GT事件总数", str(gt_event_count)),
+        ("理论告警数", str(expected_alert_total)),
+    ]
+    for i, (label, value) in enumerate(stat_items):
+        sx = margin + i * (stat_card_w + 20)
+        draw.rounded_rectangle([sx, y, sx + stat_card_w, y + 70], radius=6, fill=card_bg)
+        draw.text((sx + stat_card_w // 2, y + 12), label, font=font_small, fill=text_gray, anchor="mt")
+        draw.text((sx + stat_card_w // 2, y + 40), value, font=font_normal, fill=text_dark, anchor="mt")
+    y += 80
+
+    # 评测说明
+    desc_lines = [
+        "评测方法：通过 OCR 提取告警图片水印中的 video_id 和时间戳，",
+        "与 Ground Truth 事件区间比对。告警时间落在 GT 事件 ±5 秒容差范围内视为命中。",
+        "召回率 = 命中 GT 事件数 / 总 GT 事件数；精确率 = 正确告警数 / 总告警数。"
+    ]
+    for line in desc_lines:
+        draw.text((margin, y), line, font=font_small, fill=text_gray)
+        y += 24
+    y += 10
+
+    # 分隔线
+    y += section_gap // 2
     draw.line([margin, y, width - margin, y], fill=line_color, width=2)
     y += section_gap
 
@@ -1553,6 +1620,17 @@ def get_report_image(task_id):
         fp_count = sum(1 for row in cursor.fetchall() if _get_effective_status(row) == 'false_positive')
         avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
 
+    # 计算 GT 统计（报告图片也需要）
+    cursor.execute('SELECT start_sec, end_sec, expected_count FROM eval_gt_events WHERE task_id = ?', (task_id,))
+    gt_rows = cursor.fetchall()
+    gt_event_count = len(gt_rows)
+    gt_intervals = [(r['start_sec'], r['end_sec']) for r in gt_rows
+                    if r['start_sec'] is not None and r['end_sec'] is not None]
+    merged_gt_intervals = _merge_intervals(gt_intervals)
+    gt_coverage_seconds = sum(end - start for start, end in merged_gt_intervals)
+    gt_coverage_rate = gt_coverage_seconds / total_duration if total_duration > 0 else 0.0
+    expected_alert_total = sum((r['expected_count'] or 0) for r in gt_rows)
+
     # 对于报告图片，统一用总误检数/总时长重新计算平均误检数，避免旧数据不一致
     cursor.execute('''
         SELECT is_false_positive, manual_status
@@ -1561,7 +1639,10 @@ def get_report_image(task_id):
     fp_count = sum(1 for row in cursor.fetchall() if _get_effective_status(row) == 'false_positive')
     avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
 
-    buf = _generate_report_image(task_dict, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours)
+    buf = _generate_report_image(
+        task_dict, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours,
+        total_duration, gt_event_count, gt_coverage_seconds, gt_coverage_rate, expected_alert_total
+    )
     filename = f"report_{task_dict.get('name', 'task')}_{task_id}.png"
     response = send_file(buf, mimetype='image/png', as_attachment=True, download_name=filename)
     response.headers['Cache-Control'] = 'public, max-age=86400'

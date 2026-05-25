@@ -270,10 +270,29 @@
       <div class="param-item"><label>最小事件时长</label><span>{{ task.min_event_duration_sec }} 秒</span></div>
     </div>
 
-    <!-- 视频总时长 -->
-    <div class="param-item" style="margin-bottom:1rem; background:#f8f9fa; padding:0.8rem; border-radius:6px; display:inline-block; min-width:200px;">
-      <label>评测视频总时长</label>
-      <span id="total-duration" style="font-weight:600; font-size:1rem;">—</span>
+    <!-- 评测概况统计 -->
+    <div style="margin-bottom:0.3rem; font-size:0.85rem; color:#888;">评测概况</div>
+    <div class="param-grid" style="margin-bottom:1rem; background:#f8f9fa; border-radius:6px; padding:0.6rem;">
+      <div class="param-item" style="background:transparent; padding:0.4rem;">
+        <label>评测视频总时长</label>
+        <span id="total-duration" style="font-weight:600; font-size:1rem;">—</span>
+      </div>
+      <div class="param-item" style="background:transparent; padding:0.4rem;">
+        <label>GT 事件总数</label>
+        <span id="gt-event-count" style="font-weight:600; font-size:1rem;">—</span>
+      </div>
+      <div class="param-item" style="background:transparent; padding:0.4rem;">
+        <label>GT 覆盖时长</label>
+        <span id="gt-coverage-duration" style="font-weight:600; font-size:1rem;">—</span>
+      </div>
+      <div class="param-item" style="background:transparent; padding:0.4rem;">
+        <label>整体覆盖率</label>
+        <span id="gt-coverage-rate" style="font-weight:600; font-size:1rem;">—</span>
+      </div>
+      <div class="param-item" style="background:transparent; padding:0.4rem;">
+        <label>理论告警数</label>
+        <span id="expected-alert-total" style="font-weight:600; font-size:1rem;">—</span>
+      </div>
     </div>
 
     <!-- 指标展示区（确认后显示） -->
@@ -732,6 +751,31 @@ async function loadResults() {
       totalDurationEl.textContent = `${totalSec.toFixed(1)}秒`;
     }
   }
+
+  // 显示 GT 统计
+  const gtCountEl = document.getElementById('gt-event-count');
+  if (gtCountEl && data.gt_event_count != null) gtCountEl.textContent = data.gt_event_count + ' 个';
+
+  const gtCoverageEl = document.getElementById('gt-coverage-duration');
+  if (gtCoverageEl && data.gt_coverage_seconds != null) {
+    const covSec = data.gt_coverage_seconds;
+    const ch = Math.floor(covSec / 3600);
+    const cm = Math.floor((covSec % 3600) / 60);
+    const cs = Math.round(covSec % 60);
+    if (ch > 0) {
+      gtCoverageEl.textContent = `${ch}小时${cm}分${cs}秒 (${covSec.toFixed(1)}秒)`;
+    } else if (cm > 0) {
+      gtCoverageEl.textContent = `${cm}分${cs}秒 (${covSec.toFixed(1)}秒)`;
+    } else {
+      gtCoverageEl.textContent = `${covSec.toFixed(1)}秒`;
+    }
+  }
+
+  const gtRateEl = document.getElementById('gt-coverage-rate');
+  if (gtRateEl && data.gt_coverage_rate != null) gtRateEl.textContent = (data.gt_coverage_rate * 100).toFixed(2) + '%';
+
+  const expectedAlertEl = document.getElementById('expected-alert-total');
+  if (expectedAlertEl && data.expected_alert_total != null) expectedAlertEl.textContent = data.expected_alert_total + ' 张';
 
   // 存储总时长供前端计算平均误检数
   window.evalTotalDuration = data.total_duration || 0;

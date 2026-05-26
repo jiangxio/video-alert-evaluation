@@ -614,9 +614,6 @@ def execute_task(task_id):
                         is_fp = False
                         matched_gt_id = g['id']
                         gt_hit_counts[g['id']] = gt_hit_counts.get(g['id'], 0) + 1
-                        confirmed = g.get('confirmed_count') or 0
-                        if confirmed > 0 and gt_hit_counts[g['id']] > confirmed:
-                            is_fp = True
                         break
 
             # 更新 eval_merged_events

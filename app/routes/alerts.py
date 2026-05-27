@@ -602,6 +602,69 @@ def delete_image(image_id):
     return jsonify({'success': True})
 
 
+@bp.route('/api/datasets/<int:dataset_id>/images/batch-delete', methods=['POST'])
+def batch_delete_images(dataset_id):
+    """批量删除数据集图片，支持按视频ID和事件类型筛选"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '数据集不存在'}), 404
+
+    data = request.get_json() or {}
+    video_id = data.get('video_id', '').strip()
+    event_type = data.get('event_type', '').strip()
+
+    # 构建查询条件
+    conditions = ['dataset_id = ?']
+    params = [dataset_id]
+
+    if video_id:
+        # 按视频ID筛选（从OCR结果中查找）
+        conditions.append('''
+            id IN (
+                SELECT alert_image_id FROM ocr_results 
+                WHERE video_id = ?
+            )
+        ''')
+        params.append(video_id)
+    
+    if event_type:
+        conditions.append('alert_type = ?')
+        params.append(event_type)
+
+    # 查询符合条件的图片
+    where_clause = ' AND '.join(conditions)
+    cursor.execute(f'''
+        SELECT id, file_path FROM alert_images 
+        WHERE {where_clause}
+    ''', params)
+    images = cursor.fetchall()
+
+    if not images:
+        return jsonify({'error': '没有找到符合条件的图片'}), 404
+
+    # 删除文件和数据库记录
+    deleted_count = 0
+    for row in images:
+        try:
+            os.unlink(row['file_path'])
+        except Exception:
+            pass
+        deleted_count += 1
+
+    cursor.execute(f'''
+        DELETE FROM alert_images 
+        WHERE {where_clause}
+    ''', params)
+    db.commit()
+
+    return jsonify({
+        'success': True,
+        'deleted_count': deleted_count
+    })
+
+
 # ── OCR ───────────────────────────────────────────────────────────────────────
 
 @bp.route('/api/images/<int:image_id>/ocr', methods=['POST'])

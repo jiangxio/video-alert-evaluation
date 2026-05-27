@@ -122,6 +122,18 @@
     </select>
   </div>
 
+  <div class="toolbar" style="background:#fff3cd;padding:0.7rem;border-radius:6px;border:1px solid #ffc107;">
+    <span style="color:#856404;font-weight:600;">批量删除：</span>
+    <input type="text" id="deleteVideoId" class="action-select" placeholder="视频ID（留空表示所有）" style="width:180px;">
+    <select id="deleteEventType" class="action-select">
+      <option value="">所有类型</option>
+    </select>
+    <button class="btn btn-sm btn-danger" onclick="batchDeleteImages()" style="margin-left:0.5rem;">
+      执行删除
+    </button>
+    <span id="deleteMsg" style="margin-left:0.5rem;font-size:0.85rem;"></span>
+  </div>
+
   <div class="img-grid" id="img-grid">
     <div id="empty-grid">暂无图片，请上传</div>
   </div>
@@ -308,6 +320,50 @@ async function deleteCurrentImage() {
   } else {
     alert('删除失败');
   }
+}
+
+async function batchDeleteImages() {
+  const videoId = document.getElementById('deleteVideoId').value.trim();
+  const eventType = document.getElementById('deleteEventType').value;
+  const msgEl = document.getElementById('deleteMsg');
+
+  if (!videoId && !eventType) {
+    alert('请至少指定一个筛选条件（视频ID或类型）');
+    return;
+  }
+
+  let confirmMsg = '确认删除符合条件的图片？\n\n';
+  if (videoId) confirmMsg += `视频ID: ${videoId}\n`;
+  if (eventType) confirmMsg += `事件类型: ${eventType}\n`;
+  confirmMsg += '\n此操作不可恢复！';
+
+  if (!confirm(confirmMsg)) return;
+
+  msgEl.innerHTML = '<span style="color:#3498db;">删除中…</span>';
+
+  try {
+    const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/images/batch-delete`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        video_id: videoId,
+        event_type: eventType
+      })
+    });
+
+    const data = await res.json();
+
+    if (res.ok && data.success) {
+      msgEl.innerHTML = `<span style="color:#27ae60;">✔ 已删除 ${data.deleted_count} 张图片</span>`;
+      loadImages();
+    } else {
+      msgEl.innerHTML = `<span style="color:#e74c3c;">✘ ${data.error || '删除失败'}</span>`;
+    }
+  } catch (err) {
+    msgEl.innerHTML = `<span style="color:#e74c3c;">✘ 网络错误</span>`;
+  }
+
+  setTimeout(() => { msgEl.innerHTML = ''; }, 5000);
 }
 
 // ── 单张 OCR ──────────────────────────────────────────────────────────────────
@@ -578,6 +634,15 @@ async function init() {
     opt.value = t.name;
     opt.textContent = `${t.name}  (${t.id})`;
     sel.appendChild(opt);
+  }
+
+  // 填充批量删除的事件类型下拉框
+  const deleteSel = document.getElementById('deleteEventType');
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t.name;
+    opt.textContent = `${t.name}  (${t.id})`;
+    deleteSel.appendChild(opt);
   }
 
   await loadImages();

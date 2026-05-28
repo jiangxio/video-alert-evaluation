@@ -363,9 +363,9 @@ def generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour
     def fp_color(val):
         if val is None:
             return text_gray
-        if val <= 1.0:
+        if val <= 4.0:
             return good_color
-        if val <= 3.0:
+        if val <= 10.0:
             return mid_color
         return bad_color
 

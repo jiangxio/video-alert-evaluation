@@ -1,5 +1,5 @@
 """告警数据集相关路由"""
-from flask import Blueprint, request, jsonify, render_template, current_app
+from flask import Blueprint, request, jsonify, render_template, current_app, after_this_request
 from pathlib import Path
 import json
 import os
@@ -128,6 +128,62 @@ def delete_dataset(dataset_id):
     cursor.execute('DELETE FROM datasets WHERE id = ?', (dataset_id,))
     db.commit()
     return jsonify({'success': True})
+
+
+@bp.route('/api/datasets/<int:dataset_id>/download', methods=['POST'])
+def download_dataset(dataset_id):
+    """打包下载数据集全部图片"""
+    db = get_db()
+    cursor = db.cursor()
+
+    cursor.execute('SELECT id, name FROM datasets WHERE id = ?', (dataset_id,))
+    dataset = cursor.fetchone()
+    if not dataset:
+        return jsonify({'error': '数据集不存在'}), 404
+
+    cursor.execute('SELECT file_path, filename FROM alert_images WHERE dataset_id = ?', (dataset_id,))
+    images = cursor.fetchall()
+    if not images:
+        return jsonify({'error': '数据集为空'}), 404
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.zip')
+    os.close(tmp_fd)
+
+    try:
+        added = 0
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_STORED) as zf:
+            for img in images:
+                file_path = Path(img['file_path'])
+                if file_path.exists():
+                    zf.write(str(file_path), img['filename'])
+                    added += 1
+
+        if added == 0:
+            os.unlink(tmp_path)
+            return jsonify({'error': '没有可下载的图片文件'}), 404
+
+        @after_this_request
+        def cleanup(response):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            return response
+
+        dataset_name = dataset['name'] or f'dataset_{dataset_id}'
+        return send_file_with_cache(
+            tmp_path,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'{dataset_name}_images.zip'
+        )
+
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        return jsonify({'error': str(e)}), 500
 
 
 def _extract_archive(archive_path, dest_dir, filename=None):

@@ -171,6 +171,10 @@
         <span class="action-label">批量操作：</span>
         <button class="btn btn-sm" onclick="concatSelected()" id="concatBtn" disabled>拼接视频</button>
         <button class="btn btn-sm" onclick="packageSelected()" id="packageBtn" disabled>打包下载</button>
+        <button class="btn btn-sm" onclick="batchDownloadSelected()" id="batchDownloadBtn" disabled>批量下载</button>
+        <label style="font-size:0.82rem;color:#555;cursor:pointer;display:flex;align-items:center;gap:0.25rem;">
+          <input type="checkbox" id="includeGtJson" style="margin:0;"> 包含JSON
+        </label>
         <button class="btn btn-sm btn-danger" onclick="batchDeleteVideos()">删除</button>
       </div>
     </div>
@@ -397,8 +401,10 @@ function updateActionButtons() {
   const count = selectedIds.size;
   const concatBtn = document.getElementById('concatBtn');
   const packageBtn = document.getElementById('packageBtn');
+  const batchDownloadBtn = document.getElementById('batchDownloadBtn');
   concatBtn.disabled = count < 2 || count > 10;
   packageBtn.disabled = count < 1 || count > 10;
+  batchDownloadBtn.disabled = count < 1;
 }
 
 function toggleSelectAll() {
@@ -685,6 +691,51 @@ async function packageSelected() {
     startProcessingTask(data.task_id, 'package', `视频打包 (${selectedIds.size}个视频)`);
   } else {
     alert(data.error || '打包失败');
+  }
+}
+
+// 批量下载（同步 ZIP）
+async function batchDownloadSelected() {
+  if (selectedIds.size < 1) {
+    alert('请至少选择1个视频');
+    return;
+  }
+  const includeGt = document.getElementById('includeGtJson').checked;
+  const btn = document.getElementById('batchDownloadBtn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '下载中...';
+  try {
+    const res = await fetch('/videos/api/download/batch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        ids: Array.from(selectedIds),
+        type: 'original',
+        include_ground_truth: includeGt
+      })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || '下载失败');
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const disposition = res.headers.get('content-disposition');
+    const match = disposition && disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    a.download = match ? match[1].replace(/['"]/g, '') : 'videos.zip';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('下载出错: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
 }
 

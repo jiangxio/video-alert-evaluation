@@ -472,12 +472,15 @@ def batch_download():
     data = request.get_json() or {}
     ids = data.get('ids', [])
     download_type = data.get('type', 'original')
+    include_ground_truth = data.get('include_ground_truth', False)
 
     if not ids:
         return jsonify({'error': '请选择要下载的视频'}), 400
 
     db = get_db()
     cursor = db.cursor()
+
+    gt_dir = Path(current_app.config['GROUND_TRUTH_DIR'])
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix='.zip')
     os.close(tmp_fd)
@@ -489,8 +492,9 @@ def batch_download():
             for vid_id in ids:
                 if download_type == 'watermarked':
                     cursor.execute('''
-                        SELECT wv.output_path, wv.filename
+                        SELECT wv.output_path, wv.filename, v.video_id
                         FROM watermarked_videos wv
+                        JOIN videos v ON v.id = wv.original_video_id
                         WHERE wv.original_video_id = ?
                         ORDER BY wv.created_at DESC LIMIT 1
                     ''', (vid_id,))
@@ -502,6 +506,7 @@ def batch_download():
                         continue
                     file_path = Path(row['output_path'])
                     filename = row['filename']
+                    video_id = row['video_id']
                 else:
                     cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (vid_id,))
                     row = cursor.fetchone()
@@ -509,12 +514,19 @@ def batch_download():
                         continue
                     file_path = Path(row['original_path'])
                     filename = row['filename']
+                    video_id = row['video_id']
 
                 if file_path.exists():
                     zf.write(str(file_path), filename)
                     added += 1
                 else:
                     skipped.append(filename)
+                    continue
+
+                if include_ground_truth and video_id:
+                    gt_path = gt_dir / f'{video_id}.json'
+                    if gt_path.exists():
+                        zf.write(str(gt_path), f'ground_truth/{video_id}.json')
 
         if added == 0:
             os.unlink(tmp_path)
@@ -529,11 +541,12 @@ def batch_download():
             return response
 
         type_label = '水印版' if download_type == 'watermarked' else '原始版'
+        gt_label = '_with_gt' if include_ground_truth else ''
         return send_file_with_cache(
             tmp_path,
             mimetype='application/zip',
             as_attachment=True,
-            download_name=f'videos_{type_label}.zip'
+            download_name=f'videos_{type_label}{gt_label}.zip'
         )
 
     except Exception as e:

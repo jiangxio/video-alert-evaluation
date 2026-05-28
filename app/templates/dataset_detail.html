@@ -117,6 +117,7 @@
 
   <div class="toolbar">
     <button class="btn btn-sm" onclick="openOcrModal()">批量 OCR</button>
+    <button class="btn btn-sm" onclick="downloadDataset()">下载全部图片 (ZIP)</button>
     <label style="display:flex;align-items:center;gap:0.3rem;font-size:0.85rem;">
       <input type="checkbox" id="stop-on-failure">
       失败时停止
@@ -395,6 +396,38 @@ async function batchDeleteImages() {
   }
 
   setTimeout(() => { msgEl.innerHTML = ''; }, 5000);
+}
+
+// ── 下载全部图片 ──────────────────────────────────────────────────────────────
+async function downloadDataset() {
+  const btn = document.querySelector('.toolbar button[onclick="downloadDataset()"]');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '打包中…';
+  try {
+    const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/download`, {method: 'POST'});
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || '下载失败');
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const disposition = res.headers.get('content-disposition');
+    const match = disposition && disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    a.download = match ? match[1].replace(/['"]/g, '') : 'dataset_images.zip';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('下载出错: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }
 
 // ── 单张 OCR ──────────────────────────────────────────────────────────────────

@@ -1170,8 +1170,8 @@ function getMetricClass(value, isRecall = false) {
 }
 
 function getFpMetricClass(avgFp) {
-  if (avgFp <= 1.0) return 'metric-good';
-  if (avgFp <= 3.0) return 'metric-mid';
+  if (avgFp <= 4.0) return 'metric-good';
+  if (avgFp <= 10.0) return 'metric-mid';
   return 'metric-bad';
 }
 
@@ -1450,7 +1450,13 @@ function renderImageModal() {
         <div class="image-view-meta"><label>时间</label><span>${escHtml(timeText)}</span></div>
         <div class="image-view-meta"><label>状态</label><span>${escHtml(statusText)}</span></div>
         ${gtEditHtml}
-        <div style="margin-top:auto; display:flex; justify-content:center; align-items:center; gap:0.5rem;">
+        <div style="margin-top:auto; display:flex; justify-content:center; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+          ${currentImageType === 'alert' && item.representative_image_id
+            ? `<a class="btn btn-sm" href="/alerts/api/images/${item.representative_image_id}/file" download="${escHtml(item.video_id||'alert')}_${escHtml(item.event_type||'')}.png">下载原图</a>`
+            : ''}
+          ${currentImageType === 'gt' && item.gt_event_id && item.video_db_id
+            ? `<button class="btn btn-sm" onclick="showGtFramesForEvent(${item.video_db_id}, ${item.gt_event_id})">查看所有GT帧</button>`
+            : ''}
           <a class="btn btn-sm btn-success" href="/videos/${item.video_db_id}/annotate/?from_eval_task=${TASK_ID}">重新标注</a>
           <button class="btn btn-sm btn-secondary" onclick="closeImageViewModal()">关闭</button>
         </div>
@@ -1471,6 +1477,40 @@ function nextImage() {
   if (!currentImageList.length) return;
   currentImageIndex = (currentImageIndex + 1) % currentImageList.length;
   renderImageModal();
+}
+
+// ── 查看事件全部 GT 帧 ─────────────────────────────────────────────────────────
+async function showGtFramesForEvent(videoDbId, eventId) {
+  const res = await fetch(`/videos/api/${videoDbId}/events/${eventId}/gt-frames/`);
+  if (!res.ok) { alert('加载GT帧失败'); return; }
+  const data = await res.json();
+  const frames = data.frames || [];
+
+  const body = document.getElementById('imageViewBody');
+  body.dataset.previousHtml = body.innerHTML;
+
+  body.innerHTML = `
+    <div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.8rem;">
+      <button class="btn btn-sm btn-secondary" onclick="restoreImageModalBody()">返回</button>
+      <span style="font-size:0.9rem;color:#666;">共 ${frames.length} 帧</span>
+    </div>
+    <div class="multi-img-grid">
+      ${frames.map(f => `
+        <div class="multi-img-cell">
+          <img src="/evaluation/api/gt-frames/${f.id}/file" alt="" loading="lazy">
+          <div class="img-label">${formatTime(f.timestamp_sec)} (${f.timestamp_sec}s)</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function restoreImageModalBody() {
+  const body = document.getElementById('imageViewBody');
+  if (body.dataset.previousHtml) {
+    body.innerHTML = body.dataset.previousHtml;
+    delete body.dataset.previousHtml;
+  }
 }
 
 async function doReevaluate() {

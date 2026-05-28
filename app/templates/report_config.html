@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+
+{% block title %}报告配置 - {{ task.name }}{% endblock %}
+
+{% block content %}
+<style>
+  .breadcrumb { font-size: 0.88rem; color: #888; margin-bottom: 1rem; }
+  .breadcrumb a { color: #3498db; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  .report-config-layout { display: grid; grid-template-columns: 380px 1fr; gap: 1.5rem; }
+  @media (max-width: 900px) { .report-config-layout { grid-template-columns: 1fr; } }
+
+  .config-panel { display: flex; flex-direction: column; gap: 1rem; }
+  .chat-panel { display: flex; flex-direction: column; }
+
+  .form-group { margin-bottom: 1rem; }
+  .form-group label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 0.3rem; font-weight: 500; }
+  .form-group input[type="text"],
+  .form-group input[type="password"],
+  .form-group textarea {
+    width: 100%; padding: 0.5rem 0.7rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem;
+    font-family: inherit;
+  }
+  .form-group input:focus,
+  .form-group textarea:focus { outline: none; border-color: #3498db; }
+
+  .module-list { display: flex; flex-direction: column; gap: 0.5rem; }
+  .module-list label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; color: #444; cursor: pointer; }
+  .module-list input[type="checkbox"] { margin: 0; }
+
+  .chat-area {
+    flex: 1; min-height: 400px; max-height: 600px; overflow-y: auto;
+    background: #f8f9fa; border-radius: 6px; padding: 1rem;
+    display: flex; flex-direction: column; gap: 0.8rem;
+  }
+  .chat-placeholder { text-align: center; color: #888; padding: 3rem 1rem; }
+  .chat-msg-user { display: flex; justify-content: flex-end; }
+  .chat-msg-ai { display: flex; justify-content: flex-start; }
+  .chat-bubble {
+    max-width: 85%; padding: 0.7rem 1rem; border-radius: 12px; font-size: 0.9rem; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .chat-msg-user .chat-bubble { background: #3498db; color: #fff; border-bottom-right-radius: 4px; }
+  .chat-msg-ai .chat-bubble { background: #fff; color: #333; border: 1px solid #e0e0e0; border-bottom-left-radius: 4px; }
+
+  .chat-input-bar { display: flex; gap: 0.5rem; margin-top: 0.8rem; }
+  .chat-input-bar textarea {
+    flex: 1; padding: 0.6rem 0.8rem; border: 1px solid #ddd; border-radius: 4px;
+    font-size: 0.9rem; font-family: inherit; resize: none;
+  }
+  .chat-input-bar textarea:focus { outline: none; border-color: #3498db; }
+
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .ai-section-title { font-size: 0.75rem; color: #3498db; font-weight: 600; margin-bottom: 0.3rem; }
+</style>
+
+<div class="breadcrumb">
+  <a href="/evaluation/">评测任务</a> /
+  <a href="/evaluation/{{ task.id }}/">{{ task.name }}</a> /
+  <span>报告配置</span>
+</div>
+
+<h2>详细报告配置</h2>
+
+<div class="report-config-layout">
+  <!-- 左侧：配置表单 -->
+  <div class="config-panel">
+    <div class="card">
+      <h3>基本信息</h3>
+      <div class="form-group">
+        <label>项目名称</label>
+        <input type="text" id="projectName" value="{{ task.name }}">
+      </div>
+      <div class="form-group">
+        <label>报告标题</label>
+        <input type="text" id="reportTitle" value="算法验证报告">
+      </div>
+      <div class="form-group">
+        <label>项目背景（可选）</label>
+        <textarea id="projectBackground" rows="3" placeholder="简述项目背景..."></textarea>
+      </div>
+      <div class="form-group">
+        <label>API Base URL（可选，默认官方）</label>
+        <input type="text" id="apiBaseUrl" placeholder="https://api.anthropic.com">
+      </div>
+      <div class="form-group">
+        <label>Claude API Key（临时，仅本次使用）</label>
+        <input type="password" id="apiKey" placeholder="sk-...">
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>报告模块</h3>
+      <div class="module-list">
+        <label><input type="checkbox" checked data-module="cover"> 封面</label>
+        <label><input type="checkbox" checked data-module="summary"> 执行摘要</label>
+        <label><input type="checkbox" checked data-module="env"> 评测环境</label>
+        <label><input type="checkbox" checked data-module="overview"> 整体指标</label>
+        <label><input type="checkbox" checked data-module="events"> 分事件详细分析</label>
+        <label><input type="checkbox" checked data-module="video"> 视频维度分析</label>
+        <label><input type="checkbox" data-module="time"> 时间维度分析</label>
+        <label><input type="checkbox" checked data-module="conclusion"> 结论与建议</label>
+      </div>
+    </div>
+
+    <button class="btn" id="btnGenerateAI" onclick="generateAIPreview()">生成 AI 分析</button>
+    <button class="btn btn-success" id="btnFinalGenerate" onclick="generateFinalReport()">确认并生成报告</button>
+  </div>
+
+  <!-- 右侧：Chat 区域 -->
+  <div class="chat-panel">
+    <div class="card" style="flex:1;display:flex;flex-direction:column;">
+      <h3>AI 分析与对话修改</h3>
+      <div id="chatArea" class="chat-area">
+        <div class="chat-placeholder">点击左侧"生成 AI 分析"按钮开始...<br><small>AI 会根据评测数据生成执行摘要和结论建议，你可以在下方输入修改要求。</small></div>
+      </div>
+      <div class="chat-input-bar">
+        <textarea id="chatInput" rows="2" placeholder="输入修改要求，例如：精简摘要到200字、补充视频维度的建议..."></textarea>
+        <button class="btn" onclick="sendChatMessage()">发送</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TASK_ID = {{ task.id }};
+let chatMessages = [];
+let currentSummary = '';
+let currentConclusion = '';
+
+async function generateAIPreview() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const apiBaseUrl = document.getElementById('apiBaseUrl').value.trim();
+  const projectName = document.getElementById('projectName').value.trim();
+  const projectBg = document.getElementById('projectBackground').value.trim();
+
+  if (!apiKey) {
+    showChatError('请填写 Claude API Key');
+    return;
+  }
+
+  const btn = document.getElementById('btnGenerateAI');
+  btn.disabled = true;
+  btn.textContent = '正在分析...';
+
+  try {
+    const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/detailed-report-preview`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({api_key: apiKey, api_base_url: apiBaseUrl, project_name: projectName, project_background: projectBg})
+    });
+    if (!res.ok) {
+      let msg = `请求失败 (HTTP ${res.status})`;
+      try {
+        const data = await res.json();
+        if (data.error) msg = data.error;
+      } catch (_) {}
+      showChatError(msg);
+      return;
+    }
+    const data = await res.json();
+    if (!data.success) {
+      showChatError(data.error || '生成失败');
+      return;
+    }
+    if (!data.summary || data.summary.includes('AI 分析生成失败')) {
+      showChatError('AI 分析生成失败，请检查 API Key 和 API Base URL 是否正确。');
+      return;
+    }
+    currentSummary = data.summary;
+    currentConclusion = data.conclusion;
+    chatMessages = [
+      {role: 'assistant', content: `【执行摘要】\n${data.summary}\n\n【结论建议】\n${data.conclusion}`}
+    ];
+    renderChat();
+  } catch (e) {
+    showChatError('生成出错: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '生成 AI 分析';
+  }
+}
+
+function showChatError(msg) {
+  chatMessages.push({role: 'assistant', content: '⚠️ ' + msg});
+  renderChat();
+}
+
+function renderChat() {
+  const area = document.getElementById('chatArea');
+  if (chatMessages.length === 0) {
+    area.innerHTML = '<div class="chat-placeholder">点击左侧"生成 AI 分析"按钮开始...<br><small>AI 会根据评测数据生成执行摘要和结论建议，你可以在下方输入修改要求。</small></div>';
+    return;
+  }
+  area.innerHTML = chatMessages.map(m => {
+    const cls = m.role === 'user' ? 'chat-msg-user' : 'chat-msg-ai';
+    return `<div class="${cls}"><div class="chat-bubble">${escapeHtml(m.content)}</div></div>`;
+  }).join('');
+  area.scrollTop = area.scrollHeight;
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+
+  chatMessages.push({role: 'user', content: text});
+  renderChat();
+  input.value = '';
+
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const apiBaseUrl = document.getElementById('apiBaseUrl').value.trim();
+  if (!apiKey) {
+    showChatError('请填写 API Key');
+    return;
+  }
+
+  const btn = document.querySelector('.chat-input-bar .btn');
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  try {
+    const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/detailed-report-chat`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        api_key: apiKey,
+        api_base_url: apiBaseUrl,
+        messages: chatMessages,
+        current_summary: currentSummary,
+        current_conclusion: currentConclusion
+      })
+    });
+    if (!res.ok) {
+      let msg = `请求失败 (HTTP ${res.status})`;
+      try { const d = await res.json(); if (d.error) msg = d.error; } catch (_) {}
+      showChatError(msg);
+      return;
+    }
+    const data = await res.json();
+    if (!data.success) {
+      showChatError(data.error || '对话失败');
+      return;
+    }
+    currentSummary = data.summary;
+    currentConclusion = data.conclusion;
+    chatMessages.push({role: 'assistant', content: `【执行摘要】\n${data.summary}\n\n【结论建议】\n${data.conclusion}`});
+    renderChat();
+  } catch (e) {
+    showChatError('对话出错: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '发送';
+  }
+}
+
+async function generateFinalReport() {
+  const modules = Array.from(document.querySelectorAll('.module-list input:checked'))
+    .map(cb => cb.dataset.module);
+
+  if (modules.length === 0) {
+    alert('请至少选择一个报告模块');
+    return;
+  }
+
+  const config = {
+    project_name: document.getElementById('projectName').value.trim(),
+    report_title: document.getElementById('reportTitle').value.trim(),
+    project_background: document.getElementById('projectBackground').value.trim(),
+    modules: modules,
+    summary_text: currentSummary,
+    conclusion_text: currentConclusion,
+  };
+
+  const btn = document.getElementById('btnFinalGenerate');
+  btn.disabled = true;
+  btn.textContent = '生成中...';
+
+  try {
+    const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/detailed-report`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(config)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || '生成失败');
+      return;
+    }
+    const html = await res.text();
+    const blob = new Blob([html], {type: 'text/html'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `eval_report_${TASK_ID}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('生成出错: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '确认并生成报告';
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML.replace(/\n/g, '<br>');
+}
+
+// Enter 发送消息
+document.getElementById('chatInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChatMessage();
+  }
+});
+</script>
+{% endblock %}

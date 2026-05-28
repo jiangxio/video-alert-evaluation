@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify, render_template, current_app, sen
 from pathlib import Path
 from datetime import datetime
 import json
+import os
 import threading
 import subprocess
 import io
@@ -58,6 +59,18 @@ def eval_task_page(task_id):
     if not task:
         return '任务不存在', 404
     return render_template('eval_task.html', task=dict(task))
+
+
+@bp.route('/<int:task_id>/report-config')
+def report_config_page(task_id):
+    """报告配置页面"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id, name, status, finalized FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return '任务不存在', 404
+    return render_template('report_config.html', task=dict(task))
 
 
 # ── API 路由 ──────────────────────────────────────────────────────────────────
@@ -1712,3 +1725,350 @@ def sync_ground_truth():
             'message': f'已将 {added} 条事件从 GT 文件同步到标注',
             'added': added,
         })
+
+
+@bp.route('/api/tasks/<int:task_id>/detailed-report', methods=['POST'])
+def detailed_report(task_id):
+    """生成详细的算法验证报告（自包含 HTML），接收配置参数。"""
+    from app.services.eval_service import generate_detailed_report
+
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id, name, status, finalized FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+    if task['status'] not in ('done', 'finalized'):
+        return jsonify({'error': '请先完成评测'}), 400
+
+    try:
+        config = {
+            'project_name': data.get('project_name', ''),
+            'report_title': data.get('report_title', '算法验证报告'),
+            'project_background': data.get('project_background', ''),
+            'modules': data.get('modules', ['cover', 'summary', 'env', 'overview', 'events', 'video', 'time', 'conclusion']),
+            'summary_text': data.get('summary_text', ''),
+            'conclusion_text': data.get('conclusion_text', ''),
+        }
+        html = generate_detailed_report(task_id, db, config=config)
+    except Exception as e:
+        import traceback
+        current_app.logger.error(f'生成详细报告失败: {e}\n{traceback.format_exc()}')
+        return jsonify({'error': f'生成报告失败: {str(e)}'}), 500
+
+    from flask import Response
+    return Response(html, mimetype='text/html')
+
+
+@bp.route('/api/tasks/<int:task_id>/detailed-report-preview', methods=['POST'])
+def detailed_report_preview(task_id):
+    """根据配置参数生成 AI 摘要和结论的初版。"""
+    from app.services.eval_service import _call_claude
+
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id, name, status, accuracy, recall, avg_fp_per_hour, event_metrics FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+
+    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
+    api_base_url = data.get('api_base_url', '').strip() or None
+    if not api_key:
+        return jsonify({'error': '缺少 API Key'}), 400
+
+    import json
+    event_metrics = []
+    accuracy = task['accuracy']
+    recall = task['recall']
+    avg_fp_per_hour = task['avg_fp_per_hour']
+
+    # 如果尚未 finalized（指标为空），实时计算
+    if not task['event_metrics']:
+        # 计算整体精确率
+        cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
+        total = 0
+        correct = 0
+        for row in cursor.fetchall():
+            status = get_effective_status(row)
+            if status == 'ignored':
+                continue
+            total += 1
+            if status == 'correct':
+                correct += 1
+        accuracy = correct / total if total > 0 else None
+
+        # 计算整体召回率
+        cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=?', (task_id,))
+        total_expected = 0
+        total_actual = 0
+        for ev in cursor.fetchall():
+            confirmed = ev['confirmed_count'] or 0
+            actual = ev['actual_count'] or 0
+            if confirmed == 0:
+                if actual > 0:
+                    total_expected += 1
+                    total_actual += min(actual, 1)
+            else:
+                total_expected += confirmed
+                total_actual += min(actual, confirmed)
+        recall = total_actual / total_expected if total_expected > 0 else None
+
+        # 计算平均误检/小时
+        total_duration = 0
+        cursor.execute('SELECT eval_set_id FROM eval_tasks WHERE id=?', (task_id,))
+        eval_set_id = cursor.fetchone()['eval_set_id']
+        cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id=?', (eval_set_id,))
+        eval_set = cursor.fetchone()
+        if eval_set and eval_set['video_ids']:
+            try:
+                video_db_ids = json.loads(eval_set['video_ids'])
+                if video_db_ids:
+                    placeholders = ','.join('?' for _ in video_db_ids)
+                    cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                    total_duration = cursor.fetchone()['total'] or 0
+            except Exception:
+                pass
+        total_duration_hours = total_duration / 3600 if total_duration else 0
+        fp_count = 0
+        cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
+        for row in cursor.fetchall():
+            if get_effective_status(row) == 'false_positive':
+                fp_count += 1
+        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+
+        # 计算事件级别指标
+        all_event_types = _get_all_event_types()
+        if not all_event_types:
+            cursor.execute('''
+                SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
+                UNION
+                SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
+            ''', (task_id, task_id))
+            all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+
+        for etype in all_event_types:
+            cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=? AND event_type=?', (task_id, etype))
+            alert_count = 0
+            correct_pred_count = 0
+            fp_count_et = 0
+            for row in cursor.fetchall():
+                status = get_effective_status(row)
+                if status == 'ignored':
+                    continue
+                alert_count += 1
+                if status == 'correct':
+                    correct_pred_count += 1
+                elif status == 'false_positive':
+                    fp_count_et += 1
+
+            cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=? AND event_type=?', (task_id, etype))
+            gt_count = 0
+            hit_count = 0
+            missed_gt_count = 0
+            for ev in cursor.fetchall():
+                confirmed = ev['confirmed_count'] or 0
+                actual = ev['actual_count'] or 0
+                if confirmed == 0:
+                    if actual > 0:
+                        gt_count += 1
+                        hit_count += min(actual, 1)
+                else:
+                    gt_count += confirmed
+                    hit_count += min(actual, confirmed)
+                    if actual < confirmed:
+                        missed_gt_count += 1
+
+            precision = correct_pred_count / alert_count if alert_count > 0 else None
+            event_recall = hit_count / gt_count if gt_count > 0 else None
+            avg_fp_et = round(fp_count_et / total_duration_hours, 2) if total_duration_hours else 0
+
+            event_metrics.append({
+                'event_type': etype,
+                'alert_count': alert_count,
+                'gt_count': gt_count,
+                'correct_pred_count': correct_pred_count,
+                'false_positive_count': fp_count_et,
+                'hit_count': hit_count,
+                'missed_gt_count': missed_gt_count,
+                'precision': precision,
+                'recall': event_recall,
+                'avg_fp_per_hour': avg_fp_et
+            })
+    else:
+        try:
+            event_metrics = json.loads(task['event_metrics'])
+        except Exception:
+            pass
+
+    metrics_json = json.dumps({
+        'accuracy': accuracy,
+        'recall': recall,
+        'avg_fp_per_hour': avg_fp_per_hour,
+        'event_metrics': event_metrics,
+    }, ensure_ascii=False, indent=2)
+
+    project_name = data.get('project_name', task['name'])
+    background = data.get('project_background', '')
+    bg_hint = f'\n项目背景：{background}' if background else ''
+
+    summary_prompt = f'''你是一位计算机视觉算法验证专家。请根据以下视频水印 OCR 算法的评测数据，生成一段简洁的中文执行摘要（200-300 字）。
+
+项目：{project_name}{bg_hint}
+
+要求：
+1. 先给一句整体评价
+2. 列出 2-3 个关键发现，指出表现最好和最差的事件类型
+3. 指出最需要关注的问题
+4. 语言简洁专业，适合放在正式报告中
+
+数据：
+{metrics_json}'''
+
+    conclusion_prompt = f'''你是一位计算机视觉算法验证专家。请根据以下完整的算法评测数据，生成"结论与改进建议"章节（400-600 字）。
+
+项目：{project_name}{bg_hint}
+
+要求：
+1. 总体评价算法在精确率、召回率、误检控制三个维度的表现
+2. 按优先级列出 3-5 条具体、可操作的改进建议
+3. 建议要具体到事件类型或视频维度的问题
+4. 语言正式、专业，适合算法验证报告
+
+数据：
+{metrics_json}'''
+
+    summary_text = _call_claude(summary_prompt, api_key, api_base_url)
+    conclusion_text = _call_claude(conclusion_prompt, api_key, api_base_url)
+
+    return jsonify({
+        'success': True,
+        'summary': summary_text or 'AI 分析生成失败，请检查 API Key 或稍后重试。',
+        'conclusion': conclusion_text or 'AI 分析生成失败，请检查 API Key 或稍后重试。',
+    })
+
+
+@bp.route('/api/tasks/<int:task_id>/detailed-report-chat', methods=['POST'])
+def detailed_report_chat(task_id):
+    """Chat 迭代修改 AI 摘要和结论。"""
+    from app.services.eval_service import _call_claude_chat
+
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id, name, status, accuracy, recall, avg_fp_per_hour, event_metrics FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+
+    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
+    api_base_url = data.get('api_base_url', '').strip() or None
+    if not api_key:
+        return jsonify({'error': '缺少 API Key'}), 400
+
+    messages = data.get('messages', [])
+    current_summary = data.get('current_summary', '')
+    current_conclusion = data.get('current_conclusion', '')
+
+    import json
+    event_metrics = []
+    accuracy = task['accuracy']
+    recall = task['recall']
+    avg_fp_per_hour = task['avg_fp_per_hour']
+
+    # 如果尚未 finalized（指标为空），实时计算
+    if not task['event_metrics']:
+        cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
+        total = 0; correct = 0
+        for row in cursor.fetchall():
+            status = get_effective_status(row)
+            if status == 'ignored': continue
+            total += 1
+            if status == 'correct': correct += 1
+        accuracy = correct / total if total > 0 else None
+
+        cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=?', (task_id,))
+        total_expected = 0; total_actual = 0
+        for ev in cursor.fetchall():
+            confirmed = ev['confirmed_count'] or 0; actual = ev['actual_count'] or 0
+            if confirmed == 0:
+                if actual > 0: total_expected += 1; total_actual += min(actual, 1)
+            else:
+                total_expected += confirmed; total_actual += min(actual, confirmed)
+        recall = total_actual / total_expected if total_expected > 0 else None
+
+        total_duration = 0
+        cursor.execute('SELECT eval_set_id FROM eval_tasks WHERE id=?', (task_id,))
+        eval_set_id = cursor.fetchone()['eval_set_id']
+        cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id=?', (eval_set_id,))
+        eval_set = cursor.fetchone()
+        if eval_set and eval_set['video_ids']:
+            try:
+                video_db_ids = json.loads(eval_set['video_ids'])
+                if video_db_ids:
+                    placeholders = ','.join('?' for _ in video_db_ids)
+                    cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                    total_duration = cursor.fetchone()['total'] or 0
+            except Exception:
+                pass
+        total_duration_hours = total_duration / 3600 if total_duration else 0
+        fp_count = 0
+        cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
+        for row in cursor.fetchall():
+            if get_effective_status(row) == 'false_positive': fp_count += 1
+        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+
+        all_event_types = _get_all_event_types()
+        if not all_event_types:
+            cursor.execute('SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=? UNION SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?', (task_id, task_id))
+            all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+
+        for etype in all_event_types:
+            cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=? AND event_type=?', (task_id, etype))
+            alert_count = 0; correct_pred_count = 0; fp_count_et = 0
+            for row in cursor.fetchall():
+                status = get_effective_status(row)
+                if status == 'ignored': continue
+                alert_count += 1
+                if status == 'correct': correct_pred_count += 1
+                elif status == 'false_positive': fp_count_et += 1
+
+            cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=? AND event_type=?', (task_id, etype))
+            gt_count = 0; hit_count = 0; missed_gt_count = 0
+            for ev in cursor.fetchall():
+                confirmed = ev['confirmed_count'] or 0; actual = ev['actual_count'] or 0
+                if confirmed == 0:
+                    if actual > 0: gt_count += 1; hit_count += min(actual, 1)
+                else:
+                    gt_count += confirmed; hit_count += min(actual, confirmed)
+                    if actual < confirmed: missed_gt_count += 1
+
+            precision = correct_pred_count / alert_count if alert_count > 0 else None
+            event_recall = hit_count / gt_count if gt_count > 0 else None
+            avg_fp_et = round(fp_count_et / total_duration_hours, 2) if total_duration_hours else 0
+            event_metrics.append({
+                'event_type': etype, 'alert_count': alert_count, 'gt_count': gt_count,
+                'correct_pred_count': correct_pred_count, 'false_positive_count': fp_count_et,
+                'hit_count': hit_count, 'missed_gt_count': missed_gt_count,
+                'precision': precision, 'recall': event_recall, 'avg_fp_per_hour': avg_fp_et
+            })
+    else:
+        try:
+            event_metrics = json.loads(task['event_metrics'])
+        except Exception:
+            pass
+
+    metrics_json = json.dumps({
+        'accuracy': accuracy, 'recall': recall, 'avg_fp_per_hour': avg_fp_per_hour,
+        'event_metrics': event_metrics,
+    }, ensure_ascii=False, indent=2)
+
+    result = _call_claude_chat(messages, current_summary, current_conclusion, metrics_json, api_key, api_base_url)
+
+    return jsonify({
+        'success': True,
+        'summary': result.get('summary', current_summary),
+        'conclusion': result.get('conclusion', current_conclusion),
+    })

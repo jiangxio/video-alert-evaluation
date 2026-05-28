@@ -4,6 +4,7 @@
 不依赖 Flask 请求上下文，可独立测试和复用。
 """
 
+import base64
 import io
 import json
 from collections import defaultdict
@@ -509,3 +510,722 @@ def generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour
     img.save(buf, format='PNG')
     buf.seek(0)
     return buf
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 详细算法验证报告生成
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _select_sample_items(items, group_key, time_key, max_items=10):
+    """通用样本选择算法：覆盖所有 group，同 group 时间隔开。"""
+    from collections import defaultdict
+
+    groups = defaultdict(list)
+    for item in items:
+        groups[item[group_key]].append(item)
+
+    for gid in groups:
+        groups[gid].sort(key=lambda x: x[time_key])
+
+    result = []
+    group_ids = sorted(groups.keys())
+
+    # 第一轮：每个 group 取 1 张（取最早的，保证覆盖）
+    for gid in group_ids:
+        imgs = groups[gid]
+        if imgs:
+            result.append(imgs.pop(0))
+
+    if len(result) >= max_items:
+        return result[:max_items]
+
+    # 第二轮：剩余名额按 group 大小分配，取与已选时间间隔最远的
+    remaining = max_items - len(result)
+    while remaining > 0:
+        best_gid = None
+        best_idx = None
+        best_dist = -1
+        for gid in group_ids:
+            imgs = groups[gid]
+            if not imgs:
+                continue
+            selected_times = [r[time_key] for r in result if r[group_key] == gid]
+            for i, img in enumerate(imgs):
+                t = img[time_key]
+                if selected_times:
+                    dist = min(abs(t - st) for st in selected_times)
+                else:
+                    dist = float('inf')
+                if dist > best_dist:
+                    best_dist = dist
+                    best_gid = gid
+                    best_idx = i
+        if best_gid is None:
+            break
+        result.append(groups[best_gid].pop(best_idx))
+        remaining -= 1
+
+    return result
+
+
+def _img_to_base64(path, max_width=400):
+    """将图片文件转为 Base64 data URL，并压缩尺寸。"""
+    try:
+        from PIL import Image
+        p = Path(path)
+        if not p.exists():
+            return None
+        img = Image.open(p)
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        if img.width > max_width:
+            ratio = max_width / img.width
+            new_h = int(img.height * ratio)
+            img = img.resize((max_width, new_h), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=75)
+        b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+        return f'data:image/jpeg;base64,{b64}'
+    except Exception:
+        return None
+
+
+def _call_claude(prompt_text, api_key=None, base_url=None):
+    """调用 Claude API，失败时返回 None。"""
+    if not api_key:
+        api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+    try:
+        import anthropic
+        kwargs = {'api_key': api_key}
+        if base_url:
+            kwargs['base_url'] = base_url
+        client = anthropic.Anthropic(**kwargs)
+        resp = client.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=2048,
+            system='你是一位计算机视觉算法验证专家，请用中文回答，语言简洁专业。',
+            messages=[{'role': 'user', 'content': prompt_text}],
+        )
+        return resp.content[0].text if resp.content else None
+    except Exception:
+        return None
+
+
+def _build_report_html(task, event_metrics, summary_text, conclusion_text,
+                       event_detail_list, video_stats,
+                       total_duration, gt_event_count, gt_coverage_seconds,
+                       gt_coverage_rate, expected_alert_total,
+                       report_png_b64, config=None):
+    """用字符串拼接生成自包含 HTML 报告。"""
+    from datetime import datetime, timezone
+
+    config = config or {}
+    task_name = task.get('name', '-')
+    report_title = config.get('report_title', '算法验证报告')
+    project_name = config.get('project_name', task_name)
+    created_at = task.get('created_at', '-')
+    eval_time = '-'
+    if created_at:
+        if isinstance(created_at, str):
+            try:
+                dt = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                dt = dt.replace(tzinfo=timezone.utc).astimezone()
+                eval_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                eval_time = created_at
+        elif isinstance(created_at, datetime):
+            if created_at.tzinfo is None:
+                dt = created_at.replace(tzinfo=timezone.utc).astimezone()
+            else:
+                dt = created_at.astimezone()
+            eval_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            eval_time = str(created_at)
+
+    accuracy = task.get('accuracy')
+    recall = task.get('recall')
+    avg_fp = task.get('avg_fp_per_hour')
+
+    def _fmt_pct(v):
+        return f"{v*100:.1f}%" if v is not None else 'N/A'
+
+    def _fp_color_class(v):
+        if v is None:
+            return 'gray'
+        if v <= 4.0:
+            return 'good'
+        if v <= 10.0:
+            return 'mid'
+        return 'bad'
+
+    modules = config.get('modules', ['cover', 'summary', 'env', 'overview', 'events', 'video', 'time', 'conclusion'])
+    project_bg = config.get('project_background', '')
+
+    def _has(m):
+        return m in modules
+
+    # 封面
+    cover_html = ''
+    if _has('cover'):
+        bg_block = f'<p><strong>项目背景：</strong>{project_bg}</p>' if project_bg else ''
+        cover_html = f'''
+    <div class="page">
+      <div class="cover">
+        <h1>{report_title}</h1>
+        <p class="cover-sub">{project_name}</p>
+        <div class="cover-meta">
+          <p><strong>任务名称：</strong>{task_name}</p>
+          {bg_block}
+          <p><strong>报告时间：</strong>{eval_time}</p>
+          <p><strong>评测参数：</strong>合并间隔 {task.get('merge_interval_sec', '-')}s / 容差 ±5s / 触发率 {task.get('trigger_rate', '-')}</p>
+        </div>
+      </div>
+    </div>
+    '''
+
+    # 执行摘要
+    summary_html = ''
+    if _has('summary'):
+        summary_html = f'''
+    <div class="page">
+      <h2>执行摘要</h2>
+      <div class="metrics-row">
+        <div class="metric-card {'good' if accuracy and accuracy >= 0.8 else 'mid' if accuracy and accuracy >= 0.5 else 'bad'}">
+          <div class="metric-label">整体精确率</div>
+          <div class="metric-value">{_fmt_pct(accuracy)}</div>
+        </div>
+        <div class="metric-card {'good' if recall and recall >= 0.8 else 'mid' if recall and recall >= 0.5 else 'bad'}">
+          <div class="metric-label">整体召回率</div>
+          <div class="metric-value">{_fmt_pct(recall)}</div>
+        </div>
+        <div class="metric-card {_fp_color_class(avg_fp)}">
+          <div class="metric-label">平均误检数/小时</div>
+          <div class="metric-value">{f'{avg_fp:.2f}' if avg_fp is not None else 'N/A'}</div>
+        </div>
+      </div>
+      <div class="ai-section">
+        <div class="ai-badge">AI 分析</div>
+        <div class="ai-content">{summary_text or '<em>AI 分析暂不可用</em>'}</div>
+      </div>
+    </div>
+    '''
+
+    # 评测环境
+    env_html = ''
+    if _has('env'):
+        env_html = f'''
+    <div class="page">
+      <h2>评测环境与数据集</h2>
+      <table class="info-table">
+        <tr><td>评测视频总时长</td><td>{_fmt_duration(total_duration)}</td></tr>
+        <tr><td>GT 覆盖时长</td><td>{_fmt_duration(gt_coverage_seconds)}</td></tr>
+        <tr><td>整体覆盖率</td><td>{(gt_coverage_rate*100):.1f}%</td></tr>
+        <tr><td>GT 事件总数</td><td>{gt_event_count}</td></tr>
+        <tr><td>理论告警数</td><td>{expected_alert_total}</td></tr>
+        <tr><td>合并间隔</td><td>{task.get('merge_interval_sec', '-')} 秒</td></tr>
+        <tr><td>事件起始容差</td><td>{task.get('event_start_sec', '-')} 秒</td></tr>
+        <tr><td>事件结束容差</td><td>{task.get('event_end_sec', '-')} 秒</td></tr>
+        <tr><td>事件间隔</td><td>{task.get('event_interval_sec', '-')} 秒</td></tr>
+        <tr><td>触发率</td><td>{task.get('trigger_rate', '-')}</td></tr>
+      </table>
+    </div>
+    '''
+
+    # 整体指标 PNG
+    png_html = ''
+    if _has('overview') and report_png_b64:
+        png_html = f'''
+    <div class="page">
+      <h2>整体指标概览</h2>
+      <img src="{report_png_b64}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;">
+      <p style="color:#666;font-size:0.9rem;margin-top:0.5rem;">
+        <strong>评测步骤：</strong><br>
+        1. 通过 OCR 提取告警图片水印中的 video_id 和时间戳；<br>
+        2. 将提取的时间戳与 Ground Truth 事件区间进行比对；<br>
+        3. 告警时间落在 GT 事件 ±5 秒容差范围内即视为命中。
+      </p>
+    </div>
+    '''
+
+    # 分事件详细分析
+    event_sections = []
+    for ed in event_detail_list:
+        etype = ed['event_type']
+        em = ed['metrics']
+
+        # 误检图片网格
+        fp_grid = ''
+        if ed['fp_samples']:
+            fp_cells = ''
+            for s in ed['fp_samples']:
+                img_tag = f'<img src="{s["b64"]}">' if s.get('b64') else '<div class="img-placeholder">图片加载失败</div>'
+                fp_cells += f'''
+                <div class="sample-cell">
+                  {img_tag}
+                  <div class="sample-caption">{s['video_id']} | {s['time_str']}</div>
+                </div>'''
+            fp_grid = f'''
+            <h4>误检案例（{len(ed["fp_samples"])} 张）</h4>
+            <div class="sample-grid">{fp_cells}</div>
+            '''
+
+        # 漏检图片网格
+        miss_grid = ''
+        if ed['miss_samples']:
+            miss_cells = ''
+            for s in ed['miss_samples']:
+                img_tag = f'<img src="{s["b64"]}">' if s.get('b64') else '<div class="img-placeholder">图片加载失败</div>'
+                miss_cells += f'''
+                <div class="sample-cell">
+                  {img_tag}
+                  <div class="sample-caption">{s['video_id']} | GT: {s['time_str']}</div>
+                </div>'''
+            miss_grid = f'''
+            <h4>漏检案例（{len(ed["miss_samples"])} 张）</h4>
+            <div class="sample-grid">{miss_cells}</div>
+            '''
+
+        prec = f"{em.get('precision', 0)*100:.1f}%" if em.get('precision') is not None else 'N/A'
+        rec = f"{em.get('recall', 0)*100:.1f}%" if em.get('recall') is not None else 'N/A'
+        fp_val = em.get('avg_fp_per_hour', 0)
+
+        section = f'''
+    <div class="page">
+      <h3>事件类型：{etype}</h3>
+      <div class="mini-metrics">
+        <span>告警 {em.get('alert_count', 0)}</span>
+        <span>命中 {em.get('hit_count', 0)}</span>
+        <span>误检 {em.get('false_positive_count', 0)}</span>
+        <span>漏检 {em.get('missed_gt_count', 0)}</span>
+        <span>精确率 {prec}</span>
+        <span>召回率 {rec}</span>
+        <span>误检/h {fp_val:.2f}</span>
+      </div>
+      {fp_grid}
+      {miss_grid}
+    </div>
+    '''
+        event_sections.append(section)
+
+    if not _has('events'):
+        event_sections = []
+
+    # 视频维度分析
+    video_html = ''
+    if _has('video'):
+        video_rows = ''
+        for vs in video_stats:
+            video_rows += f'''
+            <tr>
+              <td>{vs['video_id']}</td>
+              <td>{vs['alert_count']}</td>
+              <td>{vs['hit_count']}</td>
+              <td>{vs['fp_count']}</td>
+              <td>{vs['miss_count']}</td>
+              <td>{vs.get('precision', 'N/A')}</td>
+              <td>{vs.get('recall', 'N/A')}</td>
+            </tr>'''
+        video_html = f'''
+        <div class="page">
+          <h2>视频维度分析</h2>
+          <table class="data-table">
+            <thead>
+              <tr><th>视频ID</th><th>告警数</th><th>命中</th><th>误检</th><th>漏检</th><th>精确率</th><th>召回率</th></tr>
+            </thead>
+            <tbody>{video_rows}</tbody>
+          </table>
+        </div>
+        '''
+
+    # 结论
+    conclusion_html = ''
+    if _has('conclusion'):
+        conclusion_html = f'''
+    <div class="page">
+      <h2>结论与改进建议</h2>
+      <div class="ai-section">
+        <div class="ai-badge">AI 分析</div>
+        <div class="ai-content">{conclusion_text or '<em>AI 分析暂不可用</em>'}</div>
+      </div>
+    </div>
+    '''
+
+    css = '''
+    <style>
+      * { box-sizing:border-box; }
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin:0; padding:0; color:#333; line-height:1.6; background:#f5f5f5; }
+      .page { max-width:1100px; margin:20px auto; background:#fff; padding:40px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.1); page-break-after:always; }
+      .page:last-child { page-break-after:auto; }
+      h1 { font-size:2.2rem; margin:0 0 10px; color:#2c3e50; }
+      h2 { font-size:1.5rem; margin:0 0 20px; padding-bottom:10px; border-bottom:2px solid #3498db; color:#2c3e50; }
+      h3 { font-size:1.2rem; margin:25px 0 15px; color:#34495e; }
+      h4 { font-size:1rem; margin:20px 0 10px; color:#555; }
+      .cover { text-align:center; padding:80px 40px; }
+      .cover-sub { font-size:1.2rem; color:#7f8c8d; margin-bottom:40px; }
+      .cover-meta { text-align:left; display:inline-block; margin-top:30px; font-size:0.95rem; color:#555; }
+      .cover-meta p { margin:8px 0; }
+      .metrics-row { display:flex; gap:20px; margin:20px 0; }
+      .metric-card { flex:1; text-align:center; padding:25px 15px; border-radius:8px; background:#f8f9fa; }
+      .metric-card.good { background:#d4edda; }
+      .metric-card.mid { background:#fff3cd; }
+      .metric-card.bad { background:#f8d7da; }
+      .metric-label { font-size:0.85rem; color:#666; margin-bottom:8px; }
+      .metric-value { font-size:1.8rem; font-weight:700; color:#2c3e50; }
+      .ai-section { margin:20px 0; padding:20px; background:#f0f7ff; border-radius:8px; border-left:4px solid #3498db; }
+      .ai-badge { display:inline-block; font-size:0.75rem; padding:3px 10px; background:#3498db; color:#fff; border-radius:12px; margin-bottom:10px; }
+      .ai-content { font-size:0.95rem; color:#444; white-space:pre-wrap; }
+      .info-table { width:100%; border-collapse:collapse; margin:15px 0; }
+      .info-table td { padding:10px 15px; border-bottom:1px solid #eee; }
+      .info-table td:first-child { width:200px; color:#666; font-weight:500; }
+      .data-table { width:100%; border-collapse:collapse; margin:15px 0; font-size:0.9rem; }
+      .data-table th, .data-table td { padding:10px 12px; text-align:left; border-bottom:1px solid #eee; }
+      .data-table th { background:#f8f9fa; font-weight:600; color:#555; }
+      .data-table tr:hover { background:#fafafa; }
+      .sample-grid { display:grid; grid-template-columns:repeat(2, 1fr); gap:15px; margin:15px 0; }
+      .sample-cell { border-radius:6px; overflow:hidden; background:#f5f5f5; border:1px solid #e0e0e0; }
+      .sample-cell img { width:100%; aspect-ratio:16/9; object-fit:contain; display:block; background:#f0f0f0; }
+      .sample-cell .img-placeholder { width:100%; height:150px; display:flex; align-items:center; justify-content:center; color:#999; font-size:0.85rem; }
+      .sample-caption { padding:8px 10px; font-size:0.8rem; color:#555; background:#fff; }
+      .mini-metrics { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 20px; }
+      .mini-metrics span { padding:5px 12px; background:#f0f0f0; border-radius:15px; font-size:0.82rem; color:#555; }
+      @media print { body { background:#fff; } .page { margin:0; box-shadow:none; border-radius:0; } }
+    </style>
+    '''
+
+    body = cover_html + summary_html + env_html + png_html + ''.join(event_sections) + video_html + conclusion_html
+    return f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>算法验证报告 - {task_name}</title>{css}</head><body>{body}</body></html>'
+
+
+def _fmt_duration(sec):
+    if sec <= 0:
+        return "0s"
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    parts = []
+    if h > 0:
+        parts.append(f"{h}h")
+    if m > 0:
+        parts.append(f"{m}m")
+    if s > 0 or not parts:
+        parts.append(f"{s}s")
+    return " ".join(parts)
+
+
+def generate_detailed_report(task_id, db, config=None):
+    """生成详细的算法验证报告（自包含 HTML 字符串）。"""
+    import os
+    import json
+    import base64
+    from collections import defaultdict
+    from datetime import datetime, timezone
+
+    config = config or {}
+    cursor = db.cursor()
+
+    # ── 1. 加载任务 ──────────────────────────────────────────────────────────
+    cursor.execute(
+        'SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, '
+        'merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, '
+        'trigger_rate, min_event_duration_sec, status, created_at, finalized, '
+        'accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at '
+        'FROM eval_tasks WHERE id = ?', (task_id,))
+    task = dict(cursor.fetchone())
+
+    accuracy = task.get('accuracy')
+    recall = task.get('recall')
+    avg_fp_per_hour = task.get('avg_fp_per_hour')
+
+    # ── 2. 加载事件指标 ──────────────────────────────────────────────────────
+    event_metrics = []
+    if task.get('event_metrics'):
+        try:
+            event_metrics = json.loads(task['event_metrics'])
+        except Exception:
+            pass
+
+    # ── 3. 加载合并告警和 GT 事件（带图片路径）─────────────────────────────────
+    cursor.execute('''
+        SELECT m.id, m.video_id, m.event_type, m.ts_start, m.ts_end,
+               m.representative_image_id, m.image_ids,
+               m.is_false_positive, m.manual_status,
+               a.filename, a.file_path,
+               o.timestamp_seconds
+        FROM eval_merged_events m
+        LEFT JOIN alert_images a ON a.id = m.representative_image_id
+        LEFT JOIN ocr_results o ON o.alert_image_id = m.representative_image_id
+        WHERE m.task_id = ?
+        ORDER BY m.event_type, m.video_id, m.ts_start
+    ''', (task_id,))
+    merged_rows = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute('''
+        SELECT g.id, g.video_id, g.event_type, g.start_sec, g.end_sec,
+               g.confirmed_count, g.actual_count,
+               g.mid_frame_id, g.mid_frame_path
+        FROM eval_gt_events g
+        WHERE g.task_id = ?
+        ORDER BY g.event_type, g.video_id, g.start_sec
+    ''', (task_id,))
+    gt_rows = [dict(r) for r in cursor.fetchall()]
+
+    # ── 4. 计算整体统计 ──────────────────────────────────────────────────────
+    total_duration = 0
+    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (task['eval_set_id'],))
+    eval_set = cursor.fetchone()
+    if eval_set and eval_set['video_ids']:
+        try:
+            video_db_ids = json.loads(eval_set['video_ids'])
+            if video_db_ids:
+                placeholders = ','.join('?' for _ in video_db_ids)
+                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                total_duration = cursor.fetchone()['total'] or 0
+        except Exception:
+            pass
+
+    gt_intervals = [(g['start_sec'], g['end_sec']) for g in gt_rows
+                    if g.get('start_sec') is not None and g.get('end_sec') is not None]
+    merged_gt_intervals = []
+    if gt_intervals:
+        sorted_intervals = sorted(gt_intervals, key=lambda x: x[0])
+        merged_gt_intervals = [sorted_intervals[0]]
+        for s, e in sorted_intervals[1:]:
+            if s <= merged_gt_intervals[-1][1]:
+                merged_gt_intervals[-1] = (merged_gt_intervals[-1][0], max(merged_gt_intervals[-1][1], e))
+            else:
+                merged_gt_intervals.append((s, e))
+    gt_coverage_seconds = sum(end - start for start, end in merged_gt_intervals)
+    gt_coverage_rate = gt_coverage_seconds / total_duration if total_duration > 0 else 0.0
+    expected_alert_total = sum(g.get('expected_count', 0) or 0 for g in gt_rows)
+    gt_event_count = len(gt_rows)
+
+    # ── 5. 按事件类型收集误检/漏检样本 ───────────────────────────────────────
+    em_by_type = {em['event_type']: em for em in event_metrics}
+    all_event_types = sorted(set(em['event_type'] for em in event_metrics))
+
+    event_detail_list = []
+    for etype in all_event_types:
+        em = em_by_type.get(etype, {})
+
+        # 误检样本
+        fp_items = []
+        for m in merged_rows:
+            if m['event_type'] != etype:
+                continue
+            status = get_effective_status(m)
+            if status != 'false_positive':
+                continue
+            ts = m.get('ts_start') or m.get('timestamp_seconds') or 0
+            fp_items.append({
+                'video_id': m['video_id'],
+                'ts_start': ts,
+                'file_path': m.get('file_path'),
+                'time_str': f"{int(ts//3600):02d}:{int((ts%3600)//60):02d}:{int(ts%60):02d}",
+            })
+        fp_samples = _select_sample_items(fp_items, 'video_id', 'ts_start', max_items=10)
+        for s in fp_samples:
+            s['b64'] = _img_to_base64(s['file_path'], max_width=400)
+
+        # 漏检样本
+        miss_items = []
+        for g in gt_rows:
+            if g['event_type'] != etype:
+                continue
+            if (g.get('actual_count') or 0) >= (g.get('confirmed_count') or 0):
+                continue
+            start_sec = g.get('start_sec') or 0
+            miss_items.append({
+                'video_id': g['video_id'],
+                'start_sec': start_sec,
+                'file_path': g.get('mid_frame_path'),
+                'time_str': f"{int(start_sec//3600):02d}:{int((start_sec%3600)//60):02d}:{int(start_sec%60):02d}",
+            })
+        miss_samples = _select_sample_items(miss_items, 'video_id', 'start_sec', max_items=10)
+        for s in miss_samples:
+            s['b64'] = _img_to_base64(s['file_path'], max_width=400)
+
+        event_detail_list.append({
+            'event_type': etype,
+            'metrics': em,
+            'fp_samples': fp_samples,
+            'miss_samples': miss_samples,
+        })
+
+    # ── 6. 视频维度统计 ──────────────────────────────────────────────────────
+    video_stats_map = defaultdict(lambda: {'alert_count': 0, 'hit_count': 0, 'fp_count': 0, 'miss_count': 0})
+    for m in merged_rows:
+        vid = m['video_id']
+        status = get_effective_status(m)
+        video_stats_map[vid]['alert_count'] += 1
+        if status == 'correct':
+            video_stats_map[vid]['hit_count'] += 1
+        elif status == 'false_positive':
+            video_stats_map[vid]['fp_count'] += 1
+
+    for g in gt_rows:
+        vid = g['video_id']
+        if (g.get('actual_count') or 0) < (g.get('confirmed_count') or 0):
+            video_stats_map[vid]['miss_count'] += 1
+
+    video_stats = []
+    for vid, stats in sorted(video_stats_map.items()):
+        total_alert = stats['alert_count']
+        correct = stats['hit_count']
+        precision = f"{correct/total_alert*100:.1f}%" if total_alert > 0 else 'N/A'
+        video_stats.append({
+            'video_id': vid,
+            'alert_count': total_alert,
+            'hit_count': correct,
+            'fp_count': stats['fp_count'],
+            'miss_count': stats['miss_count'],
+            'precision': precision,
+            'recall': '-',
+        })
+
+    # ── 7. 生成报告 PNG（复用已有函数）───────────────────────────────────────
+    report_png_b64 = None
+    try:
+        buf = generate_report_image(
+            task, event_metrics, accuracy, recall, avg_fp_per_hour,
+            total_duration_hours=total_duration / 3600 if total_duration else 0,
+            total_duration=total_duration,
+            gt_event_count=gt_event_count,
+            gt_coverage_seconds=gt_coverage_seconds,
+            gt_coverage_rate=gt_coverage_rate,
+            expected_alert_total=expected_alert_total,
+        )
+        report_png_b64 = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')
+    except Exception:
+        pass
+
+    # ── 8. 摘要和结论 ────────────────────────────────────────────────────────
+    # 优先使用 config 中用户确认的文本，否则调用 Claude API
+    summary_text = config.get('summary_text', '')
+    conclusion_text = config.get('conclusion_text', '')
+
+    if not summary_text and not conclusion_text:
+        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        if api_key:
+            metrics_json = json.dumps({
+                'accuracy': accuracy,
+                'recall': recall,
+                'avg_fp_per_hour': avg_fp_per_hour,
+                'total_duration_seconds': total_duration,
+                'gt_event_count': gt_event_count,
+                'event_metrics': [{k: v for k, v in em.items() if k != 'avg_fp_per_hour'} for em in event_metrics],
+            }, ensure_ascii=False, indent=2)
+
+            summary_prompt = f'''你是一位计算机视觉算法验证专家。请根据以下视频水印 OCR 算法的评测数据，生成一段简洁的中文执行摘要（200-300 字）。
+
+要求：
+1. 先给一句整体评价
+2. 列出 2-3 个关键发现，指出表现最好和最差的事件类型
+3. 指出最需要关注的问题
+4. 语言简洁专业，适合放在正式报告中
+
+数据：
+{metrics_json}'''
+            summary_text = _call_claude(summary_prompt, api_key) or ''
+
+            full_data = {
+                'event_metrics': event_metrics,
+                'video_stats': video_stats,
+                'total_fp': sum(em.get('false_positive_count', 0) for em in event_metrics),
+                'total_miss': sum(em.get('missed_gt_count', 0) for em in event_metrics),
+            }
+            conclusion_prompt = f'''你是一位计算机视觉算法验证专家。请根据以下完整的算法评测数据，生成"结论与改进建议"章节（400-600 字）。
+
+要求：
+1. 总体评价算法在精确率、召回率、误检控制三个维度的表现
+2. 按优先级列出 3-5 条具体、可操作的改进建议
+3. 建议要具体到事件类型或视频维度的问题
+4. 语言正式、专业，适合算法验证报告
+
+数据：
+{json.dumps(full_data, ensure_ascii=False, indent=2)}'''
+            conclusion_text = _call_claude(conclusion_prompt, api_key) or ''
+
+    # ── 9. 组装 HTML ─────────────────────────────────────────────────────────
+    return _build_report_html(
+        task, event_metrics, summary_text, conclusion_text,
+        event_detail_list, video_stats,
+        total_duration, gt_event_count, gt_coverage_seconds,
+        gt_coverage_rate, expected_alert_total,
+        report_png_b64,
+        config,
+    )
+
+
+def _call_claude_chat(messages, current_summary, current_conclusion, metrics_json, api_key, base_url=None):
+    """根据对话上下文调用 Claude API 修改摘要和结论。"""
+    if not api_key:
+        return {'summary': current_summary, 'conclusion': current_conclusion}
+
+    # 构建 Claude messages
+    claude_messages = []
+    for msg in messages:
+        if msg.get('role') == 'user':
+            claude_messages.append({'role': 'user', 'content': msg['content']})
+        elif msg.get('role') == 'assistant':
+            claude_messages.append({'role': 'assistant', 'content': msg['content']})
+
+    # 最后一条必须是用户消息
+    if not claude_messages or claude_messages[-1]['role'] != 'user':
+        return {'summary': current_summary, 'conclusion': current_conclusion}
+
+    system_prompt = f'''你是一位计算机视觉算法验证专家。用户正在编辑一份算法验证报告的执行摘要和结论章节。
+
+当前版本：
+【执行摘要】
+{current_summary}
+
+【结论建议】
+{current_conclusion}
+
+评测数据：
+{metrics_json}
+
+要求：
+1. 根据用户的请求修改对应章节
+2. 返回格式必须包含两个标记：
+   【执行摘要】[修改后的摘要]
+   【结论建议】[修改后的结论]
+3. 如果用户只要求修改其中一个，另一个保持不变
+4. 用中文回答，语言简洁专业'''
+
+    try:
+        import anthropic
+        kwargs = {'api_key': api_key}
+        if base_url:
+            kwargs['base_url'] = base_url
+        client = anthropic.Anthropic(**kwargs)
+        resp = client.messages.create(
+            model='claude-sonnet-4-6',
+            max_tokens=4096,
+            system=system_prompt,
+            messages=claude_messages,
+        )
+        text = resp.content[0].text if resp.content else ''
+
+        # 解析返回文本
+        summary = current_summary
+        conclusion = current_conclusion
+
+        if '【执行摘要】' in text:
+            parts = text.split('【执行摘要】', 1)
+            rest = parts[1]
+            if '【结论建议】' in rest:
+                s_part, c_part = rest.split('【结论建议】', 1)
+                summary = s_part.strip()
+                conclusion = c_part.strip()
+            else:
+                summary = rest.strip()
+        elif '【结论建议】' in text:
+            parts = text.split('【结论建议】', 1)
+            conclusion = parts[1].strip()
+
+        return {'summary': summary, 'conclusion': conclusion}
+    except Exception:
+        return {'summary': current_summary, 'conclusion': current_conclusion}

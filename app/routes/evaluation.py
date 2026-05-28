@@ -43,7 +43,7 @@ def _get_all_event_types():
 
 def _get_effective_status(row):
     """根据 manual_status 解析有效状态"""
-    manual = row.get('manual_status') if isinstance(row, dict) else row['manual_status']
+    manual = row['manual_status']
     if manual == 'correct':
         return 'correct'
     if manual == 'false_positive':
@@ -51,7 +51,7 @@ def _get_effective_status(row):
     if manual == 'ignored':
         return 'ignored'
     # auto 或未设置时，以 is_false_positive 字段为准
-    is_fp = row.get('is_false_positive') if isinstance(row, dict) else row['is_false_positive']
+    is_fp = row['is_false_positive']
     return 'false_positive' if is_fp else 'correct'
 
 

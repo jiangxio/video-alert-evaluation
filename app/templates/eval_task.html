@@ -1204,8 +1204,11 @@ function renderEventMetricsTable(overall) {
     const recallsWithGt = eventMetricsData.filter(e => e.recall != null && e.gt_count > 0).map(e => e.recall);
     return recallsWithGt.length > 0 ? recallsWithGt.reduce((a, b) => a + b, 0) / recallsWithGt.length : null;
   })();
-  // 整体平均误检数 = 总误检数 / 总时长（小时）
-  const overallAvgFp = overall ? overall.avg_fp_per_hour : (totalDurationHours > 0 ? (totalFpCount / totalDurationHours) : 0);
+  // 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+  const overallAvgFp = overall ? overall.avg_fp_per_hour : (() => {
+    const avgFpValues = eventMetricsData.map(e => e.avg_fp_per_hour != null ? e.avg_fp_per_hour : computeAvgFp(getFpCount(e))).filter(v => v != null);
+    return avgFpValues.length > 0 ? avgFpValues.reduce((a, b) => a + b, 0) / avgFpValues.length : 0;
+  })();
 
   body.innerHTML = `
     <table class="event-metrics-table">

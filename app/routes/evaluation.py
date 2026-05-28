@@ -579,10 +579,27 @@ def get_results(task_id):
     expected_alert_total = sum(g.get('expected_count', 0) or 0 for g in gt_results)
 
     # 计算平均误检数/小时（排除被忽略的记录）
-    fp_count = sum(1 for r in alert_results if get_effective_status(r) == 'false_positive')
-    total_count = sum(1 for r in alert_results if get_effective_status(r) != 'ignored')
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    from collections import defaultdict
+    fp_by_type = defaultdict(int)
+    total_count_by_type = defaultdict(int)
+    for r in alert_results:
+        status = get_effective_status(r)
+        if status == 'ignored':
+            continue
+        et = r.get('event_type')
+        if not et:
+            continue
+        total_count_by_type[et] += 1
+        if status == 'false_positive':
+            fp_by_type[et] += 1
+
+    total_count = sum(total_count_by_type.values())
+    fp_count = sum(fp_by_type.values())
     total_duration_hours = total_duration / 3600 if total_duration else 0
-    avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+    all_alert_types = set(list(fp_by_type.keys()) + list(total_count_by_type.keys()))
+    avg_fp_values = [round(fp_by_type.get(et, 0) / total_duration_hours, 2) for et in all_alert_types] if total_duration_hours else []
+    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
     accuracy = (total_count - fp_count) / total_count if total_count > 0 else None
 
     # 计算整体召回率 = gt_count > 0 的事件类型召回率的算术平均
@@ -911,16 +928,9 @@ def finalize_task(task_id):
     recalls_with_gt = [em['recall'] for em in event_metrics if em['recall'] is not None and em['gt_count'] > 0]
     recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
 
-    # 整体平均误检数/小时 = 总误检数 / 总时长（小时）
-    cursor.execute('''
-        SELECT is_false_positive, manual_status
-        FROM eval_merged_events WHERE task_id=?
-    ''', (task_id,))
-    fp_count = 0
-    for row in cursor.fetchall():
-        if get_effective_status(row) == 'false_positive':
-            fp_count += 1
-    avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    avg_fp_values = [em['avg_fp_per_hour'] for em in event_metrics if em['avg_fp_per_hour'] is not None]
+    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
 
     # 保存事件级别指标到JSON字段（可以扩展数据库表，这里先用JSON存储）
     event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
@@ -1078,7 +1088,9 @@ def get_event_metrics(task_id):
     overall_precision = total_correct_pred_count / total_alert_count if total_alert_count > 0 else None
     recalls_with_gt = [em['recall'] for em in event_metrics if em['recall'] is not None and em['gt_count'] > 0]
     overall_recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
-    overall_avg_fp = round(total_fp_count / total_duration_hours, 2) if total_duration_hours else 0
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    avg_fp_values = [em['avg_fp_per_hour'] for em in event_metrics if em['avg_fp_per_hour'] is not None]
+    overall_avg_fp = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
 
     overall = {
         'accuracy': overall_precision,
@@ -1137,13 +1149,9 @@ def get_report_image(task_id):
         recall = task_dict.get('recall')
         avg_fp_per_hour = task_dict.get('avg_fp_per_hour')
         # 兼容旧数据：如果数据库没存 avg_fp_per_hour，实时计算
-        if avg_fp_per_hour is None and total_duration_hours:
-            cursor.execute('''
-                SELECT is_false_positive, manual_status
-                FROM eval_merged_events WHERE task_id=?
-            ''', (task_id,))
-            fp_count = sum(1 for row in cursor.fetchall() if get_effective_status(row) == 'false_positive')
-            avg_fp_per_hour = round(fp_count / total_duration_hours, 2)
+        if avg_fp_per_hour is None and total_duration_hours and event_metrics:
+            avg_fp_values = [em.get('avg_fp_per_hour', 0) for em in event_metrics if em.get('avg_fp_per_hour') is not None]
+            avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
     else:
         # 未确认，实时计算
         res = get_event_metrics(task_id)
@@ -1172,13 +1180,9 @@ def get_report_image(task_id):
         recalls_with_gt = [em['recall'] for em in event_metrics if em.get('recall') is not None and em.get('gt_count', 0) > 0]
         recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
 
-        # 平均误检数 = 总误检数 / 总时长
-        cursor.execute('''
-            SELECT is_false_positive, manual_status
-            FROM eval_merged_events WHERE task_id=?
-        ''', (task_id,))
-        fp_count = sum(1 for row in cursor.fetchall() if get_effective_status(row) == 'false_positive')
-        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+        # 平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+        avg_fp_values = [em.get('avg_fp_per_hour', 0) for em in event_metrics if em.get('avg_fp_per_hour') is not None]
+        avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
 
     # 计算 GT 统计（报告图片也需要）
     cursor.execute('SELECT start_sec, end_sec, expected_count FROM eval_gt_events WHERE task_id = ?', (task_id,))
@@ -1191,13 +1195,9 @@ def get_report_image(task_id):
     gt_coverage_rate = gt_coverage_seconds / total_duration if total_duration > 0 else 0.0
     expected_alert_total = sum((r['expected_count'] or 0) for r in gt_rows)
 
-    # 对于报告图片，统一用总误检数/总时长重新计算平均误检数，避免旧数据不一致
-    cursor.execute('''
-        SELECT is_false_positive, manual_status
-        FROM eval_merged_events WHERE task_id=?
-    ''', (task_id,))
-    fp_count = sum(1 for row in cursor.fetchall() if get_effective_status(row) == 'false_positive')
-    avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+    # 对于报告图片，统一从 event_metrics 重新计算平均误检数，避免旧数据不一致
+    avg_fp_values = [em.get('avg_fp_per_hour', 0) for em in event_metrics if em.get('avg_fp_per_hour') is not None]
+    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
 
     buf = generate_report_image(
         task_dict, event_metrics, accuracy, recall, avg_fp_per_hour, total_duration_hours,

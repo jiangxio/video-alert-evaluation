@@ -534,6 +534,11 @@ async function doAnalyze() {
     gtEventsData = data.gt_events || [];
     confirmedAlertIndices.clear(); // 重置确认状态
     renderConfirmCols();
+    // 提示不在评测视频集中的 video_id
+    const missing = data.missing_video_ids || [];
+    if (missing.length) {
+      alert('警告：以下 video_id 不在所选评测视频集中，评测结果可能不完整：\n\n' + missing.join(', '));
+    }
     goToStage('confirm');
   } catch (e) {
     alert('分析请求出错: ' + e.message);

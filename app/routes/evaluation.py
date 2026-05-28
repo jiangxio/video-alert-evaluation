@@ -346,6 +346,23 @@ def _analyze_merged_events(task_id):
     cursor.execute(alert_sql, alert_params)
     alert_images = [dict(r) for r in cursor.fetchall()]
 
+    # ── 校验：告警集中的 video_id 是否全部包含在评测视频集中 ───────────────────
+    eval_video_ids = set()
+    if eval_video_db_ids:
+        placeholders = ','.join('?' for _ in eval_video_db_ids)
+        cursor.execute(f'SELECT video_id FROM videos WHERE id IN ({placeholders})', eval_video_db_ids)
+        for row in cursor.fetchall():
+            if row['video_id']:
+                eval_video_ids.add(row['video_id'])
+
+    alert_video_ids = set()
+    for img in alert_images:
+        vid = img.get('video_id')
+        if vid:
+            alert_video_ids.add(vid)
+
+    missing_video_ids = sorted(alert_video_ids - eval_video_ids)
+
     # ── 按 (video_id, event_type) 分组 ────────────────────────────────────────
     groups = {}  # key: (video_id, event_type) → list of images
     for img in alert_images:
@@ -432,7 +449,7 @@ def _analyze_merged_events(task_id):
 
     # 按时间戳对合并告警组排序
     merged_alerts.sort(key=lambda x: x['ts_start'])
-    return {'merged_alerts': merged_alerts, 'gt_events': gt_events}
+    return {'merged_alerts': merged_alerts, 'gt_events': gt_events, 'missing_video_ids': missing_video_ids}
 
 
 def _emit_group(merged_alerts, vid, etype, group):
@@ -486,9 +503,37 @@ def confirm_merged(task_id):
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
-    if not cursor.fetchone():
+    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
         return jsonify({'error': '任务不存在'}), 404
+
+    # ── 校验：告警 video_id 是否全部包含在评测视频集中 ────────────────────────
+    eval_set_id = task['eval_set_id']
+    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
+    eval_set = cursor.fetchone()
+    eval_video_db_ids = []
+    if eval_set and eval_set['video_ids']:
+        try:
+            eval_video_db_ids = json.loads(eval_set['video_ids'])
+        except Exception:
+            eval_video_db_ids = []
+
+    eval_video_ids = set()
+    if eval_video_db_ids:
+        placeholders = ','.join('?' for _ in eval_video_db_ids)
+        cursor.execute(f'SELECT video_id FROM videos WHERE id IN ({placeholders})', eval_video_db_ids)
+        for row in cursor.fetchall():
+            if row['video_id']:
+                eval_video_ids.add(row['video_id'])
+
+    alert_video_ids = set(m['video_id'] for m in merged_alerts if m.get('video_id'))
+    missing = sorted(alert_video_ids - eval_video_ids)
+    if missing:
+        return jsonify({
+            'error': '以下 video_id 不在评测视频集中，无法确认：' + ', '.join(missing),
+            'missing_video_ids': missing,
+        }), 400
 
     # 清除旧数据
     cursor.execute('DELETE FROM eval_merged_events WHERE task_id = ?', (task_id,))

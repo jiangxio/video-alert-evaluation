@@ -102,7 +102,7 @@ def create_dataset():
     db.commit()
     dataset_id = cursor.lastrowid
 
-    cursor.execute('SELECT * FROM datasets WHERE id = ?', (dataset_id,))
+    cursor.execute('SELECT id, name, notes, created_at FROM datasets WHERE id = ?', (dataset_id,))
     row = dict(cursor.fetchone())
     row['image_count'] = 0
     return jsonify({'success': True, 'dataset': row})
@@ -249,7 +249,7 @@ def import_zip(dataset_id):
 def dataset_detail_page(dataset_id):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM datasets WHERE id = ?', (dataset_id,))
+    cursor.execute('SELECT id, name, notes, created_at FROM datasets WHERE id = ?', (dataset_id,))
     dataset = cursor.fetchone()
     if not dataset:
         return '数据集不存在', 404
@@ -271,7 +271,7 @@ def list_dataset_images(dataset_id):
         return jsonify({'error': '数据集不存在'}), 404
 
     cursor.execute(
-        'SELECT * FROM alert_images WHERE dataset_id = ? ORDER BY uploaded_at ASC',
+        'SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images WHERE dataset_id = ? ORDER BY uploaded_at ASC',
         (dataset_id,)
     )
     images = []
@@ -306,7 +306,7 @@ def list_alert_eval_sets():
     """获取所有告警评测集"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_alert_sets ORDER BY created_at DESC')
+    cursor.execute('SELECT id, name, notes, dataset_ids, created_at FROM eval_alert_sets ORDER BY created_at DESC')
 
     result = []
     for row in cursor.fetchall():
@@ -371,7 +371,7 @@ def batch_add_to_alert_eval_set():
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_alert_sets WHERE id = ?', (set_id,))
+    cursor.execute('SELECT id, name, notes, dataset_ids, created_at FROM eval_alert_sets WHERE id = ?', (set_id,))
     eval_set = cursor.fetchone()
     if not eval_set:
         return jsonify({'error': '评测集不存在'}), 404
@@ -405,7 +405,7 @@ def batch_remove_from_alert_eval_set():
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_alert_sets WHERE id = ?', (set_id,))
+    cursor.execute('SELECT id, name, notes, dataset_ids, created_at FROM eval_alert_sets WHERE id = ?', (set_id,))
     eval_set = cursor.fetchone()
     if not eval_set:
         return jsonify({'error': '评测集不存在'}), 404
@@ -539,7 +539,7 @@ def upload_to_dataset(dataset_id):
 def get_image_detail(image_id):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM alert_images WHERE id = ?', (image_id,))
+    cursor.execute('SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images WHERE id = ?', (image_id,))
     img = cursor.fetchone()
     if not img:
         return jsonify({'error': '图片不存在'}), 404
@@ -724,7 +724,7 @@ def ocr_single(image_id):
     """对单张图片执行 OCR"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM alert_images WHERE id = ?', (image_id,))
+    cursor.execute('SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images WHERE id = ?', (image_id,))
     img = cursor.fetchone()
     if not img:
         return jsonify({'error': '图片不存在'}), 404

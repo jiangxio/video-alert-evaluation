@@ -90,7 +90,7 @@ def generate_ground_truth_json(video_db_id):
     """根据当前事件重新生成JSON，返回生成的内容"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_db_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_db_id,))
     video = cursor.fetchone()
     if not video or not video['video_id']:
         return None
@@ -139,13 +139,13 @@ def annotate_page(video_id):
     """视频标注页"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return '视频不存在', 404
 
     # 检查是否有水印版本
-    cursor.execute('SELECT * FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video_id,))
+    cursor.execute('SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video_id,))
     watermarked = cursor.fetchone()
     if not watermarked:
         return '请先打水印后再标注', 400
@@ -160,14 +160,14 @@ def list_all_videos():
     """获取所有视频（用于上传页）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos ORDER BY created_at DESC')
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos ORDER BY created_at DESC')
     videos = cursor.fetchall()
 
     result = []
     for video in videos:
         video_dict = dict(video)
         # 检查是否有水印版本
-        cursor.execute('SELECT * FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video['id'],))
+        cursor.execute('SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video['id'],))
         wm = cursor.fetchone()
         video_dict['has_watermark'] = wm is not None
         if wm:
@@ -188,7 +188,7 @@ def search_videos():
     cursor = db.cursor()
     like = f'%{q}%'
     cursor.execute('''
-        SELECT * FROM videos
+        SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos
         WHERE filename LIKE ? OR video_id LIKE ?
         ORDER BY created_at DESC
     ''', (like, like))
@@ -197,7 +197,7 @@ def search_videos():
     result = []
     for video in videos:
         video_dict = dict(video)
-        cursor.execute('SELECT * FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video['id'],))
+        cursor.execute('SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video['id'],))
         wm = cursor.fetchone()
         video_dict['has_watermark'] = wm is not None
         if wm:
@@ -366,7 +366,7 @@ def rename_video(video_id):
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
@@ -402,7 +402,7 @@ def delete_video(video_id):
     """删除视频（包括文件和数据库记录）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
@@ -437,7 +437,7 @@ def download_video(video_id):
     inline = request.args.get('inline', 'false').lower() == 'true'
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
@@ -503,7 +503,7 @@ def batch_download():
                     file_path = Path(row['output_path'])
                     filename = row['filename']
                 else:
-                    cursor.execute('SELECT * FROM videos WHERE id = ?', (vid_id,))
+                    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (vid_id,))
                     row = cursor.fetchone()
                     if not row:
                         continue
@@ -612,7 +612,7 @@ def apply_watermark(video_id):
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
 
     if not video:
@@ -855,7 +855,7 @@ def get_thumbnail(wm_id):
     """获取视频封面图（不存在则实时生成）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM watermarked_videos WHERE id = ?', (wm_id,))
+    cursor.execute('SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE id = ?', (wm_id,))
     wm = cursor.fetchone()
     if not wm:
         return jsonify({'error': '水印视频不存在'}), 404
@@ -896,26 +896,26 @@ def get_annotate_data(video_id):
     cursor = db.cursor()
 
     # 获取视频基本信息
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
 
     # 获取水印视频信息
-    cursor.execute('SELECT * FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video_id,))
+    cursor.execute('SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1', (video_id,))
     wm = cursor.fetchone()
     if not wm:
         return jsonify({'error': '尚未生成水印视频'}), 404
 
     # 获取事件列表
     cursor.execute(
-        'SELECT * FROM events WHERE video_db_id = ? ORDER BY start_seconds',
+        'SELECT id, video_db_id, event_type, start_seconds, end_seconds, gt_frames_status, created_at, updated_at FROM events WHERE video_db_id = ? ORDER BY start_seconds',
         (video_id,)
     )
     events = [dict(e) for e in cursor.fetchall()]
 
     # 获取该视频加入的所有评测集
-    cursor.execute('SELECT * FROM eval_video_sets ORDER BY created_at DESC')
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets ORDER BY created_at DESC')
     all_sets = cursor.fetchall()
     belonging_sets = []
     for s in all_sets:
@@ -960,7 +960,7 @@ def list_events(video_id):
         return jsonify({'error': '视频不存在'}), 404
 
     cursor.execute(
-        'SELECT * FROM events WHERE video_db_id = ? ORDER BY start_seconds',
+        'SELECT id, video_db_id, event_type, start_seconds, end_seconds, gt_frames_status, created_at, updated_at FROM events WHERE video_db_id = ? ORDER BY start_seconds',
         (video_id,)
     )
     events = [dict(e) for e in cursor.fetchall()]
@@ -972,7 +972,7 @@ def add_event(video_id):
     """添加事件（GT帧异步后台生成，自动更新JSON）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
@@ -1035,7 +1035,7 @@ def delete_event(video_id, event_id):
     """删除事件（删除关联的GT帧记录，仅当帧文件未被其他事件复用时才删除磁盘文件，自动更新JSON）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM events WHERE id = ? AND video_db_id = ?', (event_id, video_id))
+    cursor.execute('SELECT id, video_db_id, event_type, start_seconds, end_seconds, gt_frames_status, created_at, updated_at FROM events WHERE id = ? AND video_db_id = ?', (event_id, video_id))
     event = cursor.fetchone()
     if not event:
         return jsonify({'error': '事件不存在'}), 404
@@ -1167,7 +1167,7 @@ def _capture_gt_frames_async(video_db_id, event_id, event_type, start_sec, end_s
             cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('processing', event_id))
             conn.commit()
 
-            cursor.execute('SELECT * FROM videos WHERE id = ?', (video_db_id,))
+            cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_db_id,))
             video = cursor.fetchone()
             if not video or not video['video_id']:
                 cursor.execute('UPDATE events SET gt_frames_status = ? WHERE id = ?', ('failed', event_id))
@@ -1267,7 +1267,7 @@ def view_ground_truth(video_id):
     """查看视频对应的 ground truth JSON 内容"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
@@ -1291,7 +1291,7 @@ def save_ground_truth(video_id):
     """保存 ground truth JSON 文件内容"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
@@ -1334,7 +1334,7 @@ def import_ground_truth_json(video_id):
     """将上传的 ground truth JSON 文件导入为事件标注"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404
@@ -1432,7 +1432,7 @@ def list_eval_sets():
     """获取所有评测视频集"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_video_sets ORDER BY created_at DESC')
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets ORDER BY created_at DESC')
     sets = cursor.fetchall()
 
     result = []
@@ -1482,7 +1482,7 @@ def add_video_to_eval_set(set_id):
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (set_id,))
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets WHERE id = ?', (set_id,))
     eval_set = cursor.fetchone()
 
     if not eval_set:
@@ -1520,7 +1520,7 @@ def batch_add_to_eval_set():
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (set_id,))
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets WHERE id = ?', (set_id,))
     eval_set = cursor.fetchone()
 
     if not eval_set:
@@ -1562,7 +1562,7 @@ def batch_remove_from_eval_set():
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (set_id,))
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets WHERE id = ?', (set_id,))
     eval_set = cursor.fetchone()
 
     if not eval_set:
@@ -1601,7 +1601,7 @@ def remove_video_from_eval_set(set_id):
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (set_id,))
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets WHERE id = ?', (set_id,))
     eval_set = cursor.fetchone()
 
     if not eval_set:
@@ -2036,7 +2036,7 @@ def list_generated_videos():
     """获取所有生成的视频列表"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM generated_videos ORDER BY created_at DESC')
+    cursor.execute('SELECT id, name, type, file_path, file_size, source_video_ids, status, created_at FROM generated_videos ORDER BY created_at DESC')
     rows = cursor.fetchall()
 
     result = []
@@ -2060,7 +2060,7 @@ def delete_generated_video(gen_id):
     db = get_db()
     cursor = db.cursor()
 
-    cursor.execute('SELECT * FROM generated_videos WHERE id = ?', (gen_id,))
+    cursor.execute('SELECT id, name, type, file_path, file_size, source_video_ids, status, created_at FROM generated_videos WHERE id = ?', (gen_id,))
     row = cursor.fetchone()
     if not row:
         return jsonify({'error': '生成的视频不存在'}), 404
@@ -2084,7 +2084,7 @@ def download_generated_video(gen_id):
     db = get_db()
     cursor = db.cursor()
 
-    cursor.execute('SELECT * FROM generated_videos WHERE id = ?', (gen_id,))
+    cursor.execute('SELECT id, name, type, file_path, file_size, source_video_ids, status, created_at FROM generated_videos WHERE id = ?', (gen_id,))
     row = cursor.fetchone()
     if not row:
         return jsonify({'error': '生成的视频不存在'}), 404
@@ -2165,7 +2165,7 @@ def trim_video(video_id):
     cursor = db.cursor()
 
     # 验证原视频存在
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_id,))
     original_video = cursor.fetchone()
     if not original_video:
         return jsonify({'error': '原视频不存在'}), 404

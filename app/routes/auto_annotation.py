@@ -344,19 +344,19 @@ def _process_queue(project_root: str):
     conn.row_factory = sqlite3.Row
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM auto_annotation_tasks WHERE id = ?", (next_task_id,))
+        cursor.execute("SELECT id, video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types, total_frames, analyzed_frames, current_phase, phase_progress, result_json_path, error_message, created_at, updated_at FROM auto_annotation_tasks WHERE id = ?", (next_task_id,))
         task = cursor.fetchone()
         if not task:
             return
 
-        cursor.execute("SELECT * FROM videos WHERE id = ?", (task["video_db_id"],))
+        cursor.execute("SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?", (task["video_db_id"],))
         video = cursor.fetchone()
         if not video:
             _update_task_in_db(next_task_id, conn, status="failed", error_message="视频不存在")
             return
 
         cursor.execute(
-            "SELECT * FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1",
             (task["video_db_id"],),
         )
         wm = cursor.fetchone()
@@ -415,13 +415,13 @@ def config_page(video_db_id):
     """参数配置页"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM videos WHERE id = ?", (video_db_id,))
+    cursor.execute("SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?", (video_db_id,))
     video = cursor.fetchone()
     if not video:
         return "视频不存在", 404
 
     cursor.execute(
-        "SELECT * FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1",
         (video_db_id,),
     )
     wm = cursor.fetchone()
@@ -493,13 +493,13 @@ def start_task():
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM videos WHERE id = ?", (video_db_id,))
+    cursor.execute("SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?", (video_db_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({"error": "视频不存在"}), 404
 
     cursor.execute(
-        "SELECT * FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, original_video_id, filename, output_path, file_size, created_at, thumbnail_path, resolution, duration, ocr_check_status FROM watermarked_videos WHERE original_video_id = ? ORDER BY created_at DESC LIMIT 1",
         (video_db_id,),
     )
     wm = cursor.fetchone()
@@ -699,7 +699,7 @@ def get_task_json(task_id):
     """读取任务生成的 JSON 文件内容"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM auto_annotation_tasks WHERE id = ?", (task_id,))
+    cursor.execute("SELECT id, video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types, total_frames, analyzed_frames, current_phase, phase_progress, result_json_path, error_message, created_at, updated_at FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({"error": "任务不存在"}), 404
@@ -740,7 +740,7 @@ def delete_task(task_id):
     """删除任务及中间数据"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM auto_annotation_tasks WHERE id = ?", (task_id,))
+    cursor.execute("SELECT id, video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types, total_frames, analyzed_frames, current_phase, phase_progress, result_json_path, error_message, created_at, updated_at FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({"error": "任务不存在"}), 404
@@ -769,7 +769,7 @@ def convert_to_events(task_id):
     """将自动标注生成的 JSON 转成 DB events"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM auto_annotation_tasks WHERE id = ?", (task_id,))
+    cursor.execute("SELECT id, video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types, total_frames, analyzed_frames, current_phase, phase_progress, result_json_path, error_message, created_at, updated_at FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({"error": "任务不存在"}), 404

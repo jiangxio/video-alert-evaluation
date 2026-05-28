@@ -13,7 +13,7 @@ def ocr_alert(alert_id):
     """运行OCR识别"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM alert_images WHERE id = ?', (alert_id,))
+    cursor.execute('SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images WHERE id = ?', (alert_id,))
     alert = cursor.fetchone()
 
     if not alert:
@@ -54,7 +54,7 @@ def verify_alert_image(alert_id):
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM alert_images WHERE id = ?', (alert_id,))
+    cursor.execute('SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images WHERE id = ?', (alert_id,))
     alert = cursor.fetchone()
 
     if not alert:
@@ -113,10 +113,10 @@ def get_alert_results(alert_id):
     db = get_db()
     cursor = db.cursor()
 
-    cursor.execute('SELECT * FROM ocr_results WHERE alert_image_id = ? ORDER BY created_at DESC', (alert_id,))
+    cursor.execute('SELECT id, alert_image_id, raw_ocr_text, video_id, timestamp, timestamp_seconds, success, full_result, created_at FROM ocr_results WHERE alert_image_id = ? ORDER BY created_at DESC', (alert_id,))
     ocrs = cursor.fetchall()
 
-    cursor.execute('SELECT * FROM verification_results WHERE alert_image_id = ? ORDER BY created_at DESC', (alert_id,))
+    cursor.execute('SELECT id, alert_image_id, ocr_result_id, verdict, reason, ground_truth_file, matched_event, created_at FROM verification_results WHERE alert_image_id = ? ORDER BY created_at DESC', (alert_id,))
     verifications = cursor.fetchall()
 
     return jsonify({
@@ -132,7 +132,7 @@ def batch_verify():
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM alert_images ORDER BY uploaded_at')
+    cursor.execute('SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images ORDER BY uploaded_at')
     alerts = cursor.fetchall()
 
     results = []

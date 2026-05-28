@@ -53,7 +53,7 @@ def eval_task_page(task_id):
     """评测任务详情页"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return '任务不存在', 404
@@ -67,7 +67,7 @@ def list_eval_sets():
     """获取所有评测视频集"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_video_sets ORDER BY created_at DESC')
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets ORDER BY created_at DESC')
     sets = cursor.fetchall()
 
     result = []
@@ -104,7 +104,7 @@ def list_tasks():
     """列出所有评测任务"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks ORDER BY created_at DESC')
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks ORDER BY created_at DESC')
     tasks = [dict(t) for t in cursor.fetchall()]
 
     for t in tasks:
@@ -197,7 +197,7 @@ def create_task():
     db.commit()
     task_id = cursor.lastrowid
 
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     return jsonify({'success': True, 'task': dict(cursor.fetchone())})
 
 
@@ -206,7 +206,7 @@ def get_task(task_id):
     """获取任务详情"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -248,7 +248,7 @@ def update_task(task_id):
         )
         db.commit()
 
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     return jsonify({'success': True, 'task': dict(cursor.fetchone())})
 
 
@@ -276,7 +276,7 @@ def confirm_merged(task_id):
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -363,7 +363,7 @@ def execute_task(task_id):
     """执行评测（后台线程）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -384,10 +384,10 @@ def execute_task(task_id):
         cur = conn.cursor()
 
         # 加载合并告警和 GT 事件
-        cur.execute('SELECT * FROM eval_merged_events WHERE task_id = ? ORDER BY ts_start, id', (task_id,))
+        cur.execute('SELECT id, task_id, video_id, event_type, start_sec, end_sec, expected_count, confirmed_count, image_ids, confirmed_at, ts_start, ts_end, representative_image_id, is_false_positive, matched_gt_event_id, manual_status FROM eval_merged_events WHERE task_id = ? ORDER BY ts_start, id', (task_id,))
         merged_list = [dict(m) for m in cur.fetchall()]
 
-        cur.execute('SELECT * FROM eval_gt_events WHERE task_id = ?', (task_id,))
+        cur.execute('SELECT id, task_id, gt_event_id, video_id, event_type, start_sec, end_sec, expected_count, confirmed_count, actual_count, mid_frame_id, mid_frame_path, created_at FROM eval_gt_events WHERE task_id = ?', (task_id,))
         gt_list = [dict(g) for g in cur.fetchall()]
 
         total = len(merged_list) + len(gt_list)
@@ -505,7 +505,7 @@ def get_results(task_id):
     """获取评测结果（告警检测结果 + GT 事件得分）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -766,7 +766,7 @@ def finalize_task(task_id):
     """确认评测结果，计算并保存准确率/召回率，锁定任务"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -965,7 +965,7 @@ def get_event_metrics(task_id):
     """获取事件级别的详细指标"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -1100,7 +1100,7 @@ def get_report_image(task_id):
     """生成并下载评测报告图片"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -1251,7 +1251,7 @@ def _run_pre_analysis(eval_video_set_id, merge_interval_sec, event_interval_sec,
     cursor = db.cursor()
 
     # 获取评测视频集
-    cursor.execute('SELECT * FROM eval_video_sets WHERE id = ?', (eval_video_set_id,))
+    cursor.execute('SELECT id, name, notes, video_ids, created_at FROM eval_video_sets WHERE id = ?', (eval_video_set_id,))
     eval_set = cursor.fetchone()
     if not eval_set:
         return {'error': '评测视频集不存在'}
@@ -1472,7 +1472,7 @@ def pre_analysis_detail_page(record_id):
     """测前分析详情页"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM pre_analysis_records WHERE id = ?', (record_id,))
+    cursor.execute('SELECT id, eval_video_set_id, merge_interval_sec, event_interval_sec, trigger_rate, min_event_duration_sec, result_json, created_at FROM pre_analysis_records WHERE id = ?', (record_id,))
     record = cursor.fetchone()
     if not record:
         return '分析记录不存在', 404
@@ -1642,7 +1642,7 @@ def sync_ground_truth():
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM videos WHERE id = ?', (video_db_id,))
+    cursor.execute('SELECT id, filename, original_path, video_id, file_size, duration, created_at, updated_at, video_id_confirmed FROM videos WHERE id = ?', (video_db_id,))
     video = cursor.fetchone()
     if not video:
         return jsonify({'error': '视频不存在'}), 404

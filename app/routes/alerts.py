@@ -44,6 +44,16 @@ def _load_alert_config():
     return {}
 
 
+def _log_image_action(db, dataset_id, action, image_count, details=None):
+    """记录数据集图片操作日志"""
+    cursor = db.cursor()
+    cursor.execute('''
+        INSERT INTO dataset_image_logs (dataset_id, action, image_count, details)
+        VALUES (?, ?, ?, ?)
+    ''', (dataset_id, action, image_count, details))
+    db.commit()
+
+
 # ── 数据集列表页 ──────────────────────────────────────────────────────────────
 
 @bp.route('/')
@@ -221,6 +231,9 @@ def import_zip(dataset_id):
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    details = f'跳过 {len(skipped)} 张' if skipped else None
+    _log_image_action(db, dataset_id, 'import', len(imported), details)
 
     return jsonify({
         'success': True,
@@ -514,6 +527,9 @@ def upload_to_dataset(dataset_id):
             'image_height': height,
         })
 
+    details = '; '.join(errors) if errors else None
+    _log_image_action(db, dataset_id, 'upload', len(results), details)
+
     return jsonify({'success': True, 'uploaded': results, 'errors': errors})
 
 
@@ -659,10 +675,46 @@ def batch_delete_images(dataset_id):
     ''', params)
     db.commit()
 
+    details_parts = []
+    if video_id:
+        details_parts.append(f'视频ID: {video_id}')
+    if event_type:
+        details_parts.append(f'事件类型: {event_type}')
+    details = '; '.join(details_parts) if details_parts else None
+    _log_image_action(db, dataset_id, 'batch_delete', deleted_count, details)
+
     return jsonify({
         'success': True,
         'deleted_count': deleted_count
     })
+
+
+@bp.route('/api/datasets/<int:dataset_id>/image-logs', methods=['GET'])
+def list_image_logs(dataset_id):
+    """获取数据集图片操作日志"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '数据集不存在'}), 404
+
+    cursor.execute('''
+        SELECT id, action, image_count, details, created_at
+        FROM dataset_image_logs
+        WHERE dataset_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+    ''', (dataset_id,))
+    logs = []
+    for row in cursor.fetchall():
+        logs.append({
+            'id': row['id'],
+            'action': row['action'],
+            'image_count': row['image_count'],
+            'details': row['details'],
+            'created_at': row['created_at'],
+        })
+    return jsonify({'logs': logs})
 
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
@@ -749,19 +801,30 @@ def ocr_batch(dataset_id):
     if not cursor.fetchone():
         return jsonify({'error': '数据集不存在'}), 404
 
-    cursor.execute(
-        'SELECT id, file_path FROM alert_images WHERE dataset_id = ?',
-        (dataset_id,)
-    )
-    images = [dict(r) for r in cursor.fetchall()]
-    if not images:
-        return jsonify({'error': '数据集内没有图片'}), 400
-
-    # 获取 stop_on_failure 参数，默认为 False
+    # 获取参数：默认只对标注成功以外的图片执行OCR
+    force_all = False
     stop_on_failure = False
     if request.is_json:
         data = request.get_json() or {}
+        force_all = data.get('force_all', False)
         stop_on_failure = data.get('stop_on_failure', False)
+
+    if force_all:
+        cursor.execute(
+            'SELECT id, file_path FROM alert_images WHERE dataset_id = ?',
+            (dataset_id,)
+        )
+    else:
+        cursor.execute(
+            '''SELECT id, file_path FROM alert_images WHERE dataset_id = ?
+               AND id NOT IN (
+                   SELECT alert_image_id FROM ocr_results WHERE success = 1
+               )''',
+            (dataset_id,)
+        )
+    images = [dict(r) for r in cursor.fetchall()]
+    if not images:
+        return jsonify({'error': '没有需要OCR的图片（所有图片已标注成功）'}), 400
 
     with _ocr_lock:
         if _ocr_progress.get(dataset_id, {}).get('running'):

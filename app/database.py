@@ -410,6 +410,18 @@ def init_db():
         )
     ''')
 
+    # 数据集图片操作日志表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS dataset_image_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset_id INTEGER REFERENCES datasets(id),
+            action TEXT NOT NULL,
+            image_count INTEGER NOT NULL,
+            details TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     # 常用查询索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_alert_image ON ocr_results(alert_image_id)')
@@ -421,6 +433,7 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_task_video ON auto_annotation_tasks(video_db_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_frames_task ON auto_annotation_frames(task_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_pre_analysis_set ON pre_analysis_records(eval_video_set_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_dataset_image_logs_dataset ON dataset_image_logs(dataset_id)')
 
     db.commit()
     db.close()

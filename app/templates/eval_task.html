@@ -295,6 +295,17 @@
       </div>
     </div>
 
+    <details class="help-box">
+      <summary>指标与状态说明</summary>
+      <ul>
+        <li><strong>整体精确率（Precision）</strong>：正确告警数 / 总告警数。反映告警的准确性。</li>
+        <li><strong>整体召回率（Recall）</strong>：命中的 GT 事件数 / 总 GT 事件数。反映对真实事件的覆盖能力。</li>
+        <li><strong>平均误检数/小时</strong>：误检告警数 ÷ 评测视频总时长（小时）。数值越小越好。</li>
+        <li><strong>状态选项</strong>：「自动」按算法判断；「正确」标记为有效告警；「误检」标记为错误告警；「忽略」不计入精确率计算。</li>
+        <li><strong>GT 事件得分</strong>：<span style="color:#27ae60;">绿色</span>=全部命中，<span style="color:#f39c12;">橙色</span>=部分命中，<span style="color:#e74c3c;">红色</span>=漏检。</li>
+      </ul>
+    </details>
+
     <!-- 指标展示区（确认后显示） -->
     <div id="metrics-bar" class="param-grid" style="margin-bottom:1rem; display:none; background:#eaf7ee; border-radius:6px; padding:0.8rem;">
       <div class="param-item" style="background:transparent;">
@@ -337,17 +348,6 @@
       <span>标注数据已更新，建议重新执行评测</span>
       <button class="btn btn-sm btn-warning" onclick="doReevaluate()">重新评测</button>
     </div>
-
-    <details class="help-box">
-      <summary>指标与状态说明</summary>
-      <ul>
-        <li><strong>整体精确率（Precision）</strong>：正确告警数 / 总告警数。反映告警的准确性。</li>
-        <li><strong>整体召回率（Recall）</strong>：命中的 GT 事件数 / 总 GT 事件数。反映对真实事件的覆盖能力。</li>
-        <li><strong>平均误检数/小时</strong>：误检告警数 ÷ 评测视频总时长（小时）。数值越小越好。</li>
-        <li><strong>状态选项</strong>：「自动」按算法判断；「正确」标记为有效告警；「误检」标记为错误告警；「忽略」不计入精确率计算。</li>
-        <li><strong>GT 事件得分</strong>：<span style="color:#27ae60;">绿色</span>=全部命中，<span style="color:#f39c12;">橙色</span>=部分命中，<span style="color:#e74c3c;">红色</span>=漏检。</li>
-      </ul>
-    </details>
 
     <!-- Tab 切换 -->
     <div class="result-tabs">

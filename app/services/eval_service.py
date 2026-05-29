@@ -660,6 +660,31 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
             return 'mid'
         return 'bad'
 
+    def _metric_chip_class(metric_key, metric_value):
+        if metric_key == 'hit_count':
+            return 'good' if (metric_value or 0) > 0 else 'neutral'
+        if metric_key in ('false_positive_count', 'missed_gt_count'):
+            return 'good' if (metric_value or 0) == 0 else 'bad'
+        if metric_key == 'precision':
+            if metric_value is None:
+                return 'neutral'
+            if metric_value >= 0.85:
+                return 'good'
+            if metric_value >= 0.75:
+                return 'mid'
+            return 'bad'
+        if metric_key == 'recall':
+            if metric_value is None:
+                return 'neutral'
+            if metric_value >= 0.8:
+                return 'good'
+            if metric_value >= 0.7:
+                return 'mid'
+            return 'bad'
+        if metric_key == 'avg_fp_per_hour':
+            return _fp_color_class(metric_value)
+        return 'neutral'
+
     modules = config.get('modules', ['cover', 'summary', 'method', 'overview', 'events', 'video', 'conclusion'])
     project_bg = config.get('project_background', '')
 
@@ -794,7 +819,7 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
     '''
 
     # 详细案例分析
-    event_sections = []
+    event_blocks = []
     for ed in event_detail_list:
         etype = ed['event_type']
         em = ed['metrics']
@@ -811,8 +836,10 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
                   <div class="sample-caption">{s['video_id']} | {s['time_str']}</div>
                 </div>'''
             fp_grid = f'''
-            <h4>误检案例（{len(ed["fp_samples"])} 张）</h4>
-            <div class="sample-grid">{fp_cells}</div>
+            <div class="event-sample-section">
+              <h4>误检案例（{len(ed["fp_samples"])} 张）</h4>
+              <div class="sample-grid">{fp_cells}</div>
+            </div>
             '''
 
         # 漏检图片网格
@@ -827,42 +854,62 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
                   <div class="sample-caption">{s['video_id']} | GT: {s['time_str']}</div>
                 </div>'''
             miss_grid = f'''
-            <h4>漏检案例（{len(ed["miss_samples"])} 张）</h4>
-            <div class="sample-grid">{miss_cells}</div>
+            <div class="event-sample-section">
+              <h4>漏检案例（{len(ed["miss_samples"])} 张）</h4>
+              <div class="sample-grid">{miss_cells}</div>
+            </div>
             '''
 
         prec = f"{em.get('precision', 0)*100:.1f}%" if em.get('precision') is not None else 'N/A'
         rec = f"{em.get('recall', 0)*100:.1f}%" if em.get('recall') is not None else 'N/A'
         fp_val = em.get('avg_fp_per_hour', 0)
+        empty_state = ''
+        if not fp_grid and not miss_grid:
+            empty_state = '<div class="event-empty">暂无可展示的典型误检或漏检样本</div>'
 
-        section = f'''
-    <div class="page">
-      <h3>事件类型：{etype}</h3>
-      <div class="mini-metrics">
-        <span>告警 {em.get('alert_count', 0)}</span>
-        <span>命中 {em.get('hit_count', 0)}</span>
-        <span>误检 {em.get('false_positive_count', 0)}</span>
-        <span>漏检 {em.get('missed_gt_count', 0)}</span>
-        <span>精确率 {prec}</span>
-        <span>召回率 {rec}</span>
-        <span>误检/h {fp_val:.2f}</span>
+        metric_chips = ''.join([
+            f'<span class="metric-chip metric-chip-{_metric_chip_class("alert_count", em.get("alert_count", 0))}">告警 {em.get("alert_count", 0)}</span>',
+            f'<span class="metric-chip metric-chip-{_metric_chip_class("hit_count", em.get("hit_count", 0))}">命中 {em.get("hit_count", 0)}</span>',
+            f'<span class="metric-chip metric-chip-{_metric_chip_class("false_positive_count", em.get("false_positive_count", 0))}">误检 {em.get("false_positive_count", 0)}</span>',
+            f'<span class="metric-chip metric-chip-{_metric_chip_class("missed_gt_count", em.get("missed_gt_count", 0))}">漏检 {em.get("missed_gt_count", 0)}</span>',
+            f'<span class="metric-chip metric-chip-{_metric_chip_class("precision", em.get("precision"))}">精确率 {prec}</span>',
+            f'<span class="metric-chip metric-chip-{_metric_chip_class("recall", em.get("recall"))}">召回率 {rec}</span>',
+            f'<span class="metric-chip metric-chip-{_metric_chip_class("avg_fp_per_hour", fp_val)}">误检/h {fp_val:.2f}</span>',
+        ])
+
+        block = f'''
+        <section class="event-case-block">
+          <div class="event-case-head">
+            <div class="event-case-title">
+              <span class="event-case-kicker">事件类型</span>
+              <h3>{etype}</h3>
+            </div>
+            <div class="mini-metrics metric-chip-list">
+              {metric_chips}
+            </div>
+          </div>
+          <div class="event-case-body">
+            {fp_grid}
+            {miss_grid}
+            {empty_state}
+          </div>
+        </section>
+        '''
+        event_blocks.append(block)
+
+    event_html = ''
+    if _has('events') and event_blocks:
+        event_html = f'''
+    <div class="page event-analysis-page">
+      <div class="section-intro">
+        <h2>详细案例分析</h2>
+        <p class="section-intro-text">按事件类型集中展示关键误检与漏检样本，方便把指标和画面放在同一视线里分析。</p>
       </div>
-      {fp_grid}
-      {miss_grid}
+      <div class="event-case-list">
+        {''.join(event_blocks)}
+      </div>
     </div>
     '''
-        event_sections.append(section)
-
-    event_title_html = ''
-    if _has('events') and event_sections:
-        event_title_html = '''
-    <div class="page">
-      <h2>详细案例分析</h2>
-    </div>
-    '''
-
-    if not _has('events'):
-        event_sections = []
 
     # 视频维度分析
     video_html = ''
@@ -942,6 +989,28 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
       .sample-caption { padding:8px 10px; font-size:0.8rem; color:#555; background:#fff; }
       .mini-metrics { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 20px; }
       .mini-metrics span { padding:5px 12px; background:#f0f0f0; border-radius:15px; font-size:0.82rem; color:#555; }
+      .section-intro { margin-bottom:18px; }
+      .section-intro h2 { margin-bottom:8px; }
+      .section-intro-text { margin:0; color:#667085; font-size:0.92rem; }
+      .event-analysis-page { padding-top:36px; }
+      .event-case-list { display:flex; flex-direction:column; gap:18px; }
+      .event-case-block { padding:24px; border:1px solid #e5eaf1; border-radius:14px; background:linear-gradient(180deg, #fbfdff 0%, #f7f9fc 100%); break-inside:avoid; page-break-inside:avoid; }
+      .event-case-head { display:flex; flex-direction:column; gap:14px; }
+      .event-case-title { display:flex; align-items:flex-start; gap:14px; padding:0 0 14px; border-bottom:1px solid #e8eef5; }
+      .event-case-kicker { flex-shrink:0; display:inline-flex; align-items:center; height:28px; padding:0 12px; border-radius:999px; background:#e9f2ff; color:#2667b4; font-size:0.8rem; font-weight:700; letter-spacing:0.02em; }
+      .event-case-head h3 { margin:0; font-size:1.28rem; line-height:1.3; color:#1f2d3d; }
+      .event-case-head .mini-metrics { margin:0; }
+      .metric-chip-list { gap:12px; }
+      .metric-chip { display:inline-flex; align-items:center; min-height:32px; padding:6px 12px; border-radius:999px; font-size:0.82rem; font-weight:600; border:1px solid transparent; }
+      .metric-chip-neutral { background:#eef2f6; color:#516071; border-color:#e0e6ed; }
+      .metric-chip-good { background:#e9f8ef; color:#1f7a45; border-color:#bfe7cf; }
+      .metric-chip-mid { background:#fff7e8; color:#9a6700; border-color:#f0d8a8; }
+      .metric-chip-bad { background:#fdecec; color:#b42318; border-color:#f3c1bc; }
+      .metric-chip-gray { background:#f3f4f6; color:#667085; border-color:#e5e7eb; }
+      .event-case-body { display:flex; flex-direction:column; gap:18px; margin-top:18px; }
+      .event-sample-section { padding:18px; border:1px solid #e6ebf2; border-radius:12px; background:#fff; }
+      .event-sample-section h4 { margin:0 0 10px; color:#344054; }
+      .event-empty { padding:18px 20px; border:1px dashed #d6dde8; border-radius:10px; background:#fff; color:#667085; font-size:0.9rem; }
       .step-list { display:flex; flex-direction:column; gap:1rem; margin:15px 0; }
       .step-item { display:flex; gap:0.8rem; align-items:flex-start; }
       .step-num { flex-shrink:0; width:28px; height:28px; background:#3498db; color:#fff; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.85rem; font-weight:700; margin-top:2px; }
@@ -951,7 +1020,7 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
     </style>
     '''
 
-    body = cover_html + summary_html + env_html + method_html + png_html + event_title_html + ''.join(event_sections) + video_html + conclusion_html
+    body = cover_html + summary_html + env_html + method_html + png_html + event_html + video_html + conclusion_html
     return f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>算法验证报告 - {task_name}</title>{css}</head><body>{body}</body></html>'
 
 

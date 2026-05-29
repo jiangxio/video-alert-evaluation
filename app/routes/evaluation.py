@@ -1644,6 +1644,73 @@ def detailed_report(task_id):
     return Response(html, mimetype='text/html')
 
 
+@bp.route('/api/tasks/<int:task_id>/detailed-report-pdf', methods=['POST'])
+def detailed_report_pdf(task_id):
+    """生成详细报告 PDF（Playwright 渲染）"""
+    from app.services.eval_service import generate_detailed_report
+
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id, name, status, finalized FROM eval_tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+    if task['status'] not in ('done', 'finalized'):
+        return jsonify({'error': '请先完成评测'}), 400
+
+    try:
+        config = {
+            'project_name': data.get('project_name', ''),
+            'report_title': data.get('report_title', '算法验证报告'),
+            'project_background': data.get('project_background', ''),
+            'modules': data.get('modules', ['cover', 'summary', 'env', 'overview', 'events', 'video', 'time', 'conclusion']),
+            'summary_text': data.get('summary_text', ''),
+            'conclusion_text': data.get('conclusion_text', ''),
+        }
+        html = generate_detailed_report(task_id, db, config=config)
+    except Exception as e:
+        import traceback
+        current_app.logger.error(f'生成报告失败: {e}\n{traceback.format_exc()}')
+        return jsonify({'error': f'生成报告失败: {str(e)}'}), 500
+
+    try:
+        import tempfile
+        from playwright.sync_api import sync_playwright
+
+        with tempfile.NamedTemporaryFile(suffix='.html', delete=False, mode='w', encoding='utf-8') as f:
+            f.write(html)
+            tmp_html = f.name
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f'file://{tmp_html}')
+            page.wait_for_load_state('networkidle')
+            pdf_bytes = page.pdf(
+                format='A4',
+                print_background=True,
+                margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
+            )
+            browser.close()
+
+        os.unlink(tmp_html)
+    except Exception as e:
+        import traceback
+        current_app.logger.error(f'PDF 生成失败: {e}\n{traceback.format_exc()}')
+        return jsonify({'error': f'PDF 生成失败: {str(e)}'}), 500
+
+    project_name = config.get('project_name') or task['name']
+    safe_name = ''.join(c for c in project_name if c.isascii() and c not in r'\/:*?"<>|') or f'task_{task_id}'
+    filename = f'eval_report_{safe_name}.pdf'
+    from flask import Response
+    return Response(
+        pdf_bytes,
+        mimetype='application/pdf',
+        headers={'Content-Disposition': f"attachment; filename*=UTF-8''{filename}"}
+    )
+
+
 @bp.route('/api/tasks/<int:task_id>/detailed-report-preview', methods=['POST'])
 def detailed_report_preview(task_id):
     """根据配置参数生成 AI 摘要和结论的初版。"""

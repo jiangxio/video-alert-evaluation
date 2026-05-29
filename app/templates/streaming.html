@@ -1,0 +1,459 @@
+{% extends "base.html" %}
+
+{% block title %}推流管理{% endblock %}
+
+{% block content %}
+<style>
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; }
+  .page-header h2 { margin:0; }
+
+  .info-card { background:#f0f7ff; border-left:4px solid #3498db; border-radius:6px; padding:0.9rem 1.2rem; margin-bottom:1.5rem; font-size:0.9rem; color:#333; }
+  .info-card code { background:#dce8f5; padding:0.1rem 0.4rem; border-radius:3px; font-size:0.85rem; }
+
+  .status-badge { display:inline-block; padding:0.2rem 0.6rem; border-radius:12px; font-size:0.8rem; font-weight:600; }
+  .status-created  { background:#e8f4fd; color:#2980b9; }
+  .status-running  { background:#d4edda; color:#155724; }
+  .status-done     { background:#f8f9fa; color:#6c757d; }
+  .status-stopped  { background:#fff3cd; color:#856404; }
+  .status-failed   { background:#f8d7da; color:#721c24; }
+
+  .rtsp-url { font-family:monospace; font-size:0.85rem; color:#2c3e50; background:#f8f9fa; padding:0.2rem 0.5rem; border-radius:3px; word-break:break-all; }
+
+  .algo-tags { display:flex; flex-wrap:wrap; gap:0.3rem; }
+  .algo-tag { background:#e8f4fd; color:#2980b9; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.78rem; }
+
+  .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
+  .btn-secondary { background:#95a5a6; }
+  .btn-secondary:hover { background:#7f8c8d; }
+
+  .empty-state { text-align:center; padding:3rem; color:#888; }
+
+  /* 弹窗 */
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
+  .modal-overlay.active { display:flex; }
+  .modal { background:white; border-radius:8px; padding:2rem; width:560px; max-width:95vw; max-height:90vh; overflow-y:auto; }
+  .modal h3 { margin:0 0 1.5rem; }
+  .form-group { margin-bottom:1.2rem; }
+  .form-group label { display:block; font-weight:600; margin-bottom:0.4rem; font-size:0.9rem; }
+  .form-group input, .form-group select { width:100%; padding:0.5rem 0.7rem; border:1px solid #ddd; border-radius:4px; font-size:0.95rem; }
+  .form-group .hint { font-size:0.8rem; color:#888; margin-top:0.3rem; }
+  .form-row { display:flex; gap:1rem; }
+  .form-row .form-group { flex:1; }
+
+  .preview-box { background:#f8f9fa; border-radius:6px; padding:1rem; margin-bottom:1.2rem; font-size:0.88rem; }
+  .preview-box .preview-row { display:flex; gap:0.5rem; margin-bottom:0.5rem; align-items:flex-start; }
+  .preview-box .preview-row:last-child { margin-bottom:0; }
+  .preview-box .preview-label { color:#666; min-width:80px; flex-shrink:0; }
+  .preview-box .preview-val { color:#2c3e50; word-break:break-all; }
+  .preview-loading { color:#888; font-style:italic; }
+
+  .modal-actions { display:flex; gap:0.8rem; justify-content:flex-end; margin-top:1.5rem; }
+
+  .error-detail { font-size:0.8rem; color:#721c24; background:#f8d7da; padding:0.4rem 0.6rem; border-radius:4px; margin-top:0.3rem; word-break:break-all; max-height:80px; overflow-y:auto; }
+
+  .run-info { display:flex; flex-wrap:wrap; gap:0.6rem; margin-top:0.4rem; font-size:0.8rem; color:#555; }
+  .run-info span { background:#f0f7ff; padding:0.15rem 0.5rem; border-radius:3px; }
+</style>
+
+<div class="page-header">
+  <h2>推流管理</h2>
+  <button class="btn btn-success" onclick="openModal()">+ 新建推流任务</button>
+</div>
+
+<div class="info-card">
+  <strong>使用前请先启动 MediaMTX：</strong>
+  在终端运行 <code>./tools/mediamtx</code>，默认监听 <code>:8554</code>。
+  推流地址格式：<code>rtsp://&lt;服务器IP&gt;:8554/&lt;流名称&gt;</code>
+</div>
+
+<div class="card">
+  <div id="taskList">
+    <div class="empty-state"><div class="loading"></div><p>加载中...</p></div>
+  </div>
+</div>
+
+<!-- 新建任务弹窗 -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3>新建推流任务</h3>
+
+    <div class="form-group">
+      <label>来源类型</label>
+      <div style="display:flex;gap:1.5rem;margin-top:0.3rem;">
+        <label style="font-weight:normal;display:flex;align-items:center;gap:0.4rem;">
+          <input type="radio" name="sourceType" value="single" checked onchange="onSourceTypeChange()"> 单个视频
+        </label>
+        <label style="font-weight:normal;display:flex;align-items:center;gap:0.4rem;">
+          <input type="radio" name="sourceType" value="set" onchange="onSourceTypeChange()"> 视频集
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group" id="singleVideoGroup">
+      <label>选择视频</label>
+      <select id="singleVideoSelect" onchange="refreshPreview()">
+        <option value="">-- 加载中 --</option>
+      </select>
+    </div>
+
+    <div class="form-group hidden" id="videoSetGroup">
+      <label>选择视频集</label>
+      <select id="videoSetSelect" onchange="refreshPreview()">
+        <option value="">-- 加载中 --</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>流名称</label>
+        <input type="text" id="streamName" placeholder="如 Mystream" oninput="refreshPreview()">
+        <div class="hint">只能包含字母、数字、连字符和下划线</div>
+      </div>
+      <div class="form-group">
+        <label>循环次数</label>
+        <input type="number" id="loopCount" value="1" min="1" max="99" oninput="refreshPreview()">
+        <div class="hint">播放完整遍数后自动停止</div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>任务名称（可选）</label>
+      <input type="text" id="taskName" placeholder="留空则自动生成">
+    </div>
+
+    <!-- 预览区 -->
+    <div class="preview-box" id="previewBox" style="display:none;">
+      <div class="preview-row">
+        <span class="preview-label">RTSP 地址</span>
+        <span class="preview-val" id="previewRtsp" style="display:flex;flex-direction:column;gap:0.2rem">—</span>
+      </div>
+      <div class="preview-row">
+        <span class="preview-label">预计时长</span>
+        <span class="preview-val" id="previewDuration">—</span>
+      </div>
+      <div class="preview-row">
+        <span class="preview-label">建议算法</span>
+        <span class="preview-val" id="previewAlgos">—</span>
+      </div>
+    </div>
+
+    <div id="modalError" class="message message-error hidden"></div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button class="btn btn-success" id="createBtn" onclick="createTask()">创建任务</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const ALGO_NAMES = {
+  rat: '老鼠', smoke: '抽烟', use_phone: '玩手机',
+  call_phone: '打电话', chef: '厨师服', trash: '垃圾',
+  mask: '帽子/口罩', flame: '火焰'
+};
+
+let _previewTimer = null;
+
+// ── 初始化 ──────────────────────────────────────────────────────────────────
+
+async function init() {
+  await Promise.all([loadVideos(), loadVideoSets(), loadTasks()]);
+}
+
+async function loadVideos() {
+  const r = await fetch('/streaming/api/videos');
+  const data = await r.json();
+  const sel = document.getElementById('singleVideoSelect');
+  if (!data.length) {
+    sel.innerHTML = '<option value="">暂无已打水印的视频</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">-- 请选择 --</option>' +
+    data.map(v => `<option value="${v.id}" data-dur="${v.duration||0}">${v.video_id || v.filename} ${v.duration ? '(' + fmtDur(v.duration) + ')' : ''}</option>`).join('');
+}
+
+async function loadVideoSets() {
+  const r = await fetch('/streaming/api/video-sets');
+  const data = await r.json();
+  const sel = document.getElementById('videoSetSelect');
+  if (!data.length) {
+    sel.innerHTML = '<option value="">暂无视频集</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">-- 请选择 --</option>' +
+    data.map(s => `<option value="${s.id}">${s.name}（${s.video_count} 个视频）</option>`).join('');
+}
+
+async function loadTasks() {
+  const r = await fetch('/streaming/api/tasks');
+  const tasks = await r.json();
+  renderTasks(tasks);
+}
+
+function renderTasks(tasks) {
+  const el = document.getElementById('taskList');
+  if (!tasks.length) {
+    el.innerHTML = '<div class="empty-state"><p>暂无推流任务，点击右上角新建</p></div>';
+    return;
+  }
+  el.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>任务名称</th><th>流名称 / RTSP 地址</th><th>时长</th>
+        <th>建议算法</th><th>状态</th><th>操作</th>
+      </tr></thead>
+      <tbody>
+        ${tasks.map(t => renderRow(t)).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderRow(t) {
+  const rtspHtml = (t.rtsp_urls && t.rtsp_urls.length)
+    ? t.rtsp_urls.map(e => `<div class="rtsp-url"><span style="color:#888;font-size:0.78rem;margin-right:0.4rem">${escHtml(e.iface)}</span>${escHtml(e.url)}</div>`).join('')
+    : `<div class="rtsp-url">rtsp://${location.hostname}:8554/${escHtml(t.stream_name)}</div>`;
+  const algos = (t.suggested_algorithms || [])
+    .map(a => `<span class="algo-tag">${ALGO_NAMES[a] || a}</span>`).join('');
+  const dur = t.total_duration ? fmtDur(t.total_duration) : '—';
+  const loopHint = t.loop_count > 1 ? ` ×${t.loop_count}` : '';
+
+  // 运行时间信息（仅 running 状态）
+  let runInfoHtml = '';
+  if (t.status === 'running') {
+    const startStr = t.started_at ? fmtDatetime(t.started_at) : '—';
+    const elapsedStr = t.elapsed_seconds != null ? fmtDur(t.elapsed_seconds) : '—';
+    const endStr = t.estimated_end_ts ? fmtLocalTime(t.estimated_end_ts * 1000) : '—';
+    runInfoHtml = `
+      <div class="run-info">
+        <span>开始：${startStr}</span>
+        <span>已运行：${elapsedStr}</span>
+        <span>预计结束：${endStr}</span>
+      </div>`;
+  }
+
+  let actions = '';
+  if (t.status === 'running') {
+    actions = `<button class="btn btn-danger btn-sm" onclick="stopTask(${t.id})">停止</button>`;
+  } else if (['created','done','failed','stopped'].includes(t.status)) {
+    actions = `<button class="btn btn-success btn-sm" onclick="startTask(${t.id})" style="margin-right:0.4rem">开始</button>
+               <button class="btn btn-secondary btn-sm" onclick="deleteTask(${t.id})">删除</button>`;
+  }
+
+  const errorHtml = t.error_message
+    ? `<div class="error-detail">${escHtml(t.error_message)}</div>` : '';
+
+  return `<tr id="row-${t.id}">
+    <td>${escHtml(t.name || '—')}</td>
+    <td>
+      <div style="font-weight:600;margin-bottom:0.2rem">${escHtml(t.stream_name)}</div>
+      ${t.status === 'running' ? rtspHtml : ''}
+      ${runInfoHtml}
+    </td>
+    <td>${dur}${loopHint}</td>
+    <td><div class="algo-tags">${algos || '—'}</div></td>
+    <td><span class="status-badge status-${t.status}">${statusLabel(t.status)}</span>${errorHtml}</td>
+    <td>${actions}</td>
+  </tr>`;
+}
+
+// ── 弹窗 ────────────────────────────────────────────────────────────────────
+
+function openModal() {
+  document.getElementById('modalOverlay').classList.add('active');
+  document.getElementById('modalError').classList.add('hidden');
+  refreshPreview();
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+}
+
+function onSourceTypeChange() {
+  const type = document.querySelector('input[name="sourceType"]:checked').value;
+  document.getElementById('singleVideoGroup').classList.toggle('hidden', type !== 'single');
+  document.getElementById('videoSetGroup').classList.toggle('hidden', type !== 'set');
+  refreshPreview();
+}
+
+function refreshPreview() {
+  clearTimeout(_previewTimer);
+  _previewTimer = setTimeout(doPreview, 400);
+}
+
+async function doPreview() {
+  const type = document.querySelector('input[name="sourceType"]:checked').value;
+  const sourceId = type === 'single'
+    ? document.getElementById('singleVideoSelect').value
+    : document.getElementById('videoSetSelect').value;
+  const streamName = document.getElementById('streamName').value.trim();
+  const loopCount = parseInt(document.getElementById('loopCount').value) || 1;
+
+  const box = document.getElementById('previewBox');
+  if (!sourceId) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+
+  document.getElementById('previewRtsp').textContent = streamName ? '计算中...' : '（请填写流名称）';
+  document.getElementById('previewDuration').innerHTML = '<span class="preview-loading">计算中...</span>';
+  document.getElementById('previewAlgos').innerHTML = '<span class="preview-loading">加载中...</span>';
+
+  try {
+    const r = await fetch('/streaming/api/preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ source_type: type, source_id: sourceId, stream_name: streamName, loop_count: loopCount }),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      document.getElementById('previewRtsp').textContent = d.error || '错误';
+      document.getElementById('previewDuration').textContent = '—';
+      document.getElementById('previewAlgos').textContent = '—';
+      return;
+    }
+    if (d.rtsp_urls && d.rtsp_urls.length) {
+      document.getElementById('previewRtsp').innerHTML =
+        d.rtsp_urls.map(e => `<div><span style="color:#888;font-size:0.78rem;margin-right:0.4rem">${escHtml(e.iface)}</span>${escHtml(e.url)}</div>`).join('');
+    } else {
+      document.getElementById('previewRtsp').textContent = streamName ? '（无可用网卡）' : '（请填写流名称）';
+    }
+    document.getElementById('previewDuration').textContent = d.total_duration ? fmtDur(d.total_duration) : '未知';
+    const algoHtml = (d.suggested_algorithms || []).length
+      ? d.suggested_algorithms.map(a => `<span class="algo-tag">${ALGO_NAMES[a] || a}</span>`).join(' ')
+      : '（无 GT 事件标注）';
+    document.getElementById('previewAlgos').innerHTML = algoHtml;
+  } catch(e) {
+    document.getElementById('previewRtsp').textContent = '获取失败';
+    document.getElementById('previewDuration').textContent = '—';
+  }
+}
+
+// ── 任务操作 ────────────────────────────────────────────────────────────────
+
+async function createTask() {
+  const type = document.querySelector('input[name="sourceType"]:checked').value;
+  const sourceId = type === 'single'
+    ? document.getElementById('singleVideoSelect').value
+    : document.getElementById('videoSetSelect').value;
+  const streamName = document.getElementById('streamName').value.trim();
+  const loopCount = parseInt(document.getElementById('loopCount').value) || 1;
+  const name = document.getElementById('taskName').value.trim();
+
+  const errEl = document.getElementById('modalError');
+  errEl.classList.add('hidden');
+
+  if (!sourceId) { showModalError('请选择视频或视频集'); return; }
+  if (!streamName) { showModalError('请填写流名称'); return; }
+
+  const btn = document.getElementById('createBtn');
+  btn.disabled = true; btn.textContent = '创建中...';
+
+  try {
+    const r = await fetch('/streaming/api/tasks', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ source_type: type, source_id: sourceId, stream_name: streamName, loop_count: loopCount, name }),
+    });
+    const d = await r.json();
+    if (!r.ok) { showModalError(d.error || '创建失败'); return; }
+    closeModal();
+    await loadTasks();
+  } catch(e) {
+    showModalError('网络错误，请重试');
+  } finally {
+    btn.disabled = false; btn.textContent = '创建任务';
+  }
+}
+
+async function startTask(id) {
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '启动中...';
+  try {
+    const r = await fetch(`/streaming/api/tasks/${id}/start`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) {
+      alert('启动失败：' + (d.error || '') + (d.detail ? '\n\n' + d.detail : ''));
+    }
+    await loadTasks();
+  } catch(e) {
+    alert('网络错误');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function stopTask(id) {
+  if (!confirm('确认停止推流？')) return;
+  const r = await fetch(`/streaming/api/tasks/${id}/stop`, { method: 'POST' });
+  if (!r.ok) { const d = await r.json(); alert(d.error || '停止失败'); }
+  await loadTasks();
+}
+
+async function deleteTask(id) {
+  if (!confirm('确认删除此任务？')) return;
+  const r = await fetch(`/streaming/api/tasks/${id}`, { method: 'DELETE' });
+  if (!r.ok) { const d = await r.json(); alert(d.error || '删除失败'); }
+  await loadTasks();
+}
+
+// ── 工具函数 ────────────────────────────────────────────────────────────────
+
+function showModalError(msg) {
+  const el = document.getElementById('modalError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function statusLabel(s) {
+  return { created:'待启动', running:'推流中', done:'已完成', stopped:'已停止', failed:'失败' }[s] || s;
+}
+
+function fmtDur(sec) {
+  if (!sec) return '--';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function fmtDatetime(utcStr) {
+  // Flask 返回 "Fri, 29 May 2026 08:52:40 GMT"，转为本地时间
+  if (!utcStr) return '—';
+  try {
+    const d = new Date(utcStr);
+    return d.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  } catch(e) { return utcStr; }
+}
+
+function fmtLocalTime(ms) {
+  // ms 为毫秒时间戳，显示本地时间 HH:MM:SS
+  if (!ms) return '—';
+  try {
+    const d = new Date(ms);
+    return d.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  } catch(e) { return '—'; }
+}
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// 关闭弹窗点击遮罩
+document.getElementById('modalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// 自动刷新运行中任务
+setInterval(async () => {
+  const rows = document.querySelectorAll('[id^="row-"]');
+  const hasRunning = Array.from(rows).some(r => r.querySelector('.status-running'));
+  if (hasRunning) await loadTasks();
+}, 4000);
+
+init();
+</script>
+{% endblock %}

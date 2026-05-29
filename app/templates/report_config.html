@@ -90,7 +90,7 @@
         <input type="password" id="apiKey" placeholder="sk-...">
       </div>
       <div style="background:#e8f5e9;border:1px solid #81c784;border-radius:4px;padding:0.6rem 0.8rem;font-size:0.82rem;color:#2e7d32;margin-top:0.5rem;">
-        💡 提示：服务器管理员可在环境变量中预置 <code>ANTHROPIC_API_KEY</code> 和 <code>ANTHROPIC_BASE_URL</code>，此处留空即可直接使用。
+        💡 提示：服务器管理员可在环境变量中预置 <code>ANTHROPIC_AUTH_TOKEN</code> 和 <code>ANTHROPIC_BASE_URL</code>，此处留空即可直接使用。
       </div>
     </div>
 
@@ -98,13 +98,15 @@
       <h3>报告模块</h3>
       <div class="module-list">
         <label><input type="checkbox" checked data-module="cover"> 封面</label>
-        <label><input type="checkbox" checked data-module="summary"> 执行摘要</label>
-        <label><input type="checkbox" checked data-module="env"> 评测环境</label>
-        <label><input type="checkbox" checked data-module="overview"> 整体指标</label>
-        <label><input type="checkbox" checked data-module="events"> 分事件详细分析</label>
+        <label><input type="checkbox" checked data-module="summary"> 测试摘要</label>
+        <label><input type="checkbox" checked data-module="method"> 评测方法</label>
+        <label><input type="checkbox" checked data-module="overview"> 整体指标概览</label>
+        <label><input type="checkbox" checked data-module="events"> 详细案例分析</label>
         <label><input type="checkbox" checked data-module="video"> 视频维度分析</label>
-        <label><input type="checkbox" data-module="time"> 时间维度分析</label>
-        <label><input type="checkbox" checked data-module="conclusion"> 结论与建议</label>
+        <label><input type="checkbox" checked data-module="conclusion"> 结论与改进建议</label>
+      </div>
+      <div style="margin-top:0.6rem;font-size:0.8rem;color:#777;">
+        当前 HTML 导出不会单独生成“评测环境”和“时间维度分析”章节；相关内容分别已并入封面或暂未输出。
       </div>
     </div>
 
@@ -117,7 +119,7 @@
     <div class="card" style="flex:1;display:flex;flex-direction:column;">
       <h3>AI 分析与对话修改</h3>
       <div id="chatArea" class="chat-area">
-        <div class="chat-placeholder">点击左侧"生成 AI 分析"按钮开始...<br><small>AI 会根据评测数据生成执行摘要和结论建议，你可以在下方输入修改要求。</small></div>
+        <div class="chat-placeholder">点击左侧"生成 AI 分析"按钮开始...<br><small>AI 会根据评测数据生成测试摘要和结论与改进建议，你可以在下方输入修改要求。</small></div>
       </div>
       <div class="chat-input-bar">
         <textarea id="chatInput" rows="2" placeholder="输入修改要求，例如：精简摘要到200字、补充视频维度的建议..."></textarea>
@@ -143,12 +145,18 @@ async function generateAIPreview() {
   btn.disabled = true;
   btn.textContent = '正在分析...';
 
+  // 在对话框显示正在分析
+  chatMessages.push({role: 'assistant', content: '🤖 正在分析评测数据，请稍候...'});
+  renderChat();
+
   try {
     const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/detailed-report-preview`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({api_key: apiKey, api_base_url: apiBaseUrl, project_name: projectName, project_background: projectBg})
     });
+    // 移除"正在分析"提示
+    chatMessages = chatMessages.filter(m => !m.content.includes('正在分析评测数据'));
     if (!res.ok) {
       let msg = `请求失败 (HTTP ${res.status})`;
       try {
@@ -169,11 +177,11 @@ async function generateAIPreview() {
     }
     currentSummary = data.summary;
     currentConclusion = data.conclusion;
-    chatMessages = [
-      {role: 'assistant', content: `【执行摘要】\n${data.summary}\n\n【结论建议】\n${data.conclusion}`}
-    ];
+    chatMessages.push({role: 'assistant', content: `【测试摘要】\n${data.summary}\n\n【结论与改进建议】\n${data.conclusion}`});
     renderChat();
   } catch (e) {
+    // 移除"正在分析"提示
+    chatMessages = chatMessages.filter(m => !m.content.includes('正在分析评测数据'));
     showChatError('生成出错: ' + e.message);
   } finally {
     btn.disabled = false;
@@ -189,7 +197,7 @@ function showChatError(msg) {
 function renderChat() {
   const area = document.getElementById('chatArea');
   if (chatMessages.length === 0) {
-    area.innerHTML = '<div class="chat-placeholder">点击左侧"生成 AI 分析"按钮开始...<br><small>AI 会根据评测数据生成执行摘要和结论建议，你可以在下方输入修改要求。</small></div>';
+    area.innerHTML = '<div class="chat-placeholder">点击左侧"生成 AI 分析"按钮开始...<br><small>AI 会根据评测数据生成测试摘要和结论与改进建议，你可以在下方输入修改要求。</small></div>';
     return;
   }
   area.innerHTML = chatMessages.map(m => {
@@ -215,6 +223,10 @@ async function sendChatMessage() {
   btn.disabled = true;
   btn.textContent = '...';
 
+  // 在对话框显示正在分析
+  chatMessages.push({role: 'assistant', content: '🤖 正在思考中...'});
+  renderChat();
+
   try {
     const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/detailed-report-chat`, {
       method: 'POST',
@@ -227,6 +239,8 @@ async function sendChatMessage() {
         current_conclusion: currentConclusion
       })
     });
+    // 移除"正在思考"提示
+    chatMessages = chatMessages.filter(m => !m.content.includes('正在思考中'));
     if (!res.ok) {
       let msg = `请求失败 (HTTP ${res.status})`;
       try { const d = await res.json(); if (d.error) msg = d.error; } catch (_) {}
@@ -240,9 +254,11 @@ async function sendChatMessage() {
     }
     currentSummary = data.summary;
     currentConclusion = data.conclusion;
-    chatMessages.push({role: 'assistant', content: `【执行摘要】\n${data.summary}\n\n【结论建议】\n${data.conclusion}`});
+    chatMessages.push({role: 'assistant', content: `【测试摘要】\n${data.summary}\n\n【结论与改进建议】\n${data.conclusion}`});
     renderChat();
   } catch (e) {
+    // 移除"正在思考"提示
+    chatMessages = chatMessages.filter(m => !m.content.includes('正在思考中'));
     showChatError('对话出错: ' + e.message);
   } finally {
     btn.disabled = false;

@@ -481,11 +481,32 @@ def execute_task(task_id):
             with _eval_lock:
                 _eval_progress[task_id]['done'] += 1
 
+        # ── 计算并保存评测指标 ──────────────────────────────────────────────────
+        from app.services.eval_service import compute_task_metrics
+
+        # 获取 eval_set_id
+        cur.execute('SELECT eval_set_id FROM eval_tasks WHERE id = ?', (task_id,))
+        eval_set_id = cur.fetchone()['eval_set_id']
+
+        accuracy, recall, avg_fp_per_hour, event_metrics, total_duration = compute_task_metrics(
+            task_id, cur, eval_set_id
+        )
+        event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
+
         try:
-            cur.execute('UPDATE eval_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ('done', task_id))
+            cur.execute('''
+                UPDATE eval_tasks
+                SET status = ?, updated_at = CURRENT_TIMESTAMP,
+                    accuracy = ?, recall = ?, avg_fp_per_hour = ?, event_metrics = ?
+                WHERE id = ?
+            ''', ('done', accuracy, recall, avg_fp_per_hour, event_metrics_json, task_id))
         except Exception:
             # 兼容旧数据库（没有 updated_at 列）
-            cur.execute('UPDATE eval_tasks SET status = ? WHERE id = ?', ('done', task_id))
+            cur.execute('''
+                UPDATE eval_tasks
+                SET status = ?, accuracy = ?, recall = ?, avg_fp_per_hour = ?, event_metrics = ?
+                WHERE id = ?
+            ''', ('done', accuracy, recall, avg_fp_per_hour, event_metrics_json, task_id))
         conn.commit()
         conn.close()
         with _eval_lock:
@@ -803,149 +824,11 @@ def finalize_task(task_id):
     if task['status'] != 'done':
         return jsonify({'error': '只有已完成的任务才能确认结果'}), 400
 
-    # 计算整体准确率（尊重 manual_status）
-    cursor.execute('''
-        SELECT is_false_positive, manual_status
-        FROM eval_merged_events WHERE task_id=?
-    ''', (task_id,))
-    total = 0
-    correct = 0
-    for row in cursor.fetchall():
-        status = get_effective_status(row)
-        if status == 'ignored':
-            continue
-        total += 1
-        if status == 'correct':
-            correct += 1
-    accuracy = correct / total if total > 0 else None
-
-    # 计算整体召回率
-    cursor.execute('''
-        SELECT confirmed_count, actual_count
-        FROM eval_gt_events WHERE task_id=?
-    ''', (task_id,))
-    gt_events = cursor.fetchall()
-
-    total_expected = 0
-    total_actual = 0
-    for ev in gt_events:
-        confirmed = ev['confirmed_count'] or 0
-        actual = ev['actual_count'] or 0
-        if confirmed == 0:
-            # 当confirmed_count为0时，如果有actual就按1算，否则忽略
-            if actual > 0:
-                total_expected += 1
-                total_actual += min(actual, 1)
-        else:
-            total_expected += confirmed
-            total_actual += min(actual, confirmed)
-
-    recall = total_actual / total_expected if total_expected > 0 else None
-
-    # 计算评测视频总时长
-    total_duration = 0
-    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (task['eval_set_id'],))
-    eval_set = cursor.fetchone()
-    if eval_set and eval_set['video_ids']:
-        try:
-            video_db_ids = json.loads(eval_set['video_ids'])
-            if video_db_ids:
-                placeholders = ','.join('?' for _ in video_db_ids)
-                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
-                row = cursor.fetchone()
-                total_duration = row['total'] or 0
-        except Exception:
-            pass
-    total_duration_hours = total_duration / 3600 if total_duration else 0
-
-    # 按事件类型计算指标（包含配置文件中所有事件类型）
-    all_event_types = _get_all_event_types()
-    # 如果配置文件为空， fallback 到数据库中已有的事件类型
-    if not all_event_types:
-        cursor.execute('''
-            SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
-            UNION
-            SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
-        ''', (task_id, task_id))
-        all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
-
-    event_metrics = []
-    for etype in all_event_types:
-        # 告警相关指标（尊重 manual_status）
-        cursor.execute('''
-            SELECT is_false_positive, manual_status
-            FROM eval_merged_events WHERE task_id=? AND event_type=?
-        ''', (task_id, etype))
-        alert_count = 0
-        correct_pred_count = 0
-        fp_count = 0
-        for row in cursor.fetchall():
-            status = get_effective_status(row)
-            if status == 'ignored':
-                continue
-            alert_count += 1
-            if status == 'correct':
-                correct_pred_count += 1
-            elif status == 'false_positive':
-                fp_count += 1
-
-        # GT相关指标 - 按新逻辑计算
-        cursor.execute('''
-            SELECT confirmed_count, actual_count
-            FROM eval_gt_events WHERE task_id=? AND event_type=?
-        ''', (task_id, etype))
-        gt_events = cursor.fetchall()
-
-        gt_count = 0
-        hit_count = 0
-        missed_gt_count = 0
-
-        for ev in gt_events:
-            confirmed = ev['confirmed_count'] or 0
-            actual = ev['actual_count'] or 0
-
-            if confirmed == 0:
-                # 当confirmed_count为0时
-                if actual > 0:
-                    # 有actual就按1算，算作命中
-                    gt_count += 1
-                    hit_count += min(actual, 1)
-                else:
-                    # 没有actual就忽略这个事件
-                    pass
-            else:
-                gt_count += confirmed
-                hit_count += min(actual, confirmed)
-                if actual < confirmed:
-                    missed_gt_count += 1
-
-        # 计算精确率、召回率和平均误检数/小时
-        precision = correct_pred_count / alert_count if alert_count > 0 else None
-        event_recall = hit_count / gt_count if gt_count > 0 else None
-        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
-
-        event_metrics.append({
-            'event_type': etype,
-            'alert_count': alert_count,
-            'gt_count': gt_count,
-            'correct_pred_count': correct_pred_count,
-            'false_positive_count': fp_count,
-            'hit_count': hit_count,
-            'missed_gt_count': missed_gt_count,
-            'precision': precision,
-            'recall': event_recall,
-            'avg_fp_per_hour': avg_fp_per_hour
-        })
-
-    # 整体召回率 = 所有 gt_count > 0 的事件类型的召回率的算术平均
-    recalls_with_gt = [em['recall'] for em in event_metrics if em['recall'] is not None and em['gt_count'] > 0]
-    recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
-
-    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
-    avg_fp_values = [em['avg_fp_per_hour'] for em in event_metrics if em['avg_fp_per_hour'] is not None]
-    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
-
-    # 保存事件级别指标到JSON字段（可以扩展数据库表，这里先用JSON存储）
+    # 使用统一的指标计算函数
+    from app.services.eval_service import compute_task_metrics
+    accuracy, recall, avg_fp_per_hour, event_metrics, _ = compute_task_metrics(
+        task_id, cursor, task['eval_set_id'], _get_all_event_types
+    )
     event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
 
     cursor.execute('''
@@ -1774,7 +1657,7 @@ def detailed_report_preview(task_id):
     if not task:
         return jsonify({'error': '任务不存在'}), 404
 
-    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
+    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_AUTH_TOKEN')
     api_base_url = data.get('api_base_url', '').strip() or os.environ.get('ANTHROPIC_BASE_URL') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key'}), 400
@@ -1918,7 +1801,14 @@ def detailed_report_preview(task_id):
 
 项目：{project_name}{bg_hint}
 
-要求：
+格式要求（重要）：
+- 使用 HTML 标签输出，不要 Markdown
+- 小标题用 <strong> 标签，如 <strong>整体评价：</strong>
+- 列表用 <ul><li></li></ul>
+- 换行用 <br>
+- 只输出 HTML 片段，不要包裹 html/head/body
+
+内容要求：
 1. 先给一句整体评价
 2. 列出 2-3 个关键发现，指出表现最好和最差的事件类型
 3. 指出最需要关注的问题
@@ -1931,7 +1821,14 @@ def detailed_report_preview(task_id):
 
 项目：{project_name}{bg_hint}
 
-要求：
+格式要求（重要）：
+- 使用 HTML 标签输出，不要 Markdown
+- 小标题用 <strong> 标签，如 <strong>总体评价：</strong>
+- 列表用 <ul><li></li></ul>
+- 换行用 <br>
+- 只输出 HTML 片段，不要包裹 html/head/body
+
+内容要求：
 1. 总体评价算法在精确率、召回率、误检控制三个维度的表现
 2. 按优先级列出 3-5 条具体、可操作的改进建议
 3. 建议要具体到事件类型或视频维度的问题
@@ -1963,7 +1860,7 @@ def detailed_report_chat(task_id):
     if not task:
         return jsonify({'error': '任务不存在'}), 404
 
-    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
+    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_AUTH_TOKEN')
     api_base_url = data.get('api_base_url', '').strip() or os.environ.get('ANTHROPIC_BASE_URL') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key'}), 400

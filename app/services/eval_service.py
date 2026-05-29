@@ -364,16 +364,16 @@ def generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour
     def fp_color(val):
         if val is None:
             return text_gray
-        if val <= 4.0:
+        if val <= 5.0:
             return good_color
         if val <= 10.0:
             return mid_color
         return bad_color
 
     draw_card(margin, card_w, "整体精确率", acc_str,
-              good_color if accuracy and accuracy >= 0.8 else mid_color if accuracy and accuracy >= 0.5 else bad_color)
+              good_color if accuracy and accuracy >= 0.85 else mid_color if accuracy and accuracy >= 0.75 else bad_color)
     draw_card(margin + card_w + 20, card_w, "整体召回率", rec_str,
-              good_color if recall and recall >= 0.8 else mid_color if recall and recall >= 0.5 else bad_color)
+              good_color if recall and recall >= 0.8 else mid_color if recall and recall >= 0.7 else bad_color)
     draw_card(margin + card_w * 2 + 40, card_w, "平均误检数/小时", fp_str,
               fp_color(avg_fp_per_hour))
     y += 120
@@ -469,11 +469,11 @@ def generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour
             em.get('false_positive_count', 0),
             fp_txt,
         ]
-        prec_color = (good_color if prec_val is not None and prec_val >= 0.8
-                      else mid_color if prec_val is not None and prec_val >= 0.5
+        prec_color = (good_color if prec_val is not None and prec_val >= 0.85
+                      else mid_color if prec_val is not None and prec_val >= 0.75
                       else bad_color if prec_val is not None else None)
         rec_color = (good_color if rec_val is not None and rec_val >= 0.8
-                     else mid_color if rec_val is not None and rec_val >= 0.5
+                     else mid_color if rec_val is not None and rec_val >= 0.7
                      else bad_color if rec_val is not None else None)
         fp_color_val = fp_color(fp_val)
         cell_colors = [None, None, None, prec_color, None, None, None, rec_color, None, fp_color_val]
@@ -487,17 +487,17 @@ def generate_report_image(task, event_metrics, accuracy, recall, avg_fp_per_hour
     total_hit = sum(em.get('hit_count', 0) for em in event_metrics)
     total_miss = sum(em.get('missed_gt_count', 0) for em in event_metrics)
     total_fp = sum(em.get('false_positive_count', 0) for em in event_metrics)
-    overall_avg_fp = round(total_fp / total_duration_hours, 2) if total_duration_hours else 0
+    overall_avg_fp = avg_fp_per_hour if avg_fp_per_hour is not None else 0
     oprec = f"{(accuracy * 100):.1f}%" if accuracy is not None else "N/A"
     orec = f"{(recall * 100):.1f}%" if recall is not None else "N/A"
     total_cells = [
         "合计/整体", total_alert, total_correct, oprec,
         total_gt, total_hit, total_miss, orec, total_fp, f"{overall_avg_fp:.2f}"
     ]
-    prec_color = (good_color if accuracy and accuracy >= 0.8
-                  else mid_color if accuracy and accuracy >= 0.5 else bad_color)
+    prec_color = (good_color if accuracy and accuracy >= 0.85
+                  else mid_color if accuracy and accuracy >= 0.75 else bad_color)
     rec_color = (good_color if recall and recall >= 0.8
-                 else mid_color if recall and recall >= 0.5 else bad_color)
+                 else mid_color if recall and recall >= 0.7 else bad_color)
     fp_color_val = fp_color(avg_fp_per_hour)
     cell_colors = [None, None, None, prec_color, None, None, None, rec_color, None, fp_color_val]
     draw_table_row(y, total_cells, is_total=True, cell_colors=cell_colors)
@@ -593,7 +593,7 @@ def _img_to_base64(path, max_width=400):
 def _call_claude(prompt_text, api_key=None, base_url=None):
     """调用 Claude API，失败时返回 None。"""
     if not api_key:
-        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        api_key = os.environ.get('ANTHROPIC_AUTH_TOKEN')
     if not api_key:
         return None
     try:
@@ -654,13 +654,13 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
     def _fp_color_class(v):
         if v is None:
             return 'gray'
-        if v <= 4.0:
+        if v <= 5.0:
             return 'good'
         if v <= 10.0:
             return 'mid'
         return 'bad'
 
-    modules = config.get('modules', ['cover', 'summary', 'env', 'overview', 'events', 'video', 'time', 'conclusion'])
+    modules = config.get('modules', ['cover', 'summary', 'method', 'overview', 'events', 'video', 'conclusion'])
     project_bg = config.get('project_background', '')
 
     def _has(m):
@@ -679,24 +679,24 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
           <p><strong>任务名称：</strong>{task_name}</p>
           {bg_block}
           <p><strong>报告时间：</strong>{eval_time}</p>
-          <p><strong>评测参数：</strong>合并间隔 {task.get('merge_interval_sec', '-')}s / 容差 ±5s / 触发率 {task.get('trigger_rate', '-')}</p>
+          <p><strong>评测参数：</strong>合并间隔 {task.get('merge_interval_sec', '-')}s / 事件间隔 {task.get('event_interval_sec', '-')}s / 容差 ±5s / 触发率 {task.get('trigger_rate', '-')}</p>
         </div>
       </div>
     </div>
     '''
 
-    # 执行摘要
+    # 测试摘要
     summary_html = ''
     if _has('summary'):
         summary_html = f'''
     <div class="page">
-      <h2>执行摘要</h2>
+      <h2>测试摘要</h2>
       <div class="metrics-row">
-        <div class="metric-card {'good' if accuracy and accuracy >= 0.8 else 'mid' if accuracy and accuracy >= 0.5 else 'bad'}">
+        <div class="metric-card {'good' if accuracy and accuracy >= 0.85 else 'mid' if accuracy and accuracy >= 0.75 else 'bad'}">
           <div class="metric-label">整体精确率</div>
           <div class="metric-value">{_fmt_pct(accuracy)}</div>
         </div>
-        <div class="metric-card {'good' if recall and recall >= 0.8 else 'mid' if recall and recall >= 0.5 else 'bad'}">
+        <div class="metric-card {'good' if recall and recall >= 0.8 else 'mid' if recall and recall >= 0.7 else 'bad'}">
           <div class="metric-label">整体召回率</div>
           <div class="metric-value">{_fmt_pct(recall)}</div>
         </div>
@@ -706,32 +706,13 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
         </div>
       </div>
       <div class="ai-section">
-        <div class="ai-badge">AI 分析</div>
         <div class="ai-content">{summary_text or '<em>AI 分析暂不可用</em>'}</div>
       </div>
     </div>
     '''
 
-    # 评测环境
+    # 评测环境（已移除，信息合并到封面）
     env_html = ''
-    if _has('env'):
-        env_html = f'''
-    <div class="page">
-      <h2>评测环境与数据集</h2>
-      <table class="info-table">
-        <tr><td>评测视频总时长</td><td>{_fmt_duration(total_duration)}</td></tr>
-        <tr><td>GT 覆盖时长</td><td>{_fmt_duration(gt_coverage_seconds)}</td></tr>
-        <tr><td>整体覆盖率</td><td>{(gt_coverage_rate*100):.1f}%</td></tr>
-        <tr><td>GT 事件总数</td><td>{gt_event_count}</td></tr>
-        <tr><td>理论告警数</td><td>{expected_alert_total}</td></tr>
-        <tr><td>合并间隔</td><td>{task.get('merge_interval_sec', '-')} 秒</td></tr>
-        <tr><td>事件起始容差</td><td>{task.get('event_start_sec', '-')} 秒</td></tr>
-        <tr><td>事件结束容差</td><td>{task.get('event_end_sec', '-')} 秒</td></tr>
-        <tr><td>事件间隔</td><td>{task.get('event_interval_sec', '-')} 秒</td></tr>
-        <tr><td>触发率</td><td>{task.get('trigger_rate', '-')}</td></tr>
-      </table>
-    </div>
-    '''
 
     # 整体指标 PNG
     png_html = ''
@@ -740,16 +721,79 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
     <div class="page">
       <h2>整体指标概览</h2>
       <img src="{report_png_b64}" style="max-width:100%;border:1px solid #ddd;border-radius:6px;">
-      <p style="color:#666;font-size:0.9rem;margin-top:0.5rem;">
-        <strong>评测步骤：</strong><br>
-        1. 通过 OCR 提取告警图片水印中的 video_id 和时间戳；<br>
-        2. 将提取的时间戳与 Ground Truth 事件区间进行比对；<br>
-        3. 告警时间落在 GT 事件 ±5 秒容差范围内即视为命中。
-      </p>
     </div>
     '''
 
-    # 分事件详细分析
+    # 评测方法
+    method_html = ''
+    if _has('method'):
+        method_html = f'''
+    <div class="page">
+      <h2>评测方法</h2>
+
+      <h3>一、评测参数说明</h3>
+      <table class="info-table">
+        <tr><td>合并间隔</td><td>{task.get('merge_interval_sec', '-')}s — 同一视频、同一事件类型下，相邻告警时间差 ≤{task.get('merge_interval_sec', '-')}s 时合并，避免单次事件重复触发产生多条告警</td></tr>
+        <tr><td>事件间隔</td><td>{task.get('event_interval_sec', '-')}s — 告警触发的时间间隔配置，用于计算理论告警数</td></tr>
+        <tr><td>容差</td><td>±5s — 告警时间戳与 GT 事件区间比对时的容错范围</td></tr>
+        <tr><td>触发率</td><td>{task.get('trigger_rate', '-')} — 测试评审的严苛程度，理论告警数 = (GT 时长 / 事件间隔) × 触发率</td></tr>
+      </table>
+
+      <h3>二、评测概况</h3>
+      <table class="info-table">
+        <tr><td>评测视频总时长</td><td>{_fmt_duration(total_duration)} — 参与评测的所有视频累计时长</td></tr>
+        <tr><td>GT 覆盖时长</td><td>{_fmt_duration(gt_coverage_seconds)} — Ground Truth（人工标注的真实事件）覆盖的时间区间（去重后）</td></tr>
+        <tr><td>整体覆盖率</td><td>{(gt_coverage_rate*100):.1f}% — GT 覆盖时长 / 视频总时长，反映测试样本中事件发生的密度</td></tr>
+        <tr><td>GT 事件总数</td><td>{gt_event_count} — 人工标注的真实事件总条数</td></tr>
+        <tr><td>理论告警数</td><td>{expected_alert_total} — 根据 GT 事件时长、事件间隔和触发率计算得出的预期告警数量</td></tr>
+      </table>
+
+      <h3>三、评测指标说明</h3>
+      <table class="info-table">
+        <tr><td>精确率</td><td>正确告警数 / 总告警数，反映告警的准确性，≥85% 为优</td></tr>
+        <tr><td>召回率</td><td>命中 GT 事件数 / 总 GT 事件数，反映漏检情况，≥80% 为优</td></tr>
+        <tr><td>平均误检数/小时</td><td>误检告警数 / 评测总时长（小时），反映误报频率，≤5 为优</td></tr>
+        <tr><td>正确告警数</td><td>告警时间落在标注时间范围 ±容差 内的总告警数</td></tr>
+        <tr><td>误检告警数</td><td>实际产生了告警，但不在任何标注时间段内的总告警数</td></tr>
+        <tr><td>命中 GT 事件数</td><td>预期告警中与 GT 事件匹配的数量</td></tr>
+      </table>
+
+      <h3>四、评测步骤</h3>
+      <div class="step-list">
+        <div class="step-item">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <strong>测试样本准备</strong><br>
+            <strong>① 视频数据采集与筛选：</strong>从实际业务场景中选取涵盖多种告警事件类型的视频样本。视频场景应覆盖主要应用环境（如厨房、餐厅、仓库、生产车间等），不同光照条件（白天正常光照、夜间低照度、逆光、强光干扰等）和不同拍摄角度（俯视、平视、斜视）均应有代表性；考虑到实际场景中事件触发率较低，样本的事件覆盖率不宜过高（建议 10%-30%），以保证测试的真实性和挑战性。<br>
+            <strong>② 视频样本编号与水印添加：</strong>为每个测试视频分配唯一的 video_id（建议采用 10 位数字编码，包含场景、事件类型等信息）；使用 FFmpeg 工具对视频添加包含 video_id 和精确时间戳的水印（格式：`{{video_id}} | {{YYYY-MM-DD HH:MM:SS}}`），水印位置固定在视频画面左上角区域，字体大小和颜色应确保清晰可辨且不影响原始画面内容，便于后续 OCR 自动识别提取。<br>
+            <strong>③ Ground Truth 标注：</strong>使用标注工具对处理后的视频进行人工标注，标注每个事件发生的时间段（起始时间和结束时间），无需标注目标检测框；标注时需记录事件类型、事件描述等元数据；标注结果以 JSON 格式存储于 `ground_truth/{{video_id}}.json` 文件中，形成评测基准数据；标注完成后需进行交叉审核，确保标注质量。<br>
+            <strong>④ 测试集构建与验证：</strong>将标注完成的视频样本按事件类型、场景类型进行分类组织，构建结构化的测试数据集；对数据集进行统计分析，确保各类别样本分布均衡、事件覆盖全面；对 watermark 清晰度进行抽样验证，确保 OCR 可识别率 ≥ 95%。
+          </div>
+        </div>
+        <div class="step-item">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <strong>模型验证测试</strong><br>
+            <strong>① 推流部署：</strong>将测试视频通过推流方式推送至被测设备，确保视频流参数（分辨率、帧率等）与实际应用场景一致。<br>
+            <strong>② 算法配置：</strong>在被测设备上启动目标检测算法，按照评测参数配置事件检测间隔，并开启告警图片保存功能。<br>
+            <strong>③ 告警采集：</strong>完整运行检测流程，采集告警图片（含告警类型），测试完成后将告警数据上传至评测平台。
+          </div>
+        </div>
+        <div class="step-item">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <strong>指标统计分析</strong><br>
+            <strong>① OCR 解析：</strong>对告警图片水印区域进行 OCR 识别，提取 video_id 和时间戳，剔除识别失败的样本。<br>
+            <strong>② 告警匹配：</strong>将提取的时间戳与 GT 事件区间进行比对，告警时间落在 GT 事件 ±5 秒容差范围内视为命中（正确告警），否则视为误检。GT 事件区间内无匹配告警则视为漏检。<br>
+            <strong>③ 指标计算：</strong>基于匹配结果计算精确率、召回率、平均误检数/小时等核心指标，按事件类型分别统计，生成评测报告。<br>
+            <strong>④ 验收判定：</strong>对照预设验收标准判定各项指标是否达标，输出详细报告并对未达标项提出改进建议。
+          </div>
+        </div>
+      </div>
+    </div>
+    '''
+
+    # 详细案例分析
     event_sections = []
     for ed in event_detail_list:
         etype = ed['event_type']
@@ -808,6 +852,14 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
     </div>
     '''
         event_sections.append(section)
+
+    event_title_html = ''
+    if _has('events') and event_sections:
+        event_title_html = '''
+    <div class="page">
+      <h2>详细案例分析</h2>
+    </div>
+    '''
 
     if not _has('events'):
         event_sections = []
@@ -890,11 +942,16 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
       .sample-caption { padding:8px 10px; font-size:0.8rem; color:#555; background:#fff; }
       .mini-metrics { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 20px; }
       .mini-metrics span { padding:5px 12px; background:#f0f0f0; border-radius:15px; font-size:0.82rem; color:#555; }
+      .step-list { display:flex; flex-direction:column; gap:1rem; margin:15px 0; }
+      .step-item { display:flex; gap:0.8rem; align-items:flex-start; }
+      .step-num { flex-shrink:0; width:28px; height:28px; background:#3498db; color:#fff; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.85rem; font-weight:700; margin-top:2px; }
+      .step-body { flex:1; font-size:0.9rem; color:#444; line-height:1.7; }
+      .step-body strong { color:#2c3e50; font-size:0.95rem; }
       @media print { body { background:#fff; } .page { margin:0; box-shadow:none; border-radius:0; } }
     </style>
     '''
 
-    body = cover_html + summary_html + env_html + png_html + ''.join(event_sections) + video_html + conclusion_html
+    body = cover_html + summary_html + env_html + method_html + png_html + event_title_html + ''.join(event_sections) + video_html + conclusion_html
     return f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>算法验证报告 - {task_name}</title>{css}</head><body>{body}</body></html>'
 
 
@@ -934,6 +991,7 @@ def generate_detailed_report(task_id, db, config=None):
         'FROM eval_tasks WHERE id = ?', (task_id,))
     task = dict(cursor.fetchone())
 
+    # 从数据库读取已保存的整体指标
     accuracy = task.get('accuracy')
     recall = task.get('recall')
     avg_fp_per_hour = task.get('avg_fp_per_hour')
@@ -1000,6 +1058,7 @@ def generate_detailed_report(task_id, db, config=None):
     gt_coverage_rate = gt_coverage_seconds / total_duration if total_duration > 0 else 0.0
     expected_alert_total = sum(g.get('expected_count', 0) or 0 for g in gt_rows)
     gt_event_count = len(gt_rows)
+    total_duration_hours = total_duration / 3600 if total_duration else 0
 
     # ── 5. 按事件类型收集误检/漏检样本 ───────────────────────────────────────
     em_by_type = {em['event_type']: em for em in event_metrics}
@@ -1106,7 +1165,7 @@ def generate_detailed_report(task_id, db, config=None):
     conclusion_text = config.get('conclusion_text', '')
 
     if not summary_text and not conclusion_text:
-        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        api_key = os.environ.get('ANTHROPIC_AUTH_TOKEN')
         if api_key:
             metrics_json = json.dumps({
                 'accuracy': accuracy,
@@ -1117,7 +1176,7 @@ def generate_detailed_report(task_id, db, config=None):
                 'event_metrics': [{k: v for k, v in em.items() if k != 'avg_fp_per_hour'} for em in event_metrics],
             }, ensure_ascii=False, indent=2)
 
-            summary_prompt = f'''你是一位计算机视觉算法验证专家。请根据以下视频水印 OCR 算法的评测数据，生成一段简洁的中文执行摘要（200-300 字）。
+            summary_prompt = f'''你是一位计算机视觉算法验证专家。请根据以下视频水印 OCR 算法的评测数据，生成一段简洁的中文测试摘要（200-300 字）。
 
 要求：
 1. 先给一句整体评价
@@ -1158,6 +1217,135 @@ def generate_detailed_report(task_id, db, config=None):
     )
 
 
+def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=None):
+    """计算评测任务的完整指标，返回 (accuracy, recall, avg_fp_per_hour, event_metrics_list, total_duration)。
+
+    cursor: sqlite3.Cursor（兼容 Flask get_db() 和独立 connection）
+    get_all_event_types_fn: 可选，用于获取配置文件中的事件类型列表的函数
+    """
+    import json
+
+    # 整体精确率
+    cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
+    total = 0
+    correct = 0
+    fp_count = 0
+    for row in cursor.fetchall():
+        status = get_effective_status(row)
+        if status == 'ignored':
+            continue
+        total += 1
+        if status == 'correct':
+            correct += 1
+        elif status == 'false_positive':
+            fp_count += 1
+    accuracy = correct / total if total > 0 else None
+
+    # 整体召回率
+    cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=?', (task_id,))
+    total_expected = 0
+    total_actual = 0
+    for ev in cursor.fetchall():
+        confirmed = ev['confirmed_count'] or 0
+        actual = ev['actual_count'] or 0
+        if confirmed == 0:
+            if actual > 0:
+                total_expected += 1
+                total_actual += min(actual, 1)
+        else:
+            total_expected += confirmed
+            total_actual += min(actual, confirmed)
+    recall = total_actual / total_expected if total_expected > 0 else None
+
+    # 评测视频总时长
+    total_duration = 0
+    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
+    eval_set = cursor.fetchone()
+    if eval_set and eval_set['video_ids']:
+        try:
+            video_db_ids = json.loads(eval_set['video_ids'])
+            if video_db_ids:
+                placeholders = ','.join('?' for _ in video_db_ids)
+                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                total_duration = cursor.fetchone()['total'] or 0
+        except Exception:
+            pass
+    total_duration_hours = total_duration / 3600 if total_duration else 0
+
+    # 平均误检/小时（整体）
+    avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
+
+    # 按事件类型计算指标
+    all_event_types = get_all_event_types_fn() if get_all_event_types_fn else []
+    if not all_event_types:
+        cursor.execute('''
+            SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
+            UNION
+            SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
+        ''', (task_id, task_id))
+        all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+
+    event_metrics = []
+    for etype in all_event_types:
+        cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=? AND event_type=?', (task_id, etype))
+        alert_count = 0
+        correct_pred_count = 0
+        fp_count_et = 0
+        for row in cursor.fetchall():
+            status = get_effective_status(row)
+            if status == 'ignored':
+                continue
+            alert_count += 1
+            if status == 'correct':
+                correct_pred_count += 1
+            elif status == 'false_positive':
+                fp_count_et += 1
+
+        cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=? AND event_type=?', (task_id, etype))
+        gt_count = 0
+        hit_count = 0
+        missed_gt_count = 0
+        for ev in cursor.fetchall():
+            confirmed = ev['confirmed_count'] or 0
+            actual = ev['actual_count'] or 0
+            if confirmed == 0:
+                if actual > 0:
+                    gt_count += 1
+                    hit_count += min(actual, 1)
+            else:
+                gt_count += confirmed
+                hit_count += min(actual, confirmed)
+                if actual < confirmed:
+                    missed_gt_count += 1
+
+        precision = correct_pred_count / alert_count if alert_count > 0 else None
+        event_recall = hit_count / gt_count if gt_count > 0 else None
+        avg_fp_et = round(fp_count_et / total_duration_hours, 2) if total_duration_hours else 0
+
+        event_metrics.append({
+            'event_type': etype,
+            'alert_count': alert_count,
+            'gt_count': gt_count,
+            'correct_pred_count': correct_pred_count,
+            'false_positive_count': fp_count_et,
+            'hit_count': hit_count,
+            'missed_gt_count': missed_gt_count,
+            'precision': precision,
+            'recall': event_recall,
+            'avg_fp_per_hour': avg_fp_et
+        })
+
+    # 整体召回率 = gt_count > 0 的事件类型召回率的算术平均
+    recalls_with_gt = [em['recall'] for em in event_metrics if em['recall'] is not None and em['gt_count'] > 0]
+    recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
+
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    avg_fp_values = [em['avg_fp_per_hour'] for em in event_metrics if em['avg_fp_per_hour'] is not None]
+    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+
+    return accuracy, recall, avg_fp_per_hour, event_metrics, total_duration
+
+
 def _call_claude_chat(messages, current_summary, current_conclusion, metrics_json, api_key, base_url=None):
     """根据对话上下文调用 Claude API 修改摘要和结论。"""
     if not api_key:
@@ -1175,23 +1363,30 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
     if not claude_messages or claude_messages[-1]['role'] != 'user':
         return {'summary': current_summary, 'conclusion': current_conclusion}
 
-    system_prompt = f'''你是一位计算机视觉算法验证专家。用户正在编辑一份算法验证报告的执行摘要和结论章节。
+    system_prompt = f'''你是一位计算机视觉算法验证专家。用户正在编辑一份算法验证报告的测试摘要和结论章节。
 
 当前版本：
-【执行摘要】
+【测试摘要】
 {current_summary}
 
-【结论建议】
+【结论与改进建议】
 {current_conclusion}
 
 评测数据：
 {metrics_json}
 
-要求：
+格式要求（重要）：
+- 使用 HTML 标签输出，不要 Markdown
+- 小标题用 <strong> 标签，如 <strong>整体评价：</strong>
+- 列表用 <ul><li></li></ul>
+- 换行用 <br>
+- 只输出 HTML 片段，不要包裹 html/head/body
+
+内容要求：
 1. 根据用户的请求修改对应章节
 2. 返回格式必须包含两个标记：
-   【执行摘要】[修改后的摘要]
-   【结论建议】[修改后的结论]
+   【测试摘要】[修改后的摘要]
+   【结论与改进建议】[修改后的结论]
 3. 如果用户只要求修改其中一个，另一个保持不变
 4. 用中文回答，语言简洁专业'''
 
@@ -1213,7 +1408,16 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
         summary = current_summary
         conclusion = current_conclusion
 
-        if '【执行摘要】' in text:
+        if '【测试摘要】' in text:
+            parts = text.split('【测试摘要】', 1)
+            rest = parts[1]
+            if '【结论与改进建议】' in rest:
+                s_part, c_part = rest.split('【结论与改进建议】', 1)
+                summary = s_part.strip()
+                conclusion = c_part.strip()
+            else:
+                summary = rest.strip()
+        elif '【执行摘要】' in text:
             parts = text.split('【执行摘要】', 1)
             rest = parts[1]
             if '【结论建议】' in rest:
@@ -1222,6 +1426,9 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
                 conclusion = c_part.strip()
             else:
                 summary = rest.strip()
+        elif '【结论与改进建议】' in text:
+            parts = text.split('【结论与改进建议】', 1)
+            conclusion = parts[1].strip()
         elif '【结论建议】' in text:
             parts = text.split('【结论建议】', 1)
             conclusion = parts[1].strip()

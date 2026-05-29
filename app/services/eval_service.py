@@ -661,10 +661,8 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
         return 'bad'
 
     def _metric_chip_class(metric_key, metric_value):
-        if metric_key == 'hit_count':
-            return 'good' if (metric_value or 0) > 0 else 'neutral'
-        if metric_key in ('false_positive_count', 'missed_gt_count'):
-            return 'good' if (metric_value or 0) == 0 else 'bad'
+        if metric_key in ('alert_count', 'hit_count', 'false_positive_count', 'missed_gt_count'):
+            return 'gray'
         if metric_key == 'precision':
             if metric_value is None:
                 return 'neutral'
@@ -789,10 +787,9 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
           <div class="step-num">1</div>
           <div class="step-body">
             <strong>测试样本准备</strong><br>
-            <strong>① 视频数据采集与筛选：</strong>从实际业务场景中选取涵盖多种告警事件类型的视频样本。视频场景应覆盖主要应用环境（如厨房、餐厅、仓库、生产车间等），不同光照条件（白天正常光照、夜间低照度、逆光、强光干扰等）和不同拍摄角度（俯视、平视、斜视）均应有代表性；考虑到实际场景中事件触发率较低，样本的事件覆盖率不宜过高（建议 10%-30%），以保证测试的真实性和挑战性。<br>
-            <strong>② 视频样本编号与水印添加：</strong>为每个测试视频分配唯一的 video_id（建议采用 10 位数字编码，包含场景、事件类型等信息）；使用 FFmpeg 工具对视频添加包含 video_id 和精确时间戳的水印（格式：`{{video_id}} | {{YYYY-MM-DD HH:MM:SS}}`），水印位置固定在视频画面左上角区域，字体大小和颜色应确保清晰可辨且不影响原始画面内容，便于后续 OCR 自动识别提取。<br>
-            <strong>③ Ground Truth 标注：</strong>使用标注工具对处理后的视频进行人工标注，标注每个事件发生的时间段（起始时间和结束时间），无需标注目标检测框；标注时需记录事件类型、事件描述等元数据；标注结果以 JSON 格式存储于 `ground_truth/{{video_id}}.json` 文件中，形成评测基准数据；标注完成后需进行交叉审核，确保标注质量。<br>
-            <strong>④ 测试集构建与验证：</strong>将标注完成的视频样本按事件类型、场景类型进行分类组织，构建结构化的测试数据集；对数据集进行统计分析，确保各类别样本分布均衡、事件覆盖全面；对 watermark 清晰度进行抽样验证，确保 OCR 可识别率 ≥ 95%。
+            <strong>① 视频数据选取：</strong>选取涵盖多种告警事件类型的视频，事件覆盖率不宜过高（建议低于 30%），以贴近实际场景中事件触发率较低的特点。<br>
+            <strong>② 视频打水印：</strong>为每个视频分配唯一 video_id，使用 FFmpeg 在视频左上角添加包含 video_id 和时间戳的水印，便于后续 OCR 识别。<br>
+            <strong>③ GT 标注：</strong>对视频进行人工标注，标注每个事件发生的时间段（起始和结束时间），无需标注目标框，形成 Ground Truth（GT）评测基准。
           </div>
         </div>
         <div class="step-item">
@@ -988,7 +985,7 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
       .sample-cell .img-placeholder { width:100%; height:150px; display:flex; align-items:center; justify-content:center; color:#999; font-size:0.85rem; }
       .sample-caption { padding:8px 10px; font-size:0.8rem; color:#555; background:#fff; }
       .mini-metrics { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 20px; }
-      .mini-metrics span { padding:5px 12px; background:#f0f0f0; border-radius:15px; font-size:0.82rem; color:#555; }
+      .mini-metrics span { padding:5px 12px; border-radius:15px; font-size:0.82rem; }
       .section-intro { margin-bottom:18px; }
       .section-intro h2 { margin-bottom:8px; }
       .section-intro-text { margin:0; color:#667085; font-size:0.92rem; }
@@ -1003,9 +1000,9 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
       .metric-chip-list { gap:12px; }
       .metric-chip { display:inline-flex; align-items:center; min-height:32px; padding:6px 12px; border-radius:999px; font-size:0.82rem; font-weight:600; border:1px solid transparent; }
       .metric-chip-neutral { background:#eef2f6; color:#516071; border-color:#e0e6ed; }
-      .metric-chip-good { background:#e9f8ef; color:#1f7a45; border-color:#bfe7cf; }
-      .metric-chip-mid { background:#fff7e8; color:#9a6700; border-color:#f0d8a8; }
-      .metric-chip-bad { background:#fdecec; color:#b42318; border-color:#f3c1bc; }
+      .metric-chip-good { background:#e9f8ef; color:#166534; border-color:#b7e4c7; }
+      .metric-chip-mid { background:#fff7e8; color:#b45309; border-color:#f3d19c; }
+      .metric-chip-bad { background:#fdecec; color:#b42318; border-color:#efb4ae; }
       .metric-chip-gray { background:#f3f4f6; color:#667085; border-color:#e5e7eb; }
       .event-case-body { display:flex; flex-direction:column; gap:18px; margin-top:18px; }
       .event-sample-section { padding:18px; border:1px solid #e6ebf2; border-radius:12px; background:#fff; }

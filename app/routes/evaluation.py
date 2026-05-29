@@ -148,6 +148,7 @@ def delete_task(task_id):
     cursor.execute('DELETE FROM eval_results WHERE task_id = ?', (task_id,))
     cursor.execute('DELETE FROM eval_merged_events WHERE task_id = ?', (task_id,))
     cursor.execute('DELETE FROM eval_gt_events WHERE task_id = ?', (task_id,))
+    cursor.execute('DELETE FROM report_chat_sessions WHERE task_id = ?', (task_id,))
     cursor.execute('DELETE FROM eval_tasks WHERE id = ?', (task_id,))
     db.commit()
 
@@ -1644,7 +1645,93 @@ def detailed_report(task_id):
     return Response(html, mimetype='text/html')
 
 
-@bp.route('/api/tasks/<int:task_id>/detailed-report-pdf', methods=['POST'])
+# ── 报告 Chat 历史 API ─────────────────────────────────────────────────────────
+
+@bp.route('/api/tasks/<int:task_id>/chat-sessions', methods=['GET'])
+def list_chat_sessions(task_id):
+    """获取该任务的所有 Chat 历史会话列表"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+    cursor.execute(
+        'SELECT id, name, summary_text, conclusion_text, created_at, updated_at '
+        'FROM report_chat_sessions WHERE task_id = ? ORDER BY updated_at DESC',
+        (task_id,)
+    )
+    sessions = [dict(r) for r in cursor.fetchall()]
+    return jsonify({'sessions': sessions})
+
+
+@bp.route('/api/tasks/<int:task_id>/chat-sessions', methods=['POST'])
+def save_chat_session(task_id):
+    """保存或更新 Chat 历史会话"""
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+
+    import json as _json
+    session_id = data.get('session_id')
+    name = data.get('name', '未命名会话')
+    messages = _json.dumps(data.get('messages', []), ensure_ascii=False)
+    summary_text = data.get('summary_text', '')
+    conclusion_text = data.get('conclusion_text', '')
+
+    if session_id:
+        cursor.execute('''
+            UPDATE report_chat_sessions
+            SET name=?, messages=?, summary_text=?, conclusion_text=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND task_id=?
+        ''', (name, messages, summary_text, conclusion_text, session_id, task_id))
+        if cursor.rowcount == 0:
+            return jsonify({'error': '会话不存在'}), 404
+    else:
+        cursor.execute('''
+            INSERT INTO report_chat_sessions (task_id, name, messages, summary_text, conclusion_text)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (task_id, name, messages, summary_text, conclusion_text))
+        session_id = cursor.lastrowid
+
+    db.commit()
+    return jsonify({'success': True, 'session_id': session_id})
+
+
+@bp.route('/api/tasks/<int:task_id>/chat-sessions/<int:session_id>', methods=['GET'])
+def get_chat_session(task_id, session_id):
+    """获取单个 Chat 历史会话（含完整消息）"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        'SELECT id, name, messages, summary_text, conclusion_text, created_at, updated_at '
+        'FROM report_chat_sessions WHERE id=? AND task_id=?',
+        (session_id, task_id)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return jsonify({'error': '会话不存在'}), 404
+    result = dict(row)
+    import json as _json
+    try:
+        result['messages'] = _json.loads(result['messages'])
+    except Exception:
+        result['messages'] = []
+    return jsonify(result)
+
+
+@bp.route('/api/tasks/<int:task_id>/chat-sessions/<int:session_id>', methods=['DELETE'])
+def delete_chat_session(task_id, session_id):
+    """删除单个 Chat 历史会话"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('DELETE FROM report_chat_sessions WHERE id=? AND task_id=?', (session_id, task_id))
+    db.commit()
+    if cursor.rowcount == 0:
+        return jsonify({'error': '会话不存在'}), 404
+    return jsonify({'success': True})
 def detailed_report_pdf(task_id):
     """生成详细报告 PDF（Playwright 渲染）"""
     from app.services.eval_service import generate_detailed_report

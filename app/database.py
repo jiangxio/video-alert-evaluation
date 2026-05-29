@@ -422,6 +422,41 @@ def init_db():
         )
     ''')
 
+    # 报告 AI 对话历史表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS report_chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES eval_tasks(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            messages TEXT NOT NULL,
+            summary_text TEXT,
+            conclusion_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_report_chat_task ON report_chat_sessions(task_id)')
+
+    # 推流任务表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS stream_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            source_type TEXT NOT NULL,
+            source_id INTEGER NOT NULL,
+            stream_name TEXT NOT NULL,
+            loop_count INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'created',
+            total_duration REAL,
+            suggested_algorithms TEXT,
+            error_message TEXT,
+            pid INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at TIMESTAMP,
+            ended_at TIMESTAMP
+        )
+    ''')
+
     # 常用查询索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_alert_image ON ocr_results(alert_image_id)')

@@ -119,7 +119,16 @@
   <!-- 右侧：Chat 区域 -->
   <div class="chat-panel">
     <div class="card" style="flex:1;display:flex;flex-direction:column;">
-      <h3>AI 分析与对话修改</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
+        <h3 style="margin:0;">AI 分析与对话修改</h3>
+        <div style="display:flex;gap:0.4rem;">
+          <select id="sessionSelect" onchange="loadSession(this.value)" style="font-size:0.82rem;padding:0.3rem 0.5rem;border:1px solid #ddd;border-radius:4px;max-width:160px;">
+            <option value="">-- 历史记录 --</option>
+          </select>
+          <button class="btn btn-sm" onclick="saveSession()" title="保存当前对话">保存</button>
+          <button class="btn btn-sm btn-danger" onclick="clearSession()" title="清空当前对话">清空</button>
+        </div>
+      </div>
       <div id="chatArea" class="chat-area">
         <div class="chat-placeholder">点击左侧"生成 AI 分析"按钮开始...<br><small>AI 会根据评测数据生成测试摘要和结论与改进建议，你可以在下方输入修改要求。</small></div>
       </div>
@@ -349,6 +358,88 @@ function escapeHtml(text) {
   div.textContent = text;
   return div.innerHTML.replace(/\n/g, '<br>');
 }
+
+// ── 历史记录管理 ──────────────────────────────────────────────────────────────
+let currentSessionId = null;
+
+async function loadSessionList() {
+  const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/chat-sessions`);
+  if (!res.ok) return;
+  const data = await res.json();
+  const sel = document.getElementById('sessionSelect');
+  sel.innerHTML = '<option value="">-- 历史记录 --</option>';
+  (data.sessions || []).forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.updated_at ? s.updated_at.slice(0, 16) : ''})`;
+    sel.appendChild(opt);
+  });
+}
+
+async function loadSession(sessionId) {
+  if (!sessionId) return;
+  const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/chat-sessions/${sessionId}`);
+  if (!res.ok) { alert('加载失败'); return; }
+  const data = await res.json();
+  currentSessionId = data.id;
+  chatMessages = data.messages || [];
+  currentSummary = data.summary_text || '';
+  currentConclusion = data.conclusion_text || '';
+  renderChat();
+}
+
+async function saveSession() {
+  if (chatMessages.length === 0) { alert('当前没有对话内容'); return; }
+  const defaultName = new Date().toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}).replace(/\//g, '-');
+  const name = prompt('保存为：', currentSessionId ? document.getElementById('sessionSelect').selectedOptions[0]?.textContent?.split(' (')[0] : defaultName);
+  if (!name) return;
+  const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/chat-sessions`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      session_id: currentSessionId,
+      name,
+      messages: chatMessages,
+      summary_text: currentSummary,
+      conclusion_text: currentConclusion,
+    })
+  });
+  const data = await res.json();
+  if (data.success) {
+    currentSessionId = data.session_id;
+    await loadSessionList();
+    document.getElementById('sessionSelect').value = currentSessionId;
+  } else {
+    alert(data.error || '保存失败');
+  }
+}
+
+async function clearSession() {
+  if (chatMessages.length === 0) return;
+  if (!confirm('清空当前对话？')) return;
+  chatMessages = [];
+  currentSummary = '';
+  currentConclusion = '';
+  currentSessionId = null;
+  document.getElementById('sessionSelect').value = '';
+  renderChat();
+}
+
+// 删除选中的历史记录
+document.getElementById('sessionSelect').addEventListener('contextmenu', async function(e) {
+  const val = this.value;
+  if (!val) return;
+  e.preventDefault();
+  if (!confirm('删除该历史记录？')) return;
+  const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/chat-sessions/${val}`, {method: 'DELETE'});
+  if ((await res.json()).success) {
+    if (currentSessionId == val) { chatMessages = []; currentSummary = ''; currentConclusion = ''; currentSessionId = null; renderChat(); }
+    await loadSessionList();
+  }
+});
+
+// 页面加载时拉取历史列表
+loadSessionList();
 
 // Enter 发送消息
 document.getElementById('chatInput').addEventListener('keydown', function(e) {

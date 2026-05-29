@@ -1775,7 +1775,7 @@ def detailed_report_preview(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     api_key = data.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
-    api_base_url = data.get('api_base_url', '').strip() or None
+    api_base_url = data.get('api_base_url', '').strip() or os.environ.get('ANTHROPIC_BASE_URL') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key'}), 400
 
@@ -1964,7 +1964,7 @@ def detailed_report_chat(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     api_key = data.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
-    api_base_url = data.get('api_base_url', '').strip() or None
+    api_base_url = data.get('api_base_url', '').strip() or os.environ.get('ANTHROPIC_BASE_URL') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key'}), 400
 

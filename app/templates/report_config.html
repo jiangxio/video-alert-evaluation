@@ -82,12 +82,15 @@
         <textarea id="projectBackground" rows="3" placeholder="简述项目背景..."></textarea>
       </div>
       <div class="form-group">
-        <label>API Base URL（可选，默认官方）</label>
+        <label>API Base URL（留空则读取环境变量 ANTHROPIC_BASE_URL）</label>
         <input type="text" id="apiBaseUrl" placeholder="https://api.anthropic.com">
       </div>
       <div class="form-group">
-        <label>Claude API Key（临时，仅本次使用）</label>
+        <label>Claude API Key（留空则读取环境变量 ANTHROPIC_API_KEY）</label>
         <input type="password" id="apiKey" placeholder="sk-...">
+      </div>
+      <div style="background:#e8f5e9;border:1px solid #81c784;border-radius:4px;padding:0.6rem 0.8rem;font-size:0.82rem;color:#2e7d32;margin-top:0.5rem;">
+        💡 提示：服务器管理员可在环境变量中预置 <code>ANTHROPIC_API_KEY</code> 和 <code>ANTHROPIC_BASE_URL</code>，此处留空即可直接使用。
       </div>
     </div>
 
@@ -135,11 +138,6 @@ async function generateAIPreview() {
   const apiBaseUrl = document.getElementById('apiBaseUrl').value.trim();
   const projectName = document.getElementById('projectName').value.trim();
   const projectBg = document.getElementById('projectBackground').value.trim();
-
-  if (!apiKey) {
-    showChatError('请填写 Claude API Key');
-    return;
-  }
 
   const btn = document.getElementById('btnGenerateAI');
   btn.disabled = true;
@@ -212,10 +210,6 @@ async function sendChatMessage() {
 
   const apiKey = document.getElementById('apiKey').value.trim();
   const apiBaseUrl = document.getElementById('apiBaseUrl').value.trim();
-  if (!apiKey) {
-    showChatError('请填写 API Key');
-    return;
-  }
 
   const btn = document.querySelector('.chat-input-bar .btn');
   btn.disabled = true;

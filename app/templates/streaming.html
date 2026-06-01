@@ -74,10 +74,11 @@
   </div>
 </div>
 
-<!-- 新建任务弹窗 -->
+<!-- 新建/编辑任务弹窗 -->
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
-    <h3>新建推流任务</h3>
+    <h3 id="modalTitle">新建推流任务</h3>
+    <input type="hidden" id="editingTaskId" value="">
 
     <div class="form-group">
       <label>来源类型</label>
@@ -143,7 +144,7 @@
 
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-      <button class="btn btn-success" id="createBtn" onclick="createTask()">创建任务</button>
+      <button class="btn btn-success" id="createBtn" onclick="saveTask()">创建任务</button>
     </div>
   </div>
 </div>
@@ -240,6 +241,7 @@ function renderRow(t) {
     actions = `<button class="btn btn-danger btn-sm" onclick="stopTask(${t.id})">停止</button>`;
   } else if (['created','done','failed','stopped'].includes(t.status)) {
     actions = `<button class="btn btn-success btn-sm" onclick="startTask(${t.id})" style="margin-right:0.4rem">开始</button>
+               <button class="btn btn-warning btn-sm" onclick="openEditModal(${t.id})" style="margin-right:0.4rem;background:#f39c12;color:white;border:none;">编辑</button>
                <button class="btn btn-secondary btn-sm" onclick="deleteTask(${t.id})">删除</button>`;
   }
 
@@ -263,13 +265,53 @@ function renderRow(t) {
 // ── 弹窗 ────────────────────────────────────────────────────────────────────
 
 function openModal() {
-  document.getElementById('modalOverlay').classList.add('active');
+  // 新建模式：重置所有字段
+  document.getElementById('modalTitle').textContent = '新建推流任务';
+  document.getElementById('editingTaskId').value = '';
+  document.getElementById('createBtn').textContent = '创建任务';
+  document.getElementById('streamName').value = '';
+  document.getElementById('loopCount').value = '1';
+  document.getElementById('taskName').value = '';
+  document.querySelector('input[name="sourceType"][value="single"]').checked = true;
+  document.getElementById('singleVideoSelect').value = '';
+  document.getElementById('videoSetSelect').value = '';
+  onSourceTypeChange();
+  document.getElementById('previewBox').style.display = 'none';
   document.getElementById('modalError').classList.add('hidden');
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+async function openEditModal(taskId) {
+  // 编辑模式：先获取任务详情
+  const r = await fetch('/streaming/api/tasks');
+  const tasks = await r.json();
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) { alert('任务不存在'); return; }
+
+  document.getElementById('modalTitle').textContent = '编辑推流任务';
+  document.getElementById('editingTaskId').value = taskId;
+  document.getElementById('createBtn').textContent = '保存修改';
+
+  // 填充字段
+  document.querySelector(`input[name="sourceType"][value="${task.source_type}"]`).checked = true;
+  onSourceTypeChange();
+  if (task.source_type === 'single') {
+    document.getElementById('singleVideoSelect').value = task.source_id;
+  } else {
+    document.getElementById('videoSetSelect').value = task.source_id;
+  }
+  document.getElementById('streamName').value = task.stream_name;
+  document.getElementById('loopCount').value = task.loop_count;
+  document.getElementById('taskName').value = task.name || '';
+
+  document.getElementById('modalError').classList.add('hidden');
+  document.getElementById('modalOverlay').classList.add('active');
   refreshPreview();
 }
 
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('active');
+  document.getElementById('editingTaskId').value = '';
 }
 
 function onSourceTypeChange() {
@@ -332,7 +374,8 @@ async function doPreview() {
 
 // ── 任务操作 ────────────────────────────────────────────────────────────────
 
-async function createTask() {
+async function saveTask() {
+  const editingId = document.getElementById('editingTaskId').value;
   const type = document.querySelector('input[name="sourceType"]:checked').value;
   const sourceId = type === 'single'
     ? document.getElementById('singleVideoSelect').value
@@ -348,22 +391,28 @@ async function createTask() {
   if (!streamName) { showModalError('请填写流名称'); return; }
 
   const btn = document.getElementById('createBtn');
-  btn.disabled = true; btn.textContent = '创建中...';
+  const isEdit = !!editingId;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = isEdit ? '保存中...' : '创建中...';
 
   try {
-    const r = await fetch('/streaming/api/tasks', {
-      method: 'POST',
+    const url = isEdit ? `/streaming/api/tasks/${editingId}` : '/streaming/api/tasks';
+    const method = isEdit ? 'PATCH' : 'POST';
+    const r = await fetch(url, {
+      method,
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ source_type: type, source_id: sourceId, stream_name: streamName, loop_count: loopCount, name }),
     });
     const d = await r.json();
-    if (!r.ok) { showModalError(d.error || '创建失败'); return; }
+    if (!r.ok) { showModalError(d.error || (isEdit ? '保存失败' : '创建失败')); return; }
     closeModal();
     await loadTasks();
   } catch(e) {
     showModalError('网络错误，请重试');
   } finally {
-    btn.disabled = false; btn.textContent = '创建任务';
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
 }
 

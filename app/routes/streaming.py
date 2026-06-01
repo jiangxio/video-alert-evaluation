@@ -568,6 +568,78 @@ def stop_task(task_id):
     return jsonify({"status": "stopped"})
 
 
+@bp.route("/api/tasks/<int:task_id>", methods=["PATCH"])
+def update_task(task_id):
+    """编辑任务参数（仅非运行中状态可编辑）"""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT id, source_type, source_id, stream_name, loop_count, status, name "
+        "FROM stream_tasks WHERE id = ?",
+        (task_id,),
+    )
+    task = cur.fetchone()
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+    if task["status"] == "running":
+        return jsonify({"error": "任务运行中，无法编辑"}), 400
+
+    data = request.get_json() or {}
+    source_type = data.get("source_type", "").strip()
+    source_id = data.get("source_id")
+    stream_name = data.get("stream_name", "").strip()
+    loop_count = int(data.get("loop_count") or 1)
+    name = data.get("name", "").strip()
+
+    if source_type not in ("single", "set"):
+        return jsonify({"error": "来源类型无效"}), 400
+    if not source_id:
+        return jsonify({"error": "请选择视频或视频集"}), 400
+    if not stream_name:
+        return jsonify({"error": "流名称不能为空"}), 400
+    if not all(c.isalnum() or c in "-_" for c in stream_name):
+        return jsonify({"error": "流名称只能包含字母、数字、连字符和下划线"}), 400
+    if loop_count < 1:
+        loop_count = 1
+
+    # 解析视频列表，检查是否都已打水印
+    videos, err = _resolve_watermarked_videos(source_type, int(source_id))
+    if err:
+        return jsonify({"error": err}), 400
+
+    # 补全时长
+    total_duration = 0.0
+    for v in videos:
+        dur = _ensure_duration(v["id"], v["output_path"])
+        if dur:
+            total_duration += dur
+
+    # 算法建议
+    video_db_ids = [v["video_db_id"] for v in videos]
+    config_path = current_app.config.get("ALERT_TYPES_CONFIG", "config/alert_types.json")
+    suggested = _get_suggested_algorithms(video_db_ids, config_path)
+
+    # 清除旧的错误信息，重置状态为 created
+    cur.execute(
+        "UPDATE stream_tasks SET name = ?, source_type = ?, source_id = ?, "
+        "stream_name = ?, loop_count = ?, total_duration = ?, "
+        "suggested_algorithms = ?, status = 'created', error_message = NULL, "
+        "ended_at = NULL WHERE id = ?",
+        (
+            name or f"推流-{stream_name}",
+            source_type,
+            int(source_id),
+            stream_name,
+            loop_count,
+            total_duration * loop_count if total_duration else None,
+            json.dumps(suggested, ensure_ascii=False),
+            task_id,
+        ),
+    )
+    db.commit()
+    return jsonify({"id": task_id, "status": "created"})
+
+
 @bp.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def delete_task(task_id):
     db = get_db()

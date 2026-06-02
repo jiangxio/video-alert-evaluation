@@ -245,13 +245,15 @@ async function sendChatMessage() {
   renderChat();
 
   try {
+    // 过滤掉占位消息，避免后端 guard clause 直接返回原内容
+    const messagesToSend = chatMessages.filter(m => !m.content.includes('正在思考中'));
     const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/detailed-report-chat`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         api_key: apiKey,
         api_base_url: apiBaseUrl,
-        messages: chatMessages,
+        messages: messagesToSend,
         current_summary: currentSummary,
         current_conclusion: currentConclusion
       })

@@ -877,8 +877,8 @@ def get_event_metrics(task_id):
     if not task:
         return jsonify({'error': '任务不存在'}), 404
 
-    # 如果有保存的事件指标，直接返回
-    if task['event_metrics']:
+    # 只有任务已确认锁定时，才使用缓存的事件指标；否则实时计算以反映手动修改
+    if task['finalized'] and task['event_metrics']:
         try:
             event_metrics = json.loads(task['event_metrics'])
             return jsonify({'success': True, 'event_metrics': event_metrics})
@@ -1869,12 +1869,6 @@ def detailed_report_preview(task_id):
             except Exception:
                 pass
         total_duration_hours = total_duration / 3600 if total_duration else 0
-        fp_count = 0
-        cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
-        for row in cursor.fetchall():
-            if get_effective_status(row) == 'false_positive':
-                fp_count += 1
-        avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
 
         # 计算事件级别指标
         all_event_types = _get_all_event_types()
@@ -1939,6 +1933,10 @@ def detailed_report_preview(task_id):
             event_metrics = json.loads(task['event_metrics'])
         except Exception:
             pass
+
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    avg_fp_values = [em.get('avg_fp_per_hour', 0) for em in event_metrics if em.get('avg_fp_per_hour') is not None]
+    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
 
     metrics_json = json.dumps({
         'accuracy': accuracy,
@@ -2110,6 +2108,10 @@ def detailed_report_chat(task_id):
             event_metrics = json.loads(task['event_metrics'])
         except Exception:
             pass
+
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    avg_fp_values = [em.get('avg_fp_per_hour', 0) for em in event_metrics if em.get('avg_fp_per_hour') is not None]
+    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
 
     metrics_json = json.dumps({
         'accuracy': accuracy, 'recall': recall, 'avg_fp_per_hour': avg_fp_per_hour,

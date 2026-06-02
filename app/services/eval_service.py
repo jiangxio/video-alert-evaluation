@@ -1087,7 +1087,7 @@ def generate_detailed_report(task_id, db, config=None):
 
     cursor.execute('''
         SELECT g.id, g.video_id, g.event_type, g.start_sec, g.end_sec,
-               g.confirmed_count, g.actual_count,
+               g.expected_count, g.confirmed_count, g.actual_count,
                g.mid_frame_id, g.mid_frame_path
         FROM eval_gt_events g
         WHERE g.task_id = ?
@@ -1417,13 +1417,13 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
     if not api_key:
         return {'summary': current_summary, 'conclusion': current_conclusion}
 
-    # 构建 Claude messages
+    # 只保留 user 消息；assistant 消息中的内容和 system prompt 中的
+    # current_summary/current_conclusion 完全重复，传给模型会造成混淆，
+    # 导致模型直接复制已有内容而不做修改。
     claude_messages = []
     for msg in messages:
         if msg.get('role') == 'user':
             claude_messages.append({'role': 'user', 'content': msg['content']})
-        elif msg.get('role') == 'assistant':
-            claude_messages.append({'role': 'assistant', 'content': msg['content']})
 
     # 最后一条必须是用户消息
     if not claude_messages or claude_messages[-1]['role'] != 'user':
@@ -1431,7 +1431,7 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
 
     system_prompt = f'''你是一位计算机视觉算法验证专家。用户正在编辑一份算法验证报告的测试摘要和结论章节。
 
-当前版本：
+当前版本（供参考，禁止直接复制）：
 【测试摘要】
 {current_summary}
 
@@ -1454,7 +1454,8 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
    【测试摘要】[修改后的摘要]
    【结论与改进建议】[修改后的结论]
 3. 如果用户只要求修改其中一个，另一个保持不变
-4. 用中文回答，语言简洁专业'''
+4. 用中文回答，语言简洁专业
+5. 重要：不要直接复制"当前版本"中的内容。必须根据用户的具体要求做出实际修改。'''
 
     try:
         import anthropic

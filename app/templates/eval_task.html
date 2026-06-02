@@ -1067,16 +1067,36 @@ async function saveGtEventCounts(gtId) {
 function recomputeMetrics() {
   const totalDuration = window.evalTotalDuration || 0;
   const totalDurationHours = totalDuration / 3600;
-  let total = 0, correct = 0, fp = 0;
+
+  // 按事件类型分组计算精确率和误检数
+  const fpByType = {};
+  const typesWithAlerts = new Set();
+  let total = 0, correct = 0;
   for (const r of alertResults) {
     const status = r.effective_status || (r.is_false_positive ? 'false_positive' : 'correct');
     if (status === 'ignored') continue;
     total++;
-    if (status === 'correct') correct++;
-    else fp++;
+    if (status === 'correct') {
+      correct++;
+    }
+    const et = r.event_type;
+    if (!et) continue;
+    typesWithAlerts.add(et);
+    if (status === 'false_positive') {
+      fpByType[et] = (fpByType[et] || 0) + 1;
+    }
   }
   const accuracy = total > 0 ? correct / total : null;
-  const avgFp = totalDurationHours > 0 ? fp / totalDurationHours : 0;
+
+  // 平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+  let avgFp = 0;
+  if (totalDurationHours > 0 && typesWithAlerts.size > 0) {
+    const avgFpValues = [];
+    for (const et of typesWithAlerts) {
+      avgFpValues.push((fpByType[et] || 0) / totalDurationHours);
+    }
+    avgFp = avgFpValues.reduce((a, b) => a + b, 0) / avgFpValues.length;
+  }
   window.evalAvgFpPerHour = avgFp;
   window.evalAccuracy = accuracy;
 

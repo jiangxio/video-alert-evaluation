@@ -1,16 +1,18 @@
 """算法版本管理路由
 
-管理算法版本：增删改查 + 文件上传
+管理算法版本：增删改查 + 文件上传 + 配置解析 + 批量下载
 """
 
-import json
 import os
+import tempfile
+import zipfile
 from pathlib import Path
 
-from flask import Blueprint, request, jsonify, render_template, current_app
+from flask import Blueprint, request, jsonify, render_template, current_app, after_this_request
 from werkzeug.utils import secure_filename
 
-from app.database import get_db, DATABASE_PATH
+from app.database import get_db
+from app.routes import send_file_with_cache
 
 bp = Blueprint("algorithms", __name__, url_prefix="/algorithms")
 
@@ -47,6 +49,18 @@ def list_versions():
         "FROM algorithm_versions ORDER BY created_at DESC"
     )
     rows = [dict(r) for r in cur.fetchall()]
+    # 加载每个版本关联的数据集
+    for row in rows:
+        cur.execute(
+            """
+            SELECT d.id, d.name
+            FROM dataset_algorithm_versions dav
+            JOIN datasets d ON d.id = dav.dataset_id
+            WHERE dav.algorithm_version_id = ? AND dav.is_active = 1
+            """,
+            (row["id"],),
+        )
+        row["datasets"] = [dict(v) for v in cur.fetchall()]
     return jsonify(rows)
 
 
@@ -182,3 +196,137 @@ def delete_version(version_id):
     cur.execute("DELETE FROM algorithm_versions WHERE id = ?", (version_id,))
     db.commit()
     return jsonify({"ok": True})
+
+
+# ── 文件下载 ────────────────────────────────────────────────────────────────
+
+@bp.route("/api/download")
+def download_file():
+    """下载配置文件或算法文件"""
+    file_path_str = request.args.get("path", "")
+    if not file_path_str:
+        return jsonify({"error": "缺少 path 参数"}), 400
+
+    file_path = Path(file_path_str).resolve()
+    upload_dir = Path(current_app.config.get("UPLOAD_FOLDER", "uploads")).resolve()
+
+    # 安全检查：确保文件在 uploads 目录下
+    if not str(file_path).startswith(str(upload_dir)):
+        return jsonify({"error": "非法路径"}), 403
+
+    if not file_path.exists():
+        return jsonify({"error": "文件不存在"}), 404
+
+    return send_file_with_cache(str(file_path), as_attachment=True)
+
+
+@bp.route("/api/versions/<int:version_id>/detail")
+def version_detail(version_id):
+    """获取算法版本详情（含配置解析 + 关联数据集）"""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT id, algorithm_type, name, version_date, description, "
+        "config_file_path, algorithm_file_path, created_at "
+        "FROM algorithm_versions WHERE id = ?",
+        (version_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return jsonify({"error": "算法版本不存在"}), 404
+
+    version = dict(row)
+
+    # 关联数据集
+    cur.execute(
+        """
+        SELECT d.id, d.name
+        FROM dataset_algorithm_versions dav
+        JOIN datasets d ON d.id = dav.dataset_id
+        WHERE dav.algorithm_version_id = ? AND dav.is_active = 1
+        """,
+        (version_id,),
+    )
+    datasets = [dict(v) for v in cur.fetchall()]
+
+    # 配置解析
+    config_info = None
+    if version["config_file_path"]:
+        from app.services.config_parser import parse_config
+
+        config_info = parse_config(version["config_file_path"])
+
+    return jsonify({"version": version, "datasets": datasets, "config_info": config_info})
+
+
+@bp.route("/api/download-batch", methods=["POST"])
+def batch_download():
+    """批量下载算法文件（打包为 ZIP）
+
+    Body: {"ids": [1,2,3], "type": "config" | "algorithm" | "all"}
+    """
+    data = request.get_json() or {}
+    ids = data.get("ids", [])
+    dl_type = data.get("type", "all")
+
+    if not ids:
+        return jsonify({"error": "请选择要下载的版本"}), 400
+
+    db = get_db()
+    cur = db.cursor()
+    placeholders = ",".join("?" * len(ids))
+    cur.execute(
+        f"SELECT id, name, config_file_path, algorithm_file_path "
+        f"FROM algorithm_versions WHERE id IN ({placeholders})",
+        ids,
+    )
+    versions = [dict(r) for r in cur.fetchall()]
+
+    if not versions:
+        return jsonify({"error": "选中的版本不存在"}), 400
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
+    os.close(tmp_fd)
+
+    try:
+        added = 0
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for v in versions:
+                if dl_type in ("config", "all") and v.get("config_file_path"):
+                    cfg = Path(v["config_file_path"])
+                    if cfg.exists():
+                        arcname = f"{v['name']}_config{cfg.suffix}"
+                        zf.write(str(cfg), arcname)
+                        added += 1
+                if dl_type in ("algorithm", "all") and v.get("algorithm_file_path"):
+                    algo = Path(v["algorithm_file_path"])
+                    if algo.exists():
+                        arcname = f"{v['name']}_algo{algo.suffix}"
+                        zf.write(str(algo), arcname)
+                        added += 1
+
+        if added == 0:
+            os.unlink(tmp_path)
+            return jsonify({"error": "没有可下载的文件"}), 404
+
+        @after_this_request
+        def cleanup(response):
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            return response
+
+        type_label = {"config": "configs", "algorithm": "algorithms", "all": "all"}[dl_type]
+        return send_file_with_cache(
+            tmp_path,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=f"algorithms_{type_label}.zip",
+        )
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        return jsonify({"error": f"打包失败: {e}"}), 500

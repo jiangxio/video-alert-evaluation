@@ -7,6 +7,8 @@
   .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; }
   .page-header h2 { margin:0; }
 
+  .toolbar { display:flex; gap:0.6rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap; }
+
   .algo-type-tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.78rem; font-weight:600; }
   .type-rat    { background:#ffeaa7; color:#6c5ce7; }
   .type-smoke  { background:#dfe6e9; color:#2d3436; }
@@ -25,6 +27,8 @@
   .btn-danger:hover { background:#c0392b; }
   .btn-warning { background:#f39c12; color:white; }
   .btn-warning:hover { background:#d68910; }
+  .btn-info { background:#3498db; color:white; }
+  .btn-info:hover { background:#2980b9; }
 
   .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
   .modal-overlay.active { display:flex; }
@@ -37,14 +41,41 @@
   .form-group .hint { font-size:0.8rem; color:#888; margin-top:0.3rem; }
   .modal-actions { display:flex; gap:0.8rem; justify-content:flex-end; margin-top:1.5rem; }
 
+  /* 详情弹窗 */
+  .detail-modal { width:720px; }
+  .detail-section { margin-bottom:1.5rem; }
+  .detail-section h4 { margin:0 0 0.6rem; font-size:1rem; color:#2c3e50; border-bottom:1px solid #eee; padding-bottom:0.3rem; }
+  .detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+  .detail-card { background:#f8f9fa; border-radius:6px; padding:1rem; }
+  .detail-card h5 { margin:0 0 0.4rem; font-size:0.9rem; color:#666; }
+  .detail-card .value { font-size:1rem; font-weight:600; color:#2c3e50; }
+  .detail-card .value.empty { color:#999; font-weight:normal; font-style:italic; }
+  .detail-card .tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:4px; font-size:0.78rem; background:#3498db; color:white; margin-right:0.3rem; margin-bottom:0.2rem; }
+
+  .raw-preview { background:#f4f4f4; border-radius:4px; padding:1rem; font-family:monospace; font-size:0.85rem; overflow-x:auto; max-height:300px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+  .raw-preview.error { color:#e74c3c; background:#fdf2f2; }
+
+  .dataset-tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:4px; font-size:0.78rem; background:#27ae60; color:white; margin-right:0.3rem; margin-bottom:0.2rem; text-decoration:none; }
+  .dataset-tag:hover { background:#1e8449; }
+
   .empty-state { text-align:center; padding:3rem; color:#888; }
 
   .desc-text { font-size:0.85rem; color:#666; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  .name-link { color:#3498db; cursor:pointer; font-weight:500; }
+  .name-link:hover { text-decoration:underline; }
+
+  th .check-all { cursor:pointer; }
 </style>
 
 <div class="page-header">
   <h2>算法版本管理</h2>
   <button class="btn btn-success" onclick="openModal()">+ 新建算法版本</button>
+</div>
+
+<div class="toolbar">
+  <button class="btn btn-info btn-sm" id="batchDownloadBtn" onclick="openBatchDownloadModal()" disabled>批量下载</button>
+  <span id="selectedCount" style="font-size:0.85rem;color:#888;">已选择 0 项</span>
 </div>
 
 <div class="card">
@@ -53,7 +84,7 @@
   </div>
 </div>
 
-<!-- 弹窗 -->
+<!-- 新建/编辑弹窗 -->
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
     <h3 id="modalTitle">新建算法版本</h3>
@@ -112,16 +143,75 @@
   </div>
 </div>
 
+<!-- 详情弹窗 -->
+<div class="modal-overlay" id="detailModalOverlay">
+  <div class="modal detail-modal">
+    <h3 id="detailModalTitle">算法版本详情</h3>
+
+    <div class="detail-section">
+      <h4>配置关键信息</h4>
+      <div class="detail-grid" id="configSummaryGrid">
+        <div class="detail-card"><h5>格式</h5><div class="value empty" id="cfgFormat">—</div></div>
+        <div class="detail-card"><h5>置信度阈值</h5><div class="value empty" id="cfgConf">—</div></div>
+        <div class="detail-card"><h5>NMS 阈值</h5><div class="value empty" id="cfgNms">—</div></div>
+        <div class="detail-card"><h5>输入尺寸</h5><div class="value empty" id="cfgInput">—</div></div>
+        <div class="detail-card" style="grid-column:1/-1"><h5>类别列表</h5><div class="value empty" id="cfgClasses">—</div></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h4>原始内容预览</h4>
+      <pre class="raw-preview" id="rawPreview">加载中...</pre>
+    </div>
+
+    <div class="detail-section">
+      <h4>关联数据集</h4>
+      <div id="detailDatasets">无关联数据集</div>
+    </div>
+
+    <div class="detail-section" id="detailFileLinks" style="display:none;">
+      <h4>文件下载</h4>
+      <div id="detailFiles"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeDetailModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量下载弹窗 -->
+<div class="modal-overlay" id="batchModalOverlay">
+  <div class="modal">
+    <h3>批量下载</h3>
+    <p style="margin-bottom:1rem;">请选择要下载的文件类型：</p>
+    <div class="form-group">
+      <label><input type="radio" name="batchType" value="config" checked> 仅配置文件</label>
+      <label style="margin-top:0.4rem;"><input type="radio" name="batchType" value="algorithm"> 仅算法文件</label>
+      <label style="margin-top:0.4rem;"><input type="radio" name="batchType" value="all"> 全部文件</label>
+    </div>
+    <div id="batchError" class="message message-error hidden"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeBatchModal()">取消</button>
+      <button class="btn btn-success" id="batchConfirmBtn" onclick="doBatchDownload()">下载 ZIP</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const TYPE_NAMES = {
   rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话',
   chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰'
 };
 
+let versionData = [];
+let selectedIds = new Set();
+
 async function loadVersions() {
   try {
     const r = await fetch('/algorithms/api/versions');
     const data = await r.json();
+    versionData = data;
     renderVersions(data);
   } catch(e) {
     document.getElementById('versionList').innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
@@ -137,14 +227,16 @@ function renderVersions(list) {
   el.innerHTML = `
     <table>
       <thead><tr>
+        <th><input type="checkbox" class="check-all" onclick="toggleSelectAll(this)" title="全选"></th>
         <th>算法类型</th><th>算法名</th><th>日期</th>
-        <th>说明</th><th>文件</th><th>操作</th>
+        <th>说明</th><th>文件</th><th>数据集</th><th>操作</th>
       </tr></thead>
       <tbody>
         ${list.map(v => renderRow(v)).join('')}
       </tbody>
     </table>
   `;
+  updateToolbar();
 }
 
 function renderRow(v) {
@@ -153,20 +245,227 @@ function renderRow(v) {
   if (v.config_file_path) files.push('<a class="file-link" href="/algorithms/api/download?path=' + encodeURIComponent(v.config_file_path) + '" target="_blank">配置文件</a>');
   if (v.algorithm_file_path) files.push('<a class="file-link" href="/algorithms/api/download?path=' + encodeURIComponent(v.algorithm_file_path) + '" target="_blank">算法文件</a>');
 
+  const dsCount = v.datasets ? v.datasets.length : 0;
+  const dsText = dsCount > 0 ? `${dsCount}个数据集` : '—';
+  const checked = selectedIds.has(v.id) ? 'checked' : '';
+
   return `<tr>
+    <td><input type="checkbox" value="${v.id}" ${checked} onchange="onRowCheck(this)"></td>
     <td><span class="algo-type-tag type-${v.algorithm_type}">${escHtml(typeLabel)}</span></td>
-    <td>${escHtml(v.name)}</td>
+    <td><span class="name-link" onclick="openDetailModal(${v.id})">${escHtml(v.name)}</span></td>
     <td>${escHtml(v.version_date)}</td>
     <td><span class="desc-text" title="${escHtml(v.description || '')}">${escHtml(v.description || '—')}</span></td>
     <td>${files.join(' ') || '—'}</td>
+    <td>${escHtml(dsText)}</td>
     <td>
-      <button class="btn btn-warning btn-sm" onclick="editVersion(${v.id})" style="margin-right:0.4rem">编辑</button>
+      <button class="btn btn-info btn-sm" onclick="openDetailModal(${v.id})" style="margin-right:0.3rem">详情</button>
+      <button class="btn btn-warning btn-sm" onclick="editVersion(${v.id})" style="margin-right:0.3rem">编辑</button>
       <button class="btn btn-danger btn-sm" onclick="deleteVersion(${v.id})">删除</button>
     </td>
   </tr>`;
 }
 
-// ── 弹窗 ────────────────────────────────────────────────────────────────────
+// ── 勾选 / 批量选择 ─────────────────────────────────────────────────────────
+
+function onRowCheck(checkbox) {
+  const id = parseInt(checkbox.value);
+  if (checkbox.checked) {
+    selectedIds.add(id);
+  } else {
+    selectedIds.delete(id);
+  }
+  updateToolbar();
+  // 更新全选框状态
+  const allCheck = document.querySelector('.check-all');
+  if (allCheck) {
+    const visible = document.querySelectorAll('tbody input[type="checkbox"]');
+    const allChecked = visible.length > 0 && Array.from(visible).every(c => c.checked);
+    allCheck.checked = allChecked;
+    allCheck.indeterminate = !allChecked && Array.from(visible).some(c => c.checked);
+  }
+}
+
+function toggleSelectAll(checkbox) {
+  const visible = document.querySelectorAll('tbody input[type="checkbox"]');
+  visible.forEach(c => {
+    c.checked = checkbox.checked;
+    const id = parseInt(c.value);
+    if (checkbox.checked) {
+      selectedIds.add(id);
+    } else {
+      selectedIds.delete(id);
+    }
+  });
+  updateToolbar();
+}
+
+function updateToolbar() {
+  const count = selectedIds.size;
+  document.getElementById('selectedCount').textContent = `已选择 ${count} 项`;
+  document.getElementById('batchDownloadBtn').disabled = count === 0;
+}
+
+// ── 详情弹窗 ────────────────────────────────────────────────────────────────
+
+async function openDetailModal(versionId) {
+  const overlay = document.getElementById('detailModalOverlay');
+  overlay.classList.add('active');
+
+  // 重置状态
+  document.getElementById('detailModalTitle').textContent = '算法版本详情';
+  document.getElementById('cfgFormat').textContent = '—'; document.getElementById('cfgFormat').classList.add('empty');
+  document.getElementById('cfgConf').textContent = '—'; document.getElementById('cfgConf').classList.add('empty');
+  document.getElementById('cfgNms').textContent = '—'; document.getElementById('cfgNms').classList.add('empty');
+  document.getElementById('cfgInput').textContent = '—'; document.getElementById('cfgInput').classList.add('empty');
+  document.getElementById('cfgClasses').innerHTML = '<span class="value empty">—</span>';
+  document.getElementById('rawPreview').textContent = '加载中...';
+  document.getElementById('rawPreview').classList.remove('error');
+  document.getElementById('detailDatasets').textContent = '无关联数据集';
+  document.getElementById('detailFileLinks').style.display = 'none';
+  document.getElementById('detailFiles').innerHTML = '';
+
+  try {
+    const r = await fetch(`/algorithms/api/versions/${versionId}/detail`);
+    const data = await r.json();
+    if (!r.ok) {
+      document.getElementById('rawPreview').textContent = data.error || '加载失败';
+      document.getElementById('rawPreview').classList.add('error');
+      return;
+    }
+
+    const v = data.version;
+    document.getElementById('detailModalTitle').textContent = `${escHtml(v.name)} - 详情`;
+
+    // 配置信息
+    if (data.config_info) {
+      const ci = data.config_info;
+      if (ci.format) {
+        const el = document.getElementById('cfgFormat');
+        el.textContent = ci.format.toUpperCase();
+        el.classList.remove('empty');
+      }
+      if (ci.summary) {
+        const s = ci.summary;
+        if (s.confidence_threshold !== undefined) {
+          const el = document.getElementById('cfgConf');
+          el.textContent = s.confidence_threshold;
+          el.classList.remove('empty');
+        }
+        if (s.nms_threshold !== undefined) {
+          const el = document.getElementById('cfgNms');
+          el.textContent = s.nms_threshold;
+          el.classList.remove('empty');
+        }
+        if (s.input_size !== undefined) {
+          const el = document.getElementById('cfgInput');
+          el.textContent = Array.isArray(s.input_size) ? s.input_size.join(' x ') : String(s.input_size);
+          el.classList.remove('empty');
+        }
+        if (s.classes && (Array.isArray(s.classes) || typeof s.classes === 'object')) {
+          const classes = Array.isArray(s.classes) ? s.classes : Object.values(s.classes);
+          const tags = classes.map(c => `<span class="tag">${escHtml(String(c))}</span>`).join('');
+          document.getElementById('cfgClasses').innerHTML = tags || '<span class="value empty">—</span>';
+        }
+      }
+      if (ci.raw_content) {
+        document.getElementById('rawPreview').textContent = ci.raw_content;
+      } else {
+        document.getElementById('rawPreview').textContent = '（无原始内容）';
+      }
+      if (ci.parse_error) {
+        document.getElementById('rawPreview').textContent += '\n\n[解析错误] ' + ci.parse_error;
+        document.getElementById('rawPreview').classList.add('error');
+      }
+    } else {
+      document.getElementById('rawPreview').textContent = '（未上传配置文件）';
+    }
+
+    // 数据集
+    if (data.datasets && data.datasets.length > 0) {
+      const tags = data.datasets.map(d =>
+        `<a href="/alerts/#dataset-${d.id}" class="dataset-tag">${escHtml(d.name)}</a>`
+      ).join('');
+      document.getElementById('detailDatasets').innerHTML = tags;
+    }
+
+    // 文件下载
+    const fileLinks = [];
+    if (v.config_file_path) {
+      fileLinks.push(`<a class="btn btn-info btn-sm" href="/algorithms/api/download?path=${encodeURIComponent(v.config_file_path)}" target="_blank">下载配置文件</a>`);
+    }
+    if (v.algorithm_file_path) {
+      fileLinks.push(`<a class="btn btn-success btn-sm" href="/algorithms/api/download?path=${encodeURIComponent(v.algorithm_file_path)}" target="_blank">下载算法文件</a>`);
+    }
+    if (fileLinks.length > 0) {
+      document.getElementById('detailFiles').innerHTML = fileLinks.join(' ');
+      document.getElementById('detailFileLinks').style.display = 'block';
+    }
+
+  } catch(e) {
+    document.getElementById('rawPreview').textContent = '网络错误，加载详情失败';
+    document.getElementById('rawPreview').classList.add('error');
+  }
+}
+
+function closeDetailModal() {
+  document.getElementById('detailModalOverlay').classList.remove('active');
+}
+
+// ── 批量下载弹窗 ────────────────────────────────────────────────────────────
+
+function openBatchDownloadModal() {
+  if (selectedIds.size === 0) return;
+  document.getElementById('batchModalOverlay').classList.add('active');
+  document.getElementById('batchError').classList.add('hidden');
+}
+
+function closeBatchModal() {
+  document.getElementById('batchModalOverlay').classList.remove('active');
+}
+
+async function doBatchDownload() {
+  const type = document.querySelector('input[name="batchType"]:checked').value;
+  const btn = document.getElementById('batchConfirmBtn');
+  btn.disabled = true;
+
+  try {
+    const r = await fetch('/algorithms/api/download-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: Array.from(selectedIds), type: type })
+    });
+
+    if (!r.ok) {
+      const d = await r.json();
+      const errEl = document.getElementById('batchError');
+      errEl.textContent = d.error || '下载失败';
+      errEl.classList.remove('hidden');
+      btn.disabled = false;
+      return;
+    }
+
+    // 触发文件下载
+    const blob = await r.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `algorithms_${type}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+
+    closeBatchModal();
+  } catch(e) {
+    const errEl = document.getElementById('batchError');
+    errEl.textContent = '网络错误，请重试';
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── 新建/编辑弹窗 ──────────────────────────────────────────────────────────
 
 function openModal() {
   document.getElementById('modalTitle').textContent = '新建算法版本';
@@ -175,7 +474,6 @@ function openModal() {
   document.getElementById('configFileHint').textContent = '';
   document.getElementById('algoFileHint').textContent = '';
   document.getElementById('modalError').classList.add('hidden');
-  // 新建时默认日期为今天
   const today = new Date().toISOString().split('T')[0];
   document.getElementById('algoDate').value = today;
   document.getElementById('modalOverlay').classList.add('active');
@@ -255,6 +553,7 @@ async function deleteVersion(id) {
     const r = await fetch(`/algorithms/api/versions/${id}`, { method: 'DELETE' });
     const d = await r.json();
     if (!r.ok) { alert(d.error || '删除失败'); return; }
+    selectedIds.delete(id);
     await loadVersions();
   } catch(e) {
     alert('网络错误');
@@ -278,17 +577,14 @@ document.getElementById('algoFile').addEventListener('change', function(e) {
 
   const baseName = file.name.replace(/\.[^/.]+$/, '');
 
-  // 自动填充算法名
   const nameInput = document.getElementById('algoName');
   if (!nameInput.value.trim()) {
     nameInput.value = baseName;
   }
 
-  // 自动识别算法类型（从文件名匹配）
   const typeInput = document.getElementById('algoType');
   if (!typeInput.value) {
     const lowerName = baseName.toLowerCase();
-    // 按优先级排序：长的先匹配，避免 phone 同时匹配 use_phone 和 call_phone
     const TYPE_KEYWORDS = [
       'use_phone', 'call_phone', 'smoke', 'flame', 'rat', 'chef', 'trash', 'mask'
     ];
@@ -301,8 +597,15 @@ document.getElementById('algoFile').addEventListener('change', function(e) {
   }
 });
 
+// 弹窗外部点击关闭
 document.getElementById('modalOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
+});
+document.getElementById('detailModalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeDetailModal();
+});
+document.getElementById('batchModalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeBatchModal();
 });
 
 loadVersions();

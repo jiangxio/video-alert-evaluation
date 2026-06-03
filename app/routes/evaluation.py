@@ -58,7 +58,9 @@ def eval_task_page(task_id):
     task = cursor.fetchone()
     if not task:
         return '任务不存在', 404
-    return render_template('eval_task.html', task=dict(task))
+    task_dict = dict(task)
+    _enrich_task_algo_versions(task_dict, db)
+    return render_template('eval_task.html', task=task_dict)
 
 
 @bp.route('/<int:task_id>/report-config')
@@ -133,6 +135,7 @@ def list_tasks():
             cursor.execute('SELECT name FROM eval_video_sets WHERE id = ?', (t['eval_set_id'],))
             d = cursor.fetchone()
             t['eval_set_name'] = d['name'] if d else None
+        _enrich_task_algo_versions(t, db)
     return jsonify(tasks)
 
 
@@ -224,7 +227,9 @@ def get_task(task_id):
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
-    return jsonify(dict(task))
+    task_dict = dict(task)
+    _enrich_task_algo_versions(task_dict, db)
+    return jsonify(task_dict)
 
 
 @bp.route('/api/tasks/<int:task_id>', methods=['PUT'])
@@ -372,6 +377,47 @@ def confirm_merged(task_id):
     return jsonify({'success': True})
 
 
+def _get_dataset_algorithm_versions(db, dataset_id):
+    """获取数据集当前启用的算法版本"""
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT av.id, av.algorithm_type, av.name, av.version_date
+        FROM dataset_algorithm_versions dav
+        JOIN algorithm_versions av ON dav.algorithm_version_id = av.id
+        WHERE dav.dataset_id = ? AND dav.is_active = 1
+        ORDER BY av.algorithm_type
+    ''', (dataset_id,))
+    return [dict(v) for v in cursor.fetchall()]
+
+
+def _validate_dataset_algorithm_versions(db, dataset_id):
+    """校验数据集关联的算法版本：每种类型最多一个，返回 (ok, error_msg, versions)"""
+    versions = _get_dataset_algorithm_versions(db, dataset_id)
+    type_map = {}
+    for v in versions:
+        t = v['algorithm_type']
+        if t in type_map:
+            return False, f"数据集关联了多个 '{t}' 类型的算法版本（{type_map[t]['name']} 和 {v['name']}），每种类型只能选一个", versions
+        type_map[t] = v
+    return True, None, versions
+
+
+def _enrich_task_algo_versions(task_dict, db):
+    """将 eval_tasks 的 algorithm_versions JSON 解析后注入 task_dict"""
+    raw = task_dict.get('algorithm_versions')
+    if raw and isinstance(raw, str):
+        try:
+            task_dict['algorithm_versions'] = json.loads(raw)
+        except Exception:
+            task_dict['algorithm_versions'] = []
+    elif task_dict.get('dataset_id'):
+        # 如果没有快照，尝试从数据集实时获取
+        task_dict['algorithm_versions'] = _get_dataset_algorithm_versions(db, task_dict['dataset_id'])
+    else:
+        task_dict['algorithm_versions'] = []
+    return task_dict
+
+
 @bp.route('/api/tasks/<int:task_id>/execute', methods=['POST'])
 def execute_task(task_id):
     """执行评测（后台线程）"""
@@ -381,6 +427,19 @@ def execute_task(task_id):
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
+
+    # ── 校验数据集关联的算法版本 ────────────────────────────────────────────
+    dataset_id = task['dataset_id']
+    if dataset_id:
+        ok, err, algo_versions = _validate_dataset_algorithm_versions(db, dataset_id)
+        if not ok:
+            return jsonify({'error': err}), 400
+        # 将算法版本快照写入 eval_tasks
+        cursor.execute(
+            'UPDATE eval_tasks SET algorithm_versions = ? WHERE id = ?',
+            (json.dumps(algo_versions, ensure_ascii=False) if algo_versions else None, task_id)
+        )
+        db.commit()
 
     with _eval_lock:
         if _eval_progress.get(task_id, {}).get('running'):

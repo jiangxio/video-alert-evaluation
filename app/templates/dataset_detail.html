@@ -97,6 +97,17 @@
   <div class="ds-notes">{{ dataset.notes }}</div>
   {% endif %}
 
+  <!-- 算法版本管理 -->
+  <div id="algo-version-section" style="background:#f0f7ff;border-left:4px solid #3498db;border-radius:6px;padding:0.8rem 1rem;margin:1rem 0;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <strong style="color:#2c3e50;">🤖 关联算法版本</strong>
+      <button class="btn btn-sm" onclick="openAlgoVersionModal()" style="background:#3498db;color:white;border:none;">编辑</button>
+    </div>
+    <div id="algo-version-list" style="margin-top:0.5rem;font-size:0.88rem;color:#555;">
+      加载中...
+    </div>
+  </div>
+
   <div class="upload-area" id="upload-area">
     <p>拖拽图片到这里，或 <strong>点击选择文件</strong>（支持多选）</p>
     <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.bmp" multiple class="hidden">
@@ -714,6 +725,112 @@ function escHtml(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── 算法版本管理 ──────────────────────────────────────────────────────────────
+
+async function loadAlgoVersions() {
+  try {
+    const r = await fetch(`/alerts/api/datasets/${DATASET_ID}/algorithm-versions`);
+    const list = await r.json();
+    const el = document.getElementById('algo-version-list');
+    if (!list.length) {
+      el.innerHTML = '<span style="color:#888;">未关联算法版本</span>';
+      return;
+    }
+    const TYPE_NAMES = { rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话', chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰' };
+    el.innerHTML = list.map(v =>
+      `<span style="display:inline-block;background:#e8f4fd;color:#2980b9;padding:0.15rem 0.5rem;border-radius:10px;font-size:0.78rem;margin:0.15rem 0.3rem 0.15rem 0;">
+        ${TYPE_NAMES[v.algorithm_type] || v.algorithm_type}: ${escHtml(v.name)} (${v.version_date})
+       </span>`
+    ).join('');
+  } catch(e) {
+    document.getElementById('algo-version-list').innerHTML = '<span style="color:#e74c3c;">加载失败</span>';
+  }
+}
+
+async function openAlgoVersionModal() {
+  // 获取所有可用算法版本
+  const [versionsR, currentR] = await Promise.all([
+    fetch('/algorithms/api/versions'),
+    fetch(`/alerts/api/datasets/${DATASET_ID}/algorithm-versions`)
+  ]);
+  const allVersions = await versionsR.json();
+  const currentIds = (await currentR.json()).map(v => v.id);
+
+  const TYPE_NAMES = { rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话', chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰' };
+
+  // 按类型分组
+  const byType = {};
+  for (const v of allVersions) {
+    byType[v.algorithm_type] = byType[v.algorithm_type] || [];
+    byType[v.algorithm_type].push(v);
+  }
+
+  const html = Object.entries(byType).map(([type, vers]) => {
+    const typeName = TYPE_NAMES[type] || type;
+    const options = vers.map(v => {
+      const selected = currentIds.includes(v.id) ? 'selected' : '';
+      return `<option value="${v.id}" ${selected}>${escHtml(v.name)} (${v.version_date})</option>`;
+    }).join('');
+    return `
+      <div style="margin-bottom:0.8rem;">
+        <label style="font-weight:600;font-size:0.9rem;color:#2c3e50;display:block;margin-bottom:0.3rem;">${typeName}</label>
+        <select class="algo-version-select" data-type="${type}" style="width:100%;padding:0.4rem;border:1px solid #ddd;border-radius:4px;">
+          <option value="">-- 不选择 --</option>
+          ${options}
+        </select>
+      </div>`;
+  }).join('');
+
+  document.getElementById('algo-version-modal-body').innerHTML = html || '<p style="color:#888;">暂无可用算法版本，请先前往算法管理页面创建</p>';
+  document.getElementById('algo-version-modal-error').classList.add('hidden');
+  document.getElementById('algo-version-modal').classList.add('open');
+}
+
+function closeAlgoVersionModal() {
+  document.getElementById('algo-version-modal').classList.remove('open');
+}
+
+async function saveAlgoVersions() {
+  const selects = document.querySelectorAll('.algo-version-select');
+  const selectedIds = [];
+  const typeCounts = {};
+  for (const sel of selects) {
+    const id = parseInt(sel.value);
+    if (id) {
+      selectedIds.push(id);
+      const type = sel.dataset.type;
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    }
+  }
+  // 校验每种类型最多选一个
+  for (const [type, count] of Object.entries(typeCounts)) {
+    if (count > 1) {
+      document.getElementById('algo-version-modal-error').textContent = `算法类型 "${type}" 选择了多个版本，每种类型只能选一个`;
+      document.getElementById('algo-version-modal-error').classList.remove('hidden');
+      return;
+    }
+  }
+
+  try {
+    const r = await fetch(`/alerts/api/datasets/${DATASET_ID}/algorithm-versions`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ algorithm_version_ids: selectedIds })
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      document.getElementById('algo-version-modal-error').textContent = d.error || '保存失败';
+      document.getElementById('algo-version-modal-error').classList.remove('hidden');
+      return;
+    }
+    closeAlgoVersionModal();
+    await loadAlgoVersions();
+  } catch(e) {
+    document.getElementById('algo-version-modal-error').textContent = '网络错误';
+    document.getElementById('algo-version-modal-error').classList.remove('hidden');
+  }
+}
+
 // 初始化：先加载事件类型配置，再加载图片
 async function init() {
   const res = await fetch('/alerts/api/event-types');
@@ -750,8 +867,23 @@ async function init() {
 
   await loadImages();
   await loadImageLogs();
+  await loadAlgoVersions();
 }
 
 init();
 </script>
+
+<!-- 算法版本选择弹窗 -->
+<div class="modal-bg" id="algo-version-modal">
+  <div class="modal-box" style="width:480px;">
+    <h3>选择算法版本</h3>
+    <p style="font-size:0.85rem;color:#888;margin-bottom:1rem;">每种算法类型最多选择一个版本</p>
+    <div id="algo-version-modal-body"></div>
+    <div id="algo-version-modal-error" class="message message-error hidden" style="margin-top:0.8rem;"></div>
+    <div class="modal-actions" style="margin-top:1.5rem;">
+      <button class="btn btn-secondary" onclick="closeAlgoVersionModal()">取消</button>
+      <button class="btn btn-success" onclick="saveAlgoVersions()">保存</button>
+    </div>
+  </div>
+</div>
 {% endblock %}

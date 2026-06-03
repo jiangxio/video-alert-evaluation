@@ -84,8 +84,18 @@ def list_datasets():
         GROUP BY d.id
         ORDER BY d.created_at DESC
     ''')
-    rows = cursor.fetchall()
-    return jsonify([dict(r) for r in rows])
+    rows = [dict(r) for r in cursor.fetchall()]
+    # 加载每个数据集关联的算法版本
+    for row in rows:
+        cursor.execute('''
+            SELECT av.id, av.algorithm_type, av.name, av.version_date
+            FROM dataset_algorithm_versions dav
+            JOIN algorithm_versions av ON dav.algorithm_version_id = av.id
+            WHERE dav.dataset_id = ? AND dav.is_active = 1
+            ORDER BY av.algorithm_type
+        ''', (row['id'],))
+        row['algorithm_versions'] = [dict(v) for v in cursor.fetchall()]
+    return jsonify(rows)
 
 
 @bp.route('/api/datasets', methods=['POST'])
@@ -93,6 +103,7 @@ def create_dataset():
     data = request.get_json() or {}
     name = data.get('name', '').strip()
     notes = data.get('notes', '').strip()
+    algorithm_version_ids = data.get('algorithm_version_ids', [])
     if not name:
         return jsonify({'error': '数据集名称不能为空'}), 400
 
@@ -102,10 +113,93 @@ def create_dataset():
     db.commit()
     dataset_id = cursor.lastrowid
 
+    # 关联算法版本
+    if algorithm_version_ids:
+        _set_dataset_algorithm_versions(db, dataset_id, algorithm_version_ids)
+
     cursor.execute('SELECT id, name, notes, created_at FROM datasets WHERE id = ?', (dataset_id,))
     row = dict(cursor.fetchone())
     row['image_count'] = 0
     return jsonify({'success': True, 'dataset': row})
+
+
+def _set_dataset_algorithm_versions(db, dataset_id, algorithm_version_ids):
+    """设置数据集关联的算法版本（先禁用旧的，再添加新的）"""
+    cursor = db.cursor()
+    # 1. 标记旧记录为历史
+    cursor.execute(
+        'UPDATE dataset_algorithm_versions SET is_active = 0 WHERE dataset_id = ?',
+        (dataset_id,)
+    )
+    # 2. 添加新记录
+    for vid in algorithm_version_ids:
+        cursor.execute(
+            'INSERT INTO dataset_algorithm_versions (dataset_id, algorithm_version_id, is_active) VALUES (?, ?, 1)',
+            (dataset_id, int(vid))
+        )
+    db.commit()
+
+
+def _get_dataset_algorithm_versions(db, dataset_id):
+    """获取数据集当前启用的算法版本"""
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT av.id, av.algorithm_type, av.name, av.version_date
+        FROM dataset_algorithm_versions dav
+        JOIN algorithm_versions av ON dav.algorithm_version_id = av.id
+        WHERE dav.dataset_id = ? AND dav.is_active = 1
+        ORDER BY av.algorithm_type
+    ''', (dataset_id,))
+    return [dict(v) for v in cursor.fetchall()]
+
+
+def _validate_algorithm_versions(db, algorithm_version_ids):
+    """校验算法版本：每种类型只能选一个，返回 (ok, error_msg)"""
+    if not algorithm_version_ids:
+        return True, None
+    cursor = db.cursor()
+    placeholders = ','.join('?' * len(algorithm_version_ids))
+    cursor.execute(
+        f'SELECT id, algorithm_type FROM algorithm_versions WHERE id IN ({placeholders})',
+        algorithm_version_ids
+    )
+    type_map = {}
+    for row in cursor.fetchall():
+        t = row['algorithm_type']
+        if t in type_map:
+            return False, f"算法类型 '{t}' 选择了多个版本（ID {type_map[t]} 和 {row['id']}），每种类型只能选一个"
+        type_map[t] = row['id']
+    return True, None
+
+
+@bp.route('/api/datasets/<int:dataset_id>/algorithm-versions', methods=['GET'])
+def get_dataset_algorithm_versions(dataset_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '数据集不存在'}), 404
+    return jsonify(_get_dataset_algorithm_versions(db, dataset_id))
+
+
+@bp.route('/api/datasets/<int:dataset_id>/algorithm-versions', methods=['POST'])
+def set_dataset_algorithm_versions(dataset_id):
+    data = request.get_json() or {}
+    algorithm_version_ids = data.get('algorithm_version_ids', [])
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '数据集不存在'}), 404
+
+    # 校验
+    ok, err = _validate_algorithm_versions(db, algorithm_version_ids)
+    if not ok:
+        return jsonify({'error': err}), 400
+
+    _set_dataset_algorithm_versions(db, dataset_id, algorithm_version_ids)
+    return jsonify({'success': True, 'algorithm_versions': _get_dataset_algorithm_versions(db, dataset_id)})
 
 
 @bp.route('/api/datasets/<int:dataset_id>', methods=['DELETE'])

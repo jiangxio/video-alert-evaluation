@@ -457,6 +457,37 @@ def init_db():
         )
     ''')
 
+    # 算法版本表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS algorithm_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            algorithm_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            version_date TEXT NOT NULL,
+            description TEXT,
+            config_file_path TEXT,
+            algorithm_file_path TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 数据集算法版本关联表（带历史记录）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS dataset_algorithm_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset_id INTEGER NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+            algorithm_version_id INTEGER NOT NULL REFERENCES algorithm_versions(id) ON DELETE CASCADE,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 为 eval_tasks 追加 algorithm_versions 字段（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE eval_tasks ADD COLUMN algorithm_versions TEXT')
+    except Exception:
+        pass  # 列已存在
+
     # 常用查询索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_alert_image ON ocr_results(alert_image_id)')

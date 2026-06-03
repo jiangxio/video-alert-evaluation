@@ -689,6 +689,17 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
     def _has(m):
         return m in modules
 
+    # 算法版本信息
+    algo_versions = task.get('algorithm_versions')
+    algo_version_html = ''
+    if algo_versions:
+        TYPE_NAMES = {'rat':'老鼠','smoke':'抽烟','use_phone':'玩手机','call_phone':'打电话','chef':'厨师服','trash':'垃圾','mask':'帽子/口罩','flame':'火焰'}
+        algo_tags = ' '.join([
+            f'<span style="display:inline-block;background:#e8f4fd;color:#2980b9;padding:0.15rem 0.5rem;border-radius:10px;font-size:0.85rem;margin:0.15rem 0.3rem 0.15rem 0;">{TYPE_NAMES.get(v["algorithm_type"], v["algorithm_type"])}: {v["name"]} ({v["version_date"]})</span>'
+            for v in algo_versions
+        ])
+        algo_version_html = f'<p><strong>算法版本：</strong>{algo_tags}</p>'
+
     # 封面
     cover_html = ''
     if _has('cover'):
@@ -702,6 +713,7 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
           <p><strong>任务名称：</strong>{task_name}</p>
           {bg_block}
           <p><strong>报告时间：</strong>{eval_time}</p>
+          {algo_version_html}
           <p><strong>评测参数：</strong>合并间隔 {task.get('merge_interval_sec', '-')}s / 事件间隔 {task.get('event_interval_sec', '-')}s / 容差 ±5s / 触发率 {task.get('trigger_rate', '-')}</p>
         </div>
       </div>

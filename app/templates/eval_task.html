@@ -176,6 +176,12 @@
     <span id="status-badge" style="font-size:0.9rem;"></span>
   </div>
 
+  <!-- 算法版本信息 -->
+  <div id="algo-version-info" style="background:#f0f7ff;border-left:4px solid #3498db;border-radius:6px;padding:0.6rem 1rem;margin-bottom:1rem;font-size:0.88rem;display:none;">
+    <strong style="color:#2c3e50;">🤖 算法版本：</strong>
+    <span id="algo-version-tags"></span>
+  </div>
+
   <div class="stage-tabs">
     <div class="stage-tab" id="tab-params" onclick="goToStage('params')">1. 参数设置</div>
     <div class="stage-tab" id="tab-confirm" onclick="goToStage('confirm')">2. 二次确认</div>
@@ -462,6 +468,24 @@ function updateStatusBadge() {
   const badge = document.getElementById('status-badge');
   badge.textContent = text;
   badge.style.color = (status === 'done' || status === 'finalized') ? '#27ae60' : status === 'evaluating' ? '#9b59b6' : '#3498db';
+}
+
+// ── 算法版本展示 ──────────────────────────────────────────────────────────────
+function renderAlgoVersions() {
+  const algoVersions = {{ task.algorithm_versions | tojson | safe }};
+  const container = document.getElementById('algo-version-info');
+  const tagsEl = document.getElementById('algo-version-tags');
+  if (!algoVersions || !algoVersions.length) {
+    container.style.display = 'none';
+    return;
+  }
+  const TYPE_NAMES = { rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话', chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰' };
+  tagsEl.innerHTML = algoVersions.map(v =>
+    `<span style="display:inline-block;background:#e8f4fd;color:#2980b9;padding:0.15rem 0.5rem;border-radius:10px;font-size:0.78rem;margin:0.15rem 0.3rem 0.15rem 0;">
+      ${TYPE_NAMES[v.algorithm_type] || v.algorithm_type}: ${escHtml(v.name)} (${v.version_date})
+     </span>`
+  ).join('');
+  container.style.display = 'block';
 }
 
 // ── 阶段切换 ──────────────────────────────────────────────────────────────────
@@ -1609,6 +1633,7 @@ async function doUnconfirm() {
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 updateStatusBadge();
+renderAlgoVersions();
 const isFinalized = {{ 'true' if task.finalized else 'false' }};
 const initStatus = '{{ task.status }}';
 

@@ -75,6 +75,21 @@
   <div class="config-panel">
     <div class="card">
       <h3>基本信息</h3>
+      <!-- 算法版本 -->
+      {% if task.algorithm_versions %}
+      <div style="margin-bottom:1rem;padding:0.6rem;background:#f0f7ff;border-radius:4px;">
+        <div style="font-size:0.85rem;color:#555;margin-bottom:0.3rem;"><strong>🤖 算法版本</strong></div>
+        <div>
+          {% set TYPE_NAMES = {'rat':'老鼠','smoke':'抽烟','use_phone':'玩手机','call_phone':'打电话','chef':'厨师服','trash':'垃圾','mask':'帽子/口罩','flame':'火焰'} %}
+          {% for v in task.algorithm_versions %}
+            <span style="display:inline-block;background:#e8f4fd;color:#2980b9;padding:0.15rem 0.5rem;border-radius:10px;font-size:0.78rem;margin:0.15rem 0.3rem 0.15rem 0;">
+              {{ TYPE_NAMES.get(v.algorithm_type, v.algorithm_type) }}: {{ v.name }} ({{ v.version_date }})
+            </span>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
       <div class="form-group">
         <label>项目名称</label>
         <input type="text" id="projectName" value="{{ task.name }}">
@@ -92,7 +107,7 @@
         <input type="text" id="apiBaseUrl" placeholder="https://api.anthropic.com">
       </div>
       <div class="form-group">
-        <label>Claude API Key（留空则读取环境变量 ANTHROPIC_API_KEY）</label>
+        <label>Claude API Key（留空则读取环境变量 ANTHROPIC_API_TOKEN）</label>
         <input type="password" id="apiKey" placeholder="sk-...">
       </div>
       <div style="background:#e8f5e9;border:1px solid #81c784;border-radius:4px;padding:0.6rem 0.8rem;font-size:0.82rem;color:#2e7d32;margin-top:0.5rem;">

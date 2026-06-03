@@ -1,0 +1,310 @@
+{% extends "base.html" %}
+
+{% block title %}算法版本管理{% endblock %}
+
+{% block content %}
+<style>
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; }
+  .page-header h2 { margin:0; }
+
+  .algo-type-tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.78rem; font-weight:600; }
+  .type-rat    { background:#ffeaa7; color:#6c5ce7; }
+  .type-smoke  { background:#dfe6e9; color:#2d3436; }
+  .type-use_phone { background:#74b9ff; color:#0984e3; }
+  .type-call_phone { background:#a29bfe; color:#6c5ce7; }
+  .type-chef   { background:#fd79a8; color:#e84393; }
+  .type-trash  { background:#55efc4; color:#00b894; }
+  .type-mask   { background:#fab1a0; color:#d63031; }
+  .type-flame  { background:#ff7675; color:#d63031; }
+
+  .file-link { font-size:0.8rem; color:#3498db; text-decoration:none; }
+  .file-link:hover { text-decoration:underline; }
+
+  .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
+  .btn-warning { background:#f39c12; color:white; }
+  .btn-warning:hover { background:#d68910; }
+
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
+  .modal-overlay.active { display:flex; }
+  .modal { background:white; border-radius:8px; padding:2rem; width:520px; max-width:95vw; max-height:90vh; overflow-y:auto; }
+  .modal h3 { margin:0 0 1.5rem; }
+  .form-group { margin-bottom:1.2rem; }
+  .form-group label { display:block; font-weight:600; margin-bottom:0.4rem; font-size:0.9rem; }
+  .form-group input, .form-group select, .form-group textarea { width:100%; padding:0.5rem 0.7rem; border:1px solid #ddd; border-radius:4px; font-size:0.95rem; }
+  .form-group textarea { resize:vertical; min-height:80px; }
+  .form-group .hint { font-size:0.8rem; color:#888; margin-top:0.3rem; }
+  .modal-actions { display:flex; gap:0.8rem; justify-content:flex-end; margin-top:1.5rem; }
+
+  .empty-state { text-align:center; padding:3rem; color:#888; }
+
+  .desc-text { font-size:0.85rem; color:#666; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+</style>
+
+<div class="page-header">
+  <h2>算法版本管理</h2>
+  <button class="btn btn-success" onclick="openModal()">+ 新建算法版本</button>
+</div>
+
+<div class="card">
+  <div id="versionList">
+    <div class="empty-state"><div class="loading"></div><p>加载中...</p></div>
+  </div>
+</div>
+
+<!-- 弹窗 -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3 id="modalTitle">新建算法版本</h3>
+    <input type="hidden" id="editingId" value="">
+
+    <form id="versionForm" enctype="multipart/form-data">
+      <div class="form-group">
+        <label>算法类型 *</label>
+        <select id="algoType" required>
+          <option value="">-- 请选择 --</option>
+          <option value="rat">老鼠 (rat)</option>
+          <option value="smoke">抽烟 (smoke)</option>
+          <option value="use_phone">玩手机 (use_phone)</option>
+          <option value="call_phone">打电话 (call_phone)</option>
+          <option value="chef">厨师服 (chef)</option>
+          <option value="trash">垃圾 (trash)</option>
+          <option value="mask">帽子/口罩 (mask)</option>
+          <option value="flame">火焰 (flame)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>算法名 *</label>
+        <input type="text" id="algoName" placeholder="如 YOLOv8-rat-v1" required>
+      </div>
+
+      <div class="form-group">
+        <label>算法日期 *</label>
+        <input type="date" id="algoDate" required>
+      </div>
+
+      <div class="form-group">
+        <label>算法说明</label>
+        <textarea id="algoDesc" placeholder="算法描述、版本说明等"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label>配置文件</label>
+        <input type="file" id="configFile" accept=".json,.yaml,.yml,.xml,.txt">
+        <div class="hint" id="configFileHint"></div>
+      </div>
+
+      <div class="form-group">
+        <label>算法文件</label>
+        <input type="file" id="algoFile" accept=".py,.onnx,.pt,.pth,.rknn,.so,.dll">
+        <div class="hint" id="algoFileHint"></div>
+      </div>
+    </form>
+
+    <div id="modalError" class="message message-error hidden"></div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button class="btn btn-success" id="saveBtn" onclick="saveVersion()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const TYPE_NAMES = {
+  rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话',
+  chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰'
+};
+
+async function loadVersions() {
+  try {
+    const r = await fetch('/algorithms/api/versions');
+    const data = await r.json();
+    renderVersions(data);
+  } catch(e) {
+    document.getElementById('versionList').innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
+  }
+}
+
+function renderVersions(list) {
+  const el = document.getElementById('versionList');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty-state"><p>暂无算法版本，点击右上角新建</p></div>';
+    return;
+  }
+  el.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>算法类型</th><th>算法名</th><th>日期</th>
+        <th>说明</th><th>文件</th><th>操作</th>
+      </tr></thead>
+      <tbody>
+        ${list.map(v => renderRow(v)).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderRow(v) {
+  const typeLabel = TYPE_NAMES[v.algorithm_type] || v.algorithm_type;
+  const files = [];
+  if (v.config_file_path) files.push('<a class="file-link" href="/algorithms/api/download?path=' + encodeURIComponent(v.config_file_path) + '" target="_blank">配置文件</a>');
+  if (v.algorithm_file_path) files.push('<a class="file-link" href="/algorithms/api/download?path=' + encodeURIComponent(v.algorithm_file_path) + '" target="_blank">算法文件</a>');
+
+  return `<tr>
+    <td><span class="algo-type-tag type-${v.algorithm_type}">${escHtml(typeLabel)}</span></td>
+    <td>${escHtml(v.name)}</td>
+    <td>${escHtml(v.version_date)}</td>
+    <td><span class="desc-text" title="${escHtml(v.description || '')}">${escHtml(v.description || '—')}</span></td>
+    <td>${files.join(' ') || '—'}</td>
+    <td>
+      <button class="btn btn-warning btn-sm" onclick="editVersion(${v.id})" style="margin-right:0.4rem">编辑</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteVersion(${v.id})">删除</button>
+    </td>
+  </tr>`;
+}
+
+// ── 弹窗 ────────────────────────────────────────────────────────────────────
+
+function openModal() {
+  document.getElementById('modalTitle').textContent = '新建算法版本';
+  document.getElementById('editingId').value = '';
+  document.getElementById('versionForm').reset();
+  document.getElementById('configFileHint').textContent = '';
+  document.getElementById('algoFileHint').textContent = '';
+  document.getElementById('modalError').classList.add('hidden');
+  // 新建时默认日期为今天
+  const today = new Date().toISOString().split('T')[0];
+  document.getElementById('algoDate').value = today;
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+async function editVersion(id) {
+  try {
+    const r = await fetch('/algorithms/api/versions');
+    const list = await r.json();
+    const v = list.find(x => x.id === id);
+    if (!v) { alert('算法版本不存在'); return; }
+
+    document.getElementById('modalTitle').textContent = '编辑算法版本';
+    document.getElementById('editingId').value = id;
+    document.getElementById('algoType').value = v.algorithm_type;
+    document.getElementById('algoName').value = v.name;
+    document.getElementById('algoDate').value = v.version_date;
+    document.getElementById('algoDesc').value = v.description || '';
+    document.getElementById('configFileHint').textContent = v.config_file_path ? '已上传: ' + v.config_file_path.split('/').pop() : '';
+    document.getElementById('algoFileHint').textContent = v.algorithm_file_path ? '已上传: ' + v.algorithm_file_path.split('/').pop() : '';
+    document.getElementById('modalError').classList.add('hidden');
+    document.getElementById('modalOverlay').classList.add('active');
+  } catch(e) {
+    alert('加载失败');
+  }
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+}
+
+async function saveVersion() {
+  const id = document.getElementById('editingId').value;
+  const type = document.getElementById('algoType').value;
+  const name = document.getElementById('algoName').value.trim();
+  const date = document.getElementById('algoDate').value;
+  const desc = document.getElementById('algoDesc').value.trim();
+  const configFile = document.getElementById('configFile').files[0];
+  const algoFile = document.getElementById('algoFile').files[0];
+
+  const errEl = document.getElementById('modalError');
+  errEl.classList.add('hidden');
+
+  if (!type) { showError('请选择算法类型'); return; }
+  if (!name) { showError('请填写算法名'); return; }
+  if (!date) { showError('请填写算法日期'); return; }
+
+  const formData = new FormData();
+  formData.append('algorithm_type', type);
+  formData.append('name', name);
+  formData.append('version_date', date);
+  formData.append('description', desc);
+  if (configFile) formData.append('config_file', configFile);
+  if (algoFile) formData.append('algorithm_file', algoFile);
+
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+
+  try {
+    const url = id ? `/algorithms/api/versions/${id}` : '/algorithms/api/versions';
+    const method = id ? 'PATCH' : 'POST';
+    const r = await fetch(url, { method, body: formData });
+    const d = await r.json();
+    if (!r.ok) { showError(d.error || '保存失败'); return; }
+    closeModal();
+    await loadVersions();
+  } catch(e) {
+    showError('网络错误，请重试');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteVersion(id) {
+  if (!confirm('确认删除此算法版本？')) return;
+  try {
+    const r = await fetch(`/algorithms/api/versions/${id}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) { alert(d.error || '删除失败'); return; }
+    await loadVersions();
+  } catch(e) {
+    alert('网络错误');
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById('modalError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// 上传算法文件时自动填充算法名和算法类型
+document.getElementById('algoFile').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+  // 自动填充算法名
+  const nameInput = document.getElementById('algoName');
+  if (!nameInput.value.trim()) {
+    nameInput.value = baseName;
+  }
+
+  // 自动识别算法类型（从文件名匹配）
+  const typeInput = document.getElementById('algoType');
+  if (!typeInput.value) {
+    const lowerName = baseName.toLowerCase();
+    // 按优先级排序：长的先匹配，避免 phone 同时匹配 use_phone 和 call_phone
+    const TYPE_KEYWORDS = [
+      'use_phone', 'call_phone', 'smoke', 'flame', 'rat', 'chef', 'trash', 'mask'
+    ];
+    for (const kw of TYPE_KEYWORDS) {
+      if (lowerName.includes(kw)) {
+        typeInput.value = kw;
+        break;
+      }
+    }
+  }
+});
+
+document.getElementById('modalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+loadVersions();
+</script>
+{% endblock %}

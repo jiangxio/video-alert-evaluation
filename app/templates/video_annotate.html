@@ -291,13 +291,25 @@
 
     <!-- 事件列表 -->
     <div class="panel-section">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;flex-wrap:wrap;gap:0.5rem;">
         <div class="panel-title" style="margin-bottom:0;">事件标注</div>
-        <div style="display:flex;gap:0.5rem;">
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+          <select id="eventFilter" onchange="renderEvents()" style="padding:0.3rem 0.5rem;border:1px solid #ddd;border-radius:4px;font-size:0.85rem;">
+            <option value="">全部类型</option>
+            <option value="rat">rat</option>
+            <option value="smoke">smoke</option>
+            <option value="use_phone">use_phone</option>
+            <option value="call_phone">call_phone</option>
+            <option value="chef">chef</option>
+            <option value="trash">trash</option>
+            <option value="mask">mask</option>
+            <option value="flame">flame</option>
+          </select>
           <button class="btn btn-sm" onclick="openImportModal()">导入事件</button>
           <button class="btn btn-sm btn-danger" onclick="deleteAllEvents()">一键清除</button>
         </div>
       </div>
+      <div id="eventCount" style="font-size:0.8rem;color:#888;margin-bottom:0.5rem;"></div>
       <table class="event-table">
         <thead>
           <tr>
@@ -543,7 +555,23 @@ async function loadEvalSetOptions() {
 
 function renderEvents() {
   const tbody = document.getElementById('eventTableBody');
-  const events = videoData.events || [];
+  const countDiv = document.getElementById('eventCount');
+  const filterType = document.getElementById('eventFilter').value;
+  let events = videoData.events || [];
+
+  // 按事件类型过滤
+  if (filterType) {
+    events = events.filter(e => e.event_type === filterType);
+  }
+
+  // 更新计数
+  const total = videoData.events ? videoData.events.length : 0;
+  if (filterType) {
+    countDiv.textContent = `共 ${total} 个事件 · 当前筛选: ${filterType} (${events.length} 个)`;
+  } else {
+    countDiv.textContent = `共 ${total} 个事件`;
+  }
+
   if (!events.length) {
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#888;">暂无事件</td></tr>';
     return;
@@ -570,8 +598,9 @@ function renderEvents() {
     `;
   }).join('');
 
-  // 检查是否需要轮询
-  const hasPending = events.some(e =>
+  // 检查是否需要轮询（基于所有事件，不是过滤后的）
+  const allEvents = videoData.events || [];
+  const hasPending = allEvents.some(e =>
     !e.gt_frames_status ||
     e.gt_frames_status === 'pending' ||
     e.gt_frames_status === 'processing'

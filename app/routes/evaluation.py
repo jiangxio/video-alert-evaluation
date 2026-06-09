@@ -221,6 +221,74 @@ def create_task():
     return jsonify({'success': True, 'task': dict(cursor.fetchone())})
 
 
+@bp.route('/api/tasks/<int:task_id>/clone', methods=['POST'])
+def clone_task(task_id):
+    """复制评测任务配置
+
+    复制内容：视频评测集、所有参数配置（合并间隔、事件间隔、触发率等）
+    不复制：告警数据集、评测执行结果
+    新任务状态为 'created'，需要重新指定数据集后执行评测
+    """
+    data = request.get_json() or {}
+    db = get_db()
+    cursor = db.cursor()
+
+    # 读取源任务配置（只取配置字段，不取数据集和结果）
+    cursor.execute(
+        'SELECT name, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, '
+        'event_interval_sec, trigger_rate, min_event_duration_sec '
+        'FROM eval_tasks WHERE id = ?',
+        (task_id,),
+    )
+    src = cursor.fetchone()
+    if not src:
+        return jsonify({'error': '源任务不存在'}), 404
+
+    # 确认视频集仍然有效
+    cursor.execute('SELECT id FROM eval_video_sets WHERE id = ?', (src['eval_set_id'],))
+    if not cursor.fetchone():
+        return jsonify({'error': '源任务关联的视频集已不存在，无法复制'}), 400
+
+    # 新任务名称
+    name = data.get('name', '').strip()
+    if not name:
+        name = f"{src['name']} (复制)"
+
+    # 创建新任务：复制配置，不复制数据集和评测结果
+    cursor.execute(
+        '''INSERT INTO eval_tasks
+           (name, notes, dataset_id, alert_eval_set_id, eval_set_id,
+            merge_interval_sec, event_start_sec, event_end_sec,
+            event_interval_sec, trigger_rate, min_event_duration_sec, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (
+            name,
+            data.get('notes', ''),
+            None,              # dataset_id 需重新指定
+            None,              # alert_eval_set_id 需重新指定
+            src['eval_set_id'],
+            src['merge_interval_sec'],
+            src['event_start_sec'],
+            src['event_end_sec'],
+            src['event_interval_sec'],
+            src['trigger_rate'],
+            src['min_event_duration_sec'],
+            'created',
+        ),
+    )
+    db.commit()
+    new_id = cursor.lastrowid
+
+    cursor.execute(
+        'SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, '
+        'merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, '
+        'trigger_rate, min_event_duration_sec, status, created_at '
+        'FROM eval_tasks WHERE id = ?',
+        (new_id,),
+    )
+    return jsonify({'success': True, 'task': dict(cursor.fetchone())}), 201
+
+
 @bp.route('/api/tasks/<int:task_id>', methods=['GET'])
 def get_task(task_id):
     """获取任务详情"""

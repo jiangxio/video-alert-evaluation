@@ -13,15 +13,11 @@ from werkzeug.utils import secure_filename
 
 from app.database import get_db
 from app.routes import send_file_with_cache
+from app.utils import allowed_file
 
 bp = Blueprint("algorithms", __name__, url_prefix="/algorithms")
 
 EVENT_TYPES = ["rat", "smoke", "use_phone", "call_phone", "chef", "trash", "mask", "flame"]
-
-
-def allowed_file(filename, allowed_extensions):
-    """检查文件扩展名"""
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_extensions
 
 
 # ── 页面路由 ────────────────────────────────────────────────────────────────

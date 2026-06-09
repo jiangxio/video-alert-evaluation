@@ -14,6 +14,7 @@ import random
 from app.database import get_db, DATABASE_PATH
 from app.services.watermark_service import add_watermark, cancel_task
 from app.routes import send_file_with_cache
+from app.utils import allowed_file
 
 bp = Blueprint('videos', __name__, url_prefix='/videos')
 
@@ -22,11 +23,6 @@ EVENT_TYPES = ['rat', 'smoke', 'use_phone', 'call_phone', 'chef', 'trash', 'mask
 # GT帧生成锁：每个 video_db_id 一个锁，确保同一视频的GT帧生成串行（避免并发重复生成）
 _gt_frame_locks = {}
 _gt_frame_locks_lock = threading.Lock()
-
-
-def allowed_file(filename, allowed_extensions):
-    """检查文件扩展名"""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 
 def extract_video_id(filename):

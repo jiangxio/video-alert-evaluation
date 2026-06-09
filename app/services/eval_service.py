@@ -11,6 +11,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.utils import merge_intervals
+
 
 def calc_expected_count(start_sec, end_sec, interval_sec, trigger_rate, min_event_duration_sec=0):
     """计算预期触发次数"""
@@ -1123,15 +1125,7 @@ def generate_detailed_report(task_id, db, config=None):
 
     gt_intervals = [(g['start_sec'], g['end_sec']) for g in gt_rows
                     if g.get('start_sec') is not None and g.get('end_sec') is not None]
-    merged_gt_intervals = []
-    if gt_intervals:
-        sorted_intervals = sorted(gt_intervals, key=lambda x: x[0])
-        merged_gt_intervals = [sorted_intervals[0]]
-        for s, e in sorted_intervals[1:]:
-            if s <= merged_gt_intervals[-1][1]:
-                merged_gt_intervals[-1] = (merged_gt_intervals[-1][0], max(merged_gt_intervals[-1][1], e))
-            else:
-                merged_gt_intervals.append((s, e))
+    merged_gt_intervals = merge_intervals(gt_intervals)
     gt_coverage_seconds = sum(end - start for start, end in merged_gt_intervals)
     gt_coverage_rate = gt_coverage_seconds / total_duration if total_duration > 0 else 0.0
     expected_alert_total = sum(g.get('expected_count', 0) or 0 for g in gt_rows)
@@ -1295,6 +1289,16 @@ def generate_detailed_report(task_id, db, config=None):
     )
 
 
+def compute_overall_avg_fp(event_metrics):
+    """从事件级指标聚合整体平均误检数/小时
+
+    用于从缓存的 event_metrics 中恢复 overall.avg_fp_per_hour，
+    避免整体指标与事件级数据不一致。
+    """
+    avg_fp_values = [em.get('avg_fp_per_hour', 0) for em in event_metrics if em.get('avg_fp_per_hour') is not None]
+    return round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+
+
 def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=None):
     """计算评测任务的完整指标，返回 (accuracy, recall, avg_fp_per_hour, event_metrics_list, total_duration)。
 
@@ -1418,8 +1422,7 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
     recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
 
     # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
-    avg_fp_values = [em['avg_fp_per_hour'] for em in event_metrics if em['avg_fp_per_hour'] is not None]
-    avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+    avg_fp_per_hour = compute_overall_avg_fp(event_metrics)
 
     return accuracy, recall, avg_fp_per_hour, event_metrics, total_duration
 

@@ -14,16 +14,13 @@ from app.services.verification_service import (
     parse_alert_config, extract_alert_type_id, run_ocr
 )
 from app.routes import send_file_with_cache
+from app.utils import allowed_file
 
 bp = Blueprint('alerts', __name__, url_prefix='/alerts')
 
 # 批量 OCR 进度状态（内存存储，key=dataset_id）
 _ocr_progress = {}
 _ocr_lock = threading.Lock()
-
-
-def allowed_file(filename, allowed_extensions):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 
 def _get_image_size(file_path):

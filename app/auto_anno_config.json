@@ -1,0 +1,6 @@
+{
+  "api_key": "sk-5cnzUZDNeRkaq6pQ6cgSPcwrYLN7OcQGuFKHvGrGx0SHDfMj",
+  "base_url": "https://openapi-ai.cmaiot.cn/v1",
+  "model": "Qwen3-VL-8B-Instruct",
+  "request_interval_sec": 1
+}

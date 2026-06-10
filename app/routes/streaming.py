@@ -4,6 +4,7 @@
 MediaMTX 需用户手动启动：tools/mediamtx（默认监听 :8554）
 """
 
+import errno
 import json
 import os
 import socket
@@ -25,6 +26,16 @@ _stream_processes = {}
 _stream_lock = threading.Lock()
 
 MEDIAMTX_PORT = 8554
+
+
+def _is_process_alive(pid: int) -> bool:
+    """检查指定 PID 的进程是否仍在运行"""
+    try:
+        os.kill(pid, 0)
+    except OSError as e:
+        if e.errno == errno.ESRCH:
+            return False
+    return True
 
 
 def _get_local_ips() -> list:
@@ -346,6 +357,18 @@ def list_tasks():
     rows = [dict(r) for r in cur.fetchall()]
     local_ips = _get_local_ips()
     now_ts = time.time()
+
+    # 校验 running 状态的任务：进程若已消失则自动修正状态
+    for r in rows:
+        if r.get("status") == "running" and r.get("pid"):
+            if not _is_process_alive(r["pid"]):
+                cur.execute(
+                    "UPDATE stream_tasks SET status = 'done', ended_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (r["id"],),
+                )
+                db.commit()
+                r["status"] = "done"
+                r["ended_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
     for r in rows:
         if r.get("suggested_algorithms"):

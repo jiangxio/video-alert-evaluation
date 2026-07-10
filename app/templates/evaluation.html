@@ -102,6 +102,11 @@
       <label>选择评测视频集 <span style="color:#e74c3c">*</span></label>
       <select id="new-eval-set"></select>
     </div>
+    <div class="form-group" id="duration-hours-group" style="display:none;">
+      <label>采集时长（小时） <span style="color:#e74c3c">*</span></label>
+      <input type="number" id="new-duration-hours" min="0" step="0.01" placeholder="输入采集总时长（小时）">
+      <div class="param-hint">用于计算平均误检数/小时</div>
+    </div>
 
     <hr style="margin:1rem 0;border:none;border-top:1px solid #eee;">
 
@@ -154,7 +159,8 @@ async function loadDatasets() {
   for (const d of datasets) {
     const opt = document.createElement('option');
     opt.value = d.id;
-    opt.textContent = `${d.name} (${d.image_count || 0}张图片)`;
+    opt.textContent = `${d.name} (${d.image_count || 0}张图片)${d.mode === 'realtime' ? ' ⚡实时' : ''}`;
+    opt.dataset.mode = d.mode || 'normal';
     sel.appendChild(opt);
   }
 }
@@ -179,6 +185,22 @@ function onAlertSourceChanged(source) {
   }
   if (source === 'eval_set' && document.getElementById('new-alert-eval-set').value) {
     document.getElementById('new-dataset').value = '';
+  }
+
+  // Check if selected dataset is realtime mode
+  const datasetSel = document.getElementById('new-dataset');
+  const selectedOption = datasetSel.options[datasetSel.selectedIndex];
+  const isRealtime = selectedOption && selectedOption.dataset.mode === 'realtime';
+
+  const evalSetGroup = document.getElementById('new-eval-set').parentElement;
+  const durationGroup = document.getElementById('duration-hours-group');
+
+  if (isRealtime) {
+    evalSetGroup.style.display = 'none';
+    durationGroup.style.display = 'block';
+  } else {
+    evalSetGroup.style.display = 'block';
+    durationGroup.style.display = 'none';
   }
 }
 
@@ -293,20 +315,33 @@ async function createTask() {
   const dataset_id = parseInt(document.getElementById('new-dataset').value || '0');
   const alert_eval_set_id = parseInt(document.getElementById('new-alert-eval-set').value || '0');
   if (!dataset_id && !alert_eval_set_id) { alert('请选择告警数据集或告警评测集'); return; }
-  const eval_set_id = parseInt(document.getElementById('new-eval-set').value || '0');
-  if (!eval_set_id) { alert('请选择评测视频集'); return; }
+
+  // Check if realtime mode
+  const datasetSel = document.getElementById('new-dataset');
+  const selectedOption = datasetSel.options[datasetSel.selectedIndex];
+  const isRealtime = dataset_id && selectedOption && selectedOption.dataset.mode === 'realtime';
 
   const payload = {
     name,
     notes: document.getElementById('new-notes').value.trim(),
     dataset_id: dataset_id || null,
     alert_eval_set_id: alert_eval_set_id || null,
-    eval_set_id,
     merge_interval_sec: parseFloat(document.getElementById('new-merge-interval').value),
     event_interval_sec: parseFloat(document.getElementById('new-ev-interval').value),
     trigger_rate: parseFloat(document.getElementById('new-trigger-rate').value),
     min_event_duration_sec: parseFloat(document.getElementById('new-min-duration').value),
   };
+
+  if (isRealtime) {
+    const durationHours = parseFloat(document.getElementById('new-duration-hours').value);
+    if (!durationHours || durationHours <= 0) { alert('请输入有效的采集时长'); return; }
+    payload.duration_hours = durationHours;
+    payload.eval_set_id = null;
+  } else {
+    const eval_set_id = parseInt(document.getElementById('new-eval-set').value || '0');
+    if (!eval_set_id) { alert('请选择评测视频集'); return; }
+    payload.eval_set_id = eval_set_id;
+  }
 
   const res = await fetch('/evaluation/api/tasks', {
     method: 'POST',

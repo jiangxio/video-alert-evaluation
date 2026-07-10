@@ -64,6 +64,44 @@ def _emit_group(merged_alerts, vid, etype, group):
     })
 
 
+def _analyze_realtime_events(task_id, cursor, task):
+    """实时采集模式：每张图片独立一个告警组，无 GT 事件。"""
+    dataset_id = task['dataset_id']
+
+    cursor.execute('''
+        SELECT a.id, a.filename, a.file_path, a.event_label, a.alert_type
+        FROM alert_images a
+        WHERE a.dataset_id = ?
+        ORDER BY a.uploaded_at ASC
+    ''', (dataset_id,))
+    images = [dict(r) for r in cursor.fetchall()]
+
+    merged_alerts = []
+    for img in images:
+        etype = img.get('event_label') or img.get('alert_type') or '未分类'
+        merged_alerts.append({
+            'video_id': '',
+            'event_type': etype,
+            'image_ids': [img['id']],
+            'all_images': [{
+                'id': img['id'],
+                'filename': img.get('filename'),
+                'file_path': img.get('file_path'),
+                'timestamp_seconds': None,
+            }],
+            'representative_image_id': img['id'],
+            'ts_start': None,
+            'ts_end': None,
+            'is_single': True,
+        })
+
+    return {
+        'merged_alerts': merged_alerts,
+        'gt_events': [],
+        'missing_video_ids': [],
+    }
+
+
 def analyze_merged_events(task_id, db):
     """
     分析并返回合并告警组（以告警图片为中心）和 GT 事件列表。
@@ -81,6 +119,13 @@ def analyze_merged_events(task_id, db):
     task = cursor.fetchone()
     if not task:
         return None
+
+    # ── 检查是否为实时采集模式 ──────────────────────────────────────────────────
+    if task['dataset_id']:
+        cursor.execute('SELECT mode FROM datasets WHERE id = ?', (task['dataset_id'],))
+        ds_row = cursor.fetchone()
+        if ds_row and ds_row['mode'] == 'realtime':
+            return _analyze_realtime_events(task_id, cursor, task)
 
     dataset_id = task['dataset_id']
     alert_eval_set_id = task['alert_eval_set_id'] if 'alert_eval_set_id' in task.keys() else None
@@ -695,7 +740,8 @@ def _build_report_html(task, event_metrics, summary_text, conclusion_text,
     algo_versions = task.get('algorithm_versions')
     algo_version_html = ''
     if algo_versions:
-        TYPE_NAMES = {'rat':'老鼠','smoke':'抽烟','use_phone':'玩手机','call_phone':'打电话','chef':'厨师服','trash':'垃圾','mask':'帽子/口罩','flame':'火焰'}
+        from app.event_types import get_type_names
+        TYPE_NAMES = get_type_names()
         algo_tags = ' '.join([
             f'<span style="display:inline-block;background:#e8f4fd;color:#2980b9;padding:0.15rem 0.5rem;border-radius:10px;font-size:0.85rem;margin:0.15rem 0.3rem 0.15rem 0;">{TYPE_NAMES.get(v["algorithm_type"], v["algorithm_type"])}: {v["name"]} ({v["version_date"]})</span>'
             for v in algo_versions
@@ -1307,6 +1353,12 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
     """
     import json
 
+    # ── 检查是否为实时采集模式 ──────────────────────────────────────────────────
+    cursor.execute('SELECT t.dataset_id, d.mode, t.duration_hours FROM eval_tasks t LEFT JOIN datasets d ON d.id = t.dataset_id WHERE t.id = ?', (task_id,))
+    task_info = cursor.fetchone()
+    is_realtime = task_info and task_info['mode'] == 'realtime'
+    duration_hours = task_info['duration_hours'] if task_info else None
+
     # 整体精确率
     cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
     total = 0
@@ -1322,6 +1374,58 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
         elif status == 'false_positive':
             fp_count += 1
     accuracy = correct / total if total > 0 else None
+
+    if is_realtime:
+        # ── 实时模式：无 GT，使用 duration_hours 计算误检数/小时 ─────────────────
+        recall = None
+        total_duration = 0
+
+        # 按事件类型计算精确率和误检数
+        all_event_types = get_all_event_types_fn() if get_all_event_types_fn else []
+        if not all_event_types:
+            cursor.execute('''
+                SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
+            ''', (task_id,))
+            all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+
+        event_metrics = []
+        for etype in all_event_types:
+            cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=? AND event_type=?', (task_id, etype))
+            alert_count = 0
+            correct_pred_count = 0
+            fp_count_et = 0
+            for row in cursor.fetchall():
+                status = get_effective_status(row)
+                if status == 'ignored':
+                    continue
+                alert_count += 1
+                if status == 'correct':
+                    correct_pred_count += 1
+                elif status == 'false_positive':
+                    fp_count_et += 1
+
+            precision = correct_pred_count / alert_count if alert_count > 0 else None
+            avg_fp_et = round(fp_count_et / duration_hours, 2) if duration_hours else 0
+
+            event_metrics.append({
+                'event_type': etype,
+                'alert_count': alert_count,
+                'gt_count': 0,
+                'correct_pred_count': correct_pred_count,
+                'false_positive_count': fp_count_et,
+                'hit_count': 0,
+                'missed_gt_count': 0,
+                'precision': precision,
+                'recall': None,
+                'avg_fp_per_hour': avg_fp_et
+            })
+
+        avg_fp_values = [em['avg_fp_per_hour'] for em in event_metrics if em['avg_fp_per_hour'] is not None]
+        avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+
+        return accuracy, recall, avg_fp_per_hour, event_metrics, total_duration
+
+    # ── 以下为原有普通模式逻辑 ──────────────────────────────────────────────────
 
     # 整体召回率
     cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=?', (task_id,))
@@ -1341,17 +1445,18 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
 
     # 评测视频总时长
     total_duration = 0
-    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
-    eval_set = cursor.fetchone()
-    if eval_set and eval_set['video_ids']:
-        try:
-            video_db_ids = json.loads(eval_set['video_ids'])
-            if video_db_ids:
-                placeholders = ','.join('?' for _ in video_db_ids)
-                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
-                total_duration = cursor.fetchone()['total'] or 0
-        except Exception:
-            pass
+    if eval_set_id:
+        cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
+        eval_set = cursor.fetchone()
+        if eval_set and eval_set['video_ids']:
+            try:
+                video_db_ids = json.loads(eval_set['video_ids'])
+                if video_db_ids:
+                    placeholders = ','.join('?' for _ in video_db_ids)
+                    cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                    total_duration = cursor.fetchone()['total'] or 0
+            except Exception:
+                pass
     total_duration_hours = total_duration / 3600 if total_duration else 0
 
     # 平均误检/小时（整体）

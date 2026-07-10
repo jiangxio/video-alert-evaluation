@@ -44,6 +44,17 @@ def _get_all_event_types():
     return event_types
 
 
+def _is_realtime_task(cursor, task_id):
+    """判断任务是否为实时采集模式（通过关联的 dataset.mode）"""
+    cursor.execute('''
+        SELECT d.mode FROM eval_tasks t
+        LEFT JOIN datasets d ON d.id = t.dataset_id
+        WHERE t.id = ?
+    ''', (task_id,))
+    row = cursor.fetchone()
+    return row and row['mode'] == 'realtime'
+
+
 # ── 页面路由 ──────────────────────────────────────────────────────────────────
 
 @bp.route('/')
@@ -57,7 +68,17 @@ def eval_task_page(task_id):
     """评测任务详情页"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('''
+        SELECT t.id, t.name, t.notes, t.dataset_id, t.alert_eval_set_id, t.eval_set_id,
+               t.merge_interval_sec, t.event_start_sec, t.event_end_sec, t.event_interval_sec,
+               t.trigger_rate, t.min_event_duration_sec, t.status, t.created_at,
+               t.finalized, t.accuracy, t.recall, t.avg_fp_per_hour, t.event_metrics,
+               t.confirmed_at, t.duration_hours,
+               d.mode as dataset_mode
+        FROM eval_tasks t
+        LEFT JOIN datasets d ON d.id = t.dataset_id
+        WHERE t.id = ?
+    ''', (task_id,))
     task = cursor.fetchone()
     if not task:
         return '任务不存在', 404
@@ -174,32 +195,43 @@ def create_task():
     if not dataset_id and not alert_eval_set_id:
         return jsonify({'error': '请选择告警数据集或告警评测集'}), 400
 
-    eval_set_id = data.get('eval_set_id')
-    if not eval_set_id:
-        return jsonify({'error': '请选择评测视频集'}), 400
-
     db = get_db()
     cursor = db.cursor()
 
+    # 检查是否为实时模式
+    is_realtime = False
     if dataset_id:
-        cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
-        if not cursor.fetchone():
+        cursor.execute('SELECT id, mode FROM datasets WHERE id = ?', (dataset_id,))
+        ds = cursor.fetchone()
+        if not ds:
             return jsonify({'error': '告警数据集不存在'}), 404
+        is_realtime = ds['mode'] == 'realtime'
+
+    eval_set_id = data.get('eval_set_id')
+    if is_realtime:
+        # 实时模式：eval_set_id 可选，duration_hours 必填
+        duration_hours = data.get('duration_hours')
+        if duration_hours is not None:
+            duration_hours = float(duration_hours)
+    else:
+        # 普通模式：eval_set_id 必填
+        if not eval_set_id:
+            return jsonify({'error': '请选择评测视频集'}), 400
+        cursor.execute('SELECT id FROM eval_video_sets WHERE id = ?', (eval_set_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': '评测视频集不存在'}), 404
+        duration_hours = None
 
     if alert_eval_set_id:
         cursor.execute('SELECT id FROM eval_alert_sets WHERE id = ?', (alert_eval_set_id,))
         if not cursor.fetchone():
             return jsonify({'error': '告警评测集不存在'}), 404
 
-    cursor.execute('SELECT id FROM eval_video_sets WHERE id = ?', (eval_set_id,))
-    if not cursor.fetchone():
-        return jsonify({'error': '评测视频集不存在'}), 404
-
     cursor.execute('''
         INSERT INTO eval_tasks
         (name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec,
-         event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, duration_hours)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         name,
         data.get('notes', ''),
@@ -213,11 +245,12 @@ def create_task():
         data.get('trigger_rate', 0.5),
         data.get('min_event_duration_sec', 0),
         'created',
+        duration_hours,
     ))
     db.commit()
     task_id = cursor.lastrowid
 
-    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at, duration_hours FROM eval_tasks WHERE id = ?', (task_id,))
     return jsonify({'success': True, 'task': dict(cursor.fetchone())})
 
 
@@ -329,6 +362,9 @@ def update_task(task_id):
     if 'min_event_duration_sec' in data:
         update_fields.append('min_event_duration_sec = ?')
         update_values.append(data['min_event_duration_sec'])
+    if 'duration_hours' in data:
+        update_fields.append('duration_hours = ?')
+        update_values.append(data['duration_hours'])
 
     if update_fields:
         update_values.append(task_id)
@@ -372,37 +408,41 @@ def confirm_merged(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     # ── 校验：告警 video_id 是否全部包含在评测视频集中 ────────────────────────
-    eval_set_id = task['eval_set_id']
-    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
-    eval_set = cursor.fetchone()
-    eval_video_db_ids = []
-    if eval_set and eval_set['video_ids']:
-        try:
-            eval_video_db_ids = json.loads(eval_set['video_ids'])
-        except Exception:
-            eval_video_db_ids = []
+    # 实时模式跳过此校验
+    if not _is_realtime_task(cursor, task_id):
+        eval_set_id = task['eval_set_id']
+        cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
+        eval_set = cursor.fetchone()
+        eval_video_db_ids = []
+        if eval_set and eval_set['video_ids']:
+            try:
+                eval_video_db_ids = json.loads(eval_set['video_ids'])
+            except Exception:
+                eval_video_db_ids = []
 
-    eval_video_ids = set()
-    if eval_video_db_ids:
-        placeholders = ','.join('?' for _ in eval_video_db_ids)
-        cursor.execute(f'SELECT video_id FROM videos WHERE id IN ({placeholders})', eval_video_db_ids)
-        for row in cursor.fetchall():
-            if row['video_id']:
-                eval_video_ids.add(row['video_id'])
+        eval_video_ids = set()
+        if eval_video_db_ids:
+            placeholders = ','.join('?' for _ in eval_video_db_ids)
+            cursor.execute(f'SELECT video_id FROM videos WHERE id IN ({placeholders})', eval_video_db_ids)
+            for row in cursor.fetchall():
+                if row['video_id']:
+                    eval_video_ids.add(row['video_id'])
 
-    alert_video_ids = set(m['video_id'] for m in merged_alerts if m.get('video_id'))
-    missing = sorted(alert_video_ids - eval_video_ids)
-    if missing:
-        return jsonify({
-            'error': '以下 video_id 不在评测视频集中，无法确认：' + ', '.join(missing),
-            'missing_video_ids': missing,
-        }), 400
+        alert_video_ids = set(m['video_id'] for m in merged_alerts if m.get('video_id'))
+        missing = sorted(alert_video_ids - eval_video_ids)
+        if missing:
+            return jsonify({
+                'error': '以下 video_id 不在评测视频集中，无法确认：' + ', '.join(missing),
+                'missing_video_ids': missing,
+            }), 400
 
     # 清除旧数据
     cursor.execute('DELETE FROM eval_merged_events WHERE task_id = ?', (task_id,))
     cursor.execute('DELETE FROM eval_gt_events WHERE task_id = ?', (task_id,))
 
     for m in merged_alerts:
+        ts_start = m.get('ts_start')
+        ts_end = m.get('ts_end')
         cursor.execute('''
             INSERT INTO eval_merged_events
             (task_id, video_id, event_type, image_ids,
@@ -411,14 +451,14 @@ def confirm_merged(task_id):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             task_id,
-            m['video_id'],
+            m.get('video_id') or '',
             m['event_type'],
             json.dumps(m.get('image_ids', []), ensure_ascii=False),
             m.get('representative_image_id'),
-            m.get('ts_start'),
-            m.get('ts_end'),
-            m.get('ts_start'),  # start_sec = ts_start for compatibility
-            m.get('ts_end'),
+            ts_start,
+            ts_end,
+            ts_start if ts_start is not None else 0,
+            ts_end if ts_end is not None else 0,
             len(m.get('image_ids', [])),
             len(m.get('image_ids', [])),
         ))
@@ -527,6 +567,9 @@ def execute_task(task_id):
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
+        # 判断是否为实时模式
+        is_realtime = _is_realtime_task(cur, task_id)
+
         # 加载合并告警和 GT 事件
         cur.execute('SELECT id, task_id, video_id, event_type, start_sec, end_sec, expected_count, confirmed_count, image_ids, confirmed_at, ts_start, ts_end, representative_image_id, is_false_positive, matched_gt_event_id, manual_status FROM eval_merged_events WHERE task_id = ? ORDER BY ts_start, id', (task_id,))
         merged_list = [dict(m) for m in cur.fetchall()]
@@ -543,74 +586,89 @@ def execute_task(task_id):
         cur.execute('DELETE FROM eval_results WHERE task_id = ?', (task_id,))
         conn.commit()
 
-        # ── 判断每个合并告警是否命中 GT 事件 ──────────────────────────────────
-        # 命中条件：video_id 相同 AND event_type 相同
-        #           AND (ts_start 或 ts_end) 落在 GT 事件 [start_sec, end_sec]
-        gt_hit_counts = {g['id']: 0 for g in gt_list}  # gt_event id → 命中次数
+        if is_realtime:
+            # ── 实时模式：跳过命中判定，所有告警待人工标注 ──────────────────────
+            for merged in merged_list:
+                cur.execute('''
+                    UPDATE eval_merged_events
+                    SET is_false_positive = 0, matched_gt_event_id = NULL
+                    WHERE id = ?
+                ''', (merged['id'],))
 
-        for merged in merged_list:
-            vid = merged['video_id']
-            etype = merged['event_type']
-            ts_start = merged.get('ts_start') or merged.get('start_sec')
-            ts_end = merged.get('ts_end') or merged.get('end_sec')
+                image_ids = json.loads(merged.get('image_ids') or '[]')
+                rep_img_id = merged.get('representative_image_id') or (image_ids[0] if image_ids else None)
+                cur.execute('''
+                    INSERT INTO eval_results
+                    (task_id, merged_event_id, alert_image_id, is_false_positive, is_missed)
+                    VALUES (?, ?, ?, 0, 0)
+                ''', (task_id, merged['id'], rep_img_id))
+                conn.commit()
 
-            is_fp = True
-            matched_gt_id = None
+                with _eval_lock:
+                    _eval_progress[task_id]['done'] += 1
+        else:
+            # ── 普通模式：判断每个合并告警是否命中 GT 事件 ──────────────────────
+            gt_hit_counts = {g['id']: 0 for g in gt_list}
 
+            for merged in merged_list:
+                vid = merged['video_id']
+                etype = merged['event_type']
+                ts_start = merged.get('ts_start') or merged.get('start_sec')
+                ts_end = merged.get('ts_end') or merged.get('end_sec')
+
+                is_fp = True
+                matched_gt_id = None
+
+                for g in gt_list:
+                    if g['video_id'] == vid and g['event_type'] == etype:
+                        tolerance = 5
+                        g_start = g['start_sec'] - tolerance
+                        g_end = g['end_sec'] + tolerance
+                        overlaps = (
+                            ts_start is not None and g_start <= ts_start <= g_end
+                        ) or (
+                            ts_end is not None and g_start <= ts_end <= g_end
+                        ) or (
+                            ts_start is not None and ts_end is not None
+                            and ts_start <= g_start and ts_end >= g_end
+                        )
+                        if overlaps:
+                            is_fp = False
+                            matched_gt_id = g['id']
+                            gt_hit_counts[g['id']] = gt_hit_counts.get(g['id'], 0) + 1
+                            break
+
+                cur.execute('''
+                    UPDATE eval_merged_events
+                    SET is_false_positive = ?, matched_gt_event_id = ?
+                    WHERE id = ?
+                ''', (1 if is_fp else 0, matched_gt_id, merged['id']))
+
+                image_ids = json.loads(merged.get('image_ids') or '[]')
+                rep_img_id = merged.get('representative_image_id') or (image_ids[0] if image_ids else None)
+                cur.execute('''
+                    INSERT INTO eval_results
+                    (task_id, merged_event_id, alert_image_id, is_false_positive, is_missed)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (task_id, merged['id'], rep_img_id, 1 if is_fp else 0, False))
+                conn.commit()
+
+                with _eval_lock:
+                    _eval_progress[task_id]['done'] += 1
+
+            # ── 更新每个 GT 事件的 actual_count ───────────────────────────────────
             for g in gt_list:
-                if g['video_id'] == vid and g['event_type'] == etype:
-                    # 评测容差 ±5 秒
-                    tolerance = 5
-                    g_start = g['start_sec'] - tolerance
-                    g_end = g['end_sec'] + tolerance
-                    # 告警时间窗口与 GT 事件有重叠
-                    overlaps = (
-                        ts_start is not None and g_start <= ts_start <= g_end
-                    ) or (
-                        ts_end is not None and g_start <= ts_end <= g_end
-                    ) or (
-                        ts_start is not None and ts_end is not None
-                        and ts_start <= g_start and ts_end >= g_end
-                    )
-                    if overlaps:
-                        is_fp = False
-                        matched_gt_id = g['id']
-                        gt_hit_counts[g['id']] = gt_hit_counts.get(g['id'], 0) + 1
-                        break
+                actual = gt_hit_counts.get(g['id'], 0)
 
-            # 更新 eval_merged_events
-            cur.execute('''
-                UPDATE eval_merged_events
-                SET is_false_positive = ?, matched_gt_event_id = ?
-                WHERE id = ?
-            ''', (1 if is_fp else 0, matched_gt_id, merged['id']))
+                cur.execute('''
+                    UPDATE eval_gt_events
+                    SET actual_count = ?
+                    WHERE id = ?
+                ''', (actual, g['id']))
+                conn.commit()
 
-            # 写入 eval_results（一条告警组对应一条结果）
-            image_ids = json.loads(merged.get('image_ids') or '[]')
-            rep_img_id = merged.get('representative_image_id') or (image_ids[0] if image_ids else None)
-            cur.execute('''
-                INSERT INTO eval_results
-                (task_id, merged_event_id, alert_image_id, is_false_positive, is_missed)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (task_id, merged['id'], rep_img_id, 1 if is_fp else 0, False))
-            conn.commit()
-
-            with _eval_lock:
-                _eval_progress[task_id]['done'] += 1
-
-        # ── 更新每个 GT 事件的 actual_count ───────────────────────────────────
-        for g in gt_list:
-            actual = gt_hit_counts.get(g['id'], 0)
-
-            cur.execute('''
-                UPDATE eval_gt_events
-                SET actual_count = ?
-                WHERE id = ?
-            ''', (actual, g['id']))
-            conn.commit()
-
-            with _eval_lock:
-                _eval_progress[task_id]['done'] += 1
+                with _eval_lock:
+                    _eval_progress[task_id]['done'] += 1
 
         # ── 计算并保存评测指标 ──────────────────────────────────────────────────
         # 获取 eval_set_id
@@ -703,6 +761,63 @@ def get_results(task_id):
         r['image_ids'] = json.loads(r.get('image_ids') or '[]')
         r['effective_status'] = get_effective_status(r)
 
+    # ── 实时模式判断 ────────────────────────────────────────────────────────────
+    is_realtime = _is_realtime_task(cursor, task_id)
+
+    if is_realtime:
+        # 实时模式：无 GT，使用 duration_hours
+        gt_results = []
+        gt_event_count = 0
+        gt_coverage_seconds = 0
+        gt_coverage_rate = 0
+        expected_alert_total = 0
+        total_duration = 0
+
+        # 获取 duration_hours
+        cur2 = db.cursor()
+        cur2.execute('SELECT duration_hours FROM eval_tasks WHERE id = ?', (task_id,))
+        duration_hours = cur2.fetchone()['duration_hours'] or 0
+
+        # 计算精确率和误检数
+        from collections import defaultdict
+        fp_by_type = defaultdict(int)
+        total_count_by_type = defaultdict(int)
+        for r in alert_results:
+            status = get_effective_status(r)
+            if status == 'ignored':
+                continue
+            et = r.get('event_type')
+            if not et:
+                continue
+            total_count_by_type[et] += 1
+            if status == 'false_positive':
+                fp_by_type[et] += 1
+
+        total_count = sum(total_count_by_type.values())
+        fp_count = sum(fp_by_type.values())
+        all_alert_types = set(list(fp_by_type.keys()) + list(total_count_by_type.keys()))
+        avg_fp_values = [round(fp_by_type.get(et, 0) / duration_hours, 2) for et in all_alert_types] if duration_hours else []
+        avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+        accuracy = (total_count - fp_count) / total_count if total_count > 0 else None
+        recall = None
+
+        return jsonify({
+            'success': True,
+            'alert_results': alert_results,
+            'gt_results': gt_results,
+            'evaluated_at': None,
+            'total_duration': 0,
+            'duration_hours': duration_hours,
+            'avg_fp_per_hour': avg_fp_per_hour,
+            'accuracy': accuracy,
+            'recall': recall,
+            'gt_event_count': gt_event_count,
+            'gt_coverage_seconds': 0,
+            'gt_coverage_rate': 0,
+            'expected_alert_total': 0,
+            'is_realtime': True,
+        })
+
     # ── GT 事件得分 ────────────────────────────────────────────────────────────
     # 注意：同一个 video_id 可能在 videos 表中有多条记录，先子查询去重
     cursor.execute('''
@@ -719,18 +834,20 @@ def get_results(task_id):
 
     # ── 统计评测视频集总时长 ────────────────────────────────────────────────────
     total_duration = 0
-    cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (task['eval_set_id'],))
-    eval_set = cursor.fetchone()
-    if eval_set and eval_set['video_ids']:
-        try:
-            video_db_ids = json.loads(eval_set['video_ids'])
-            if video_db_ids:
-                placeholders = ','.join('?' for _ in video_db_ids)
-                cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
-                row = cursor.fetchone()
-                total_duration = row['total'] or 0
-        except Exception:
-            pass
+    eval_set_id = task['eval_set_id']
+    if eval_set_id:
+        cursor.execute('SELECT video_ids FROM eval_video_sets WHERE id = ?', (eval_set_id,))
+        eval_set = cursor.fetchone()
+        if eval_set and eval_set['video_ids']:
+            try:
+                video_db_ids = json.loads(eval_set['video_ids'])
+                if video_db_ids:
+                    placeholders = ','.join('?' for _ in video_db_ids)
+                    cursor.execute(f'SELECT SUM(duration) as total FROM videos WHERE id IN ({placeholders})', video_db_ids)
+                    row = cursor.fetchone()
+                    total_duration = row['total'] or 0
+            except Exception:
+                pass
 
     # ── 计算 GT 覆盖时长、覆盖率、理论告警数等统计 ──────────────────────────────
     gt_event_count = len(gt_results)
@@ -764,6 +881,7 @@ def get_results(task_id):
         'gt_coverage_seconds': round(gt_coverage_seconds, 2),
         'gt_coverage_rate': round(gt_coverage_rate, 4),
         'expected_alert_total': expected_alert_total,
+        'is_realtime': False,
     })
 
 
@@ -790,6 +908,32 @@ def update_manual_status(task_id, merged_id):
         return jsonify({'error': '记录不存在'}), 404
 
     return jsonify({'success': True, 'manual_status': manual_status})
+
+
+@bp.route('/api/tasks/<int:task_id>/merged-events/batch-status', methods=['PUT'])
+def batch_update_manual_status(task_id):
+    """批量更新合并告警的人工修正状态"""
+    data = request.get_json() or {}
+    merged_ids = data.get('merged_ids', [])
+    manual_status = data.get('manual_status')
+    if manual_status not in ('auto', 'correct', 'false_positive', 'ignored'):
+        return jsonify({'error': '无效的状态值'}), 400
+    if not merged_ids or not isinstance(merged_ids, list):
+        return jsonify({'error': '请提供 merged_ids 列表'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM eval_tasks WHERE id = ?', (task_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '任务不存在'}), 404
+
+    placeholders = ','.join('?' for _ in merged_ids)
+    cursor.execute(f'''
+        UPDATE eval_merged_events SET manual_status = ?
+        WHERE id IN ({placeholders}) AND task_id = ?
+    ''', [manual_status] + list(merged_ids) + [task_id])
+    db.commit()
+    return jsonify({'success': True, 'updated_count': cursor.rowcount})
 
 
 @bp.route('/api/tasks/<int:task_id>/gt-events/<int:gt_id>', methods=['PUT'])

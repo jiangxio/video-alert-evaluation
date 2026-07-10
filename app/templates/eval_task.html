@@ -124,6 +124,35 @@
 
   #empty-state { text-align:center; color:#aaa; padding:3rem; grid-column:1/-1; }
 
+  .img-cell { position:relative; }
+  .img-cell.selected { border-color:#3498db; box-shadow:0 0 0 2px #3498db; }
+  .img-checkbox {
+    position:absolute; top:8px; right:8px;
+    width:22px; height:22px;
+    background:rgba(255,255,255,0.85);
+    border:2px solid #888;
+    border-radius:4px;
+    cursor:pointer;
+    z-index:10;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    transition:all 0.2s;
+  }
+  body.select-mode .img-checkbox { display:flex; }
+  .img-checkbox:hover { border-color:#3498db; }
+  .img-checkbox.checked {
+    background:transparent;
+    border-color:#888;
+  }
+  .img-checkbox.checked::after {
+    content:'✓';
+    color:#333;
+    font-size:15px;
+    font-weight:bold;
+  }
+  .img-cell img { cursor:pointer; }
+
   /* 事件指标弹窗 */
   .modal-overlay {
     position:fixed; inset:0; background:rgba(0,0,0,0.5); display:none; align-items:center; justify-content:center; z-index:1000;
@@ -211,6 +240,12 @@
         <label>最小事件时长（秒）</label>
         <input type="number" step="0.1" min="0" id="param-min-duration" value="{{ task.min_event_duration_sec }}" style="width:100%;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:1rem;">
       </div>
+      {% if task.dataset_mode == 'realtime' %}
+      <div class="param-item">
+        <label>采集时长（小时）</label>
+        <input type="number" step="0.01" min="0" id="param-duration-hours" value="{{ task.duration_hours or '' }}" style="width:100%;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:1rem;" placeholder="输入采集总时长">
+      </div>
+      {% endif %}
     </div>
     <p style="color:#888;font-size:0.88rem;">
       预期触发次数 = (结束 - 开始 - 1) / 事件间隔 × 触发率，一般最小为 1；若事件范围小于最小事件时长则默认为 0，可在二次确认时修改。事件范围来自视频标注。
@@ -318,12 +353,14 @@
         <label>整体精确率（Precision）</label>
         <span id="metric-accuracy" style="color:#27ae60;">—</span>
       </div>
+      {% if task.dataset_mode != 'realtime' %}
       <div class="param-item" style="background:transparent;">
         <label>整体召回率（Recall）</label>
         <span id="metric-recall" style="color:#27ae60;">—</span>
       </div>
+      {% endif %}
       <div class="param-item" style="background:transparent;">
-        <label>平均误检数/小时</label>
+        <label id="metric-avg-fp-label">平均误检数/小时</label>
         <span id="metric-avg-fp" style="color:#e74c3c;">—</span>
       </div>
       <div class="param-item" style="background:transparent;">
@@ -358,7 +395,9 @@
     <!-- Tab 切换 -->
     <div class="result-tabs">
       <div class="result-tab active" id="rtab-alerts" onclick="switchResultTab('alerts')">告警检测结果</div>
+      {% if task.dataset_mode != 'realtime' %}
       <div class="result-tab" id="rtab-gt" onclick="switchResultTab('gt')">GT 事件得分</div>
+      {% endif %}
     </div>
 
     <!-- Tab A：告警图片 -->
@@ -370,10 +409,19 @@
           <button class="btn btn-sm btn-secondary" id="ra-btn-fp" onclick="setAlertFilter('fp')">误检</button>
           <button class="btn btn-sm btn-secondary" id="ra-btn-ignored" onclick="setAlertFilter('ignored')">忽略</button>
         </div>
+        <!-- 多选批量标注工具栏（所有模式通用） -->
+        <button class="btn btn-sm" id="btn-select-mode" onclick="toggleSelectMode()" style="margin-left:auto;">进入选择模式</button>
+        <button class="btn btn-sm btn-secondary" id="btn-select-all" onclick="selectAllVisible()" style="display:none;">全选</button>
+        <button class="btn btn-sm btn-secondary" id="btn-clear-selection" onclick="clearAlertSelection()" style="display:none;">清空选择</button>
+        <span id="selected-count" style="font-size:0.85rem;color:#555;margin-left:0.5rem;">已选 0 项</span>
+        <button class="btn btn-sm btn-success" id="btn-batch-correct" onclick="batchUpdateStatus('correct')" disabled>批量标记正确</button>
+        <button class="btn btn-sm btn-danger" id="btn-batch-fp" onclick="batchUpdateStatus('false_positive')" disabled>批量标记误检</button>
+        <button class="btn btn-sm btn-secondary" id="btn-batch-ignored" onclick="batchUpdateStatus('ignored')" disabled>批量忽略</button>
       </div>
       <div class="img-grid" id="alert-result-grid"></div>
     </div>
 
+    {% if task.dataset_mode != 'realtime' %}
     <!-- Tab B：GT 事件得分 -->
     <div class="result-panel" id="rpanel-gt">
       <div class="filter-bar">
@@ -386,6 +434,7 @@
       </div>
       <div class="img-grid" id="gt-result-grid"></div>
     </div>
+    {% endif %}
   </div>
 </div>
 
@@ -439,6 +488,7 @@
 
 <script>
 const TASK_ID = {{ task.id }};
+const IS_REALTIME = {{ task.dataset_mode | tojson }} === 'realtime';
 let currentStage = 'params';
 
 // 分析结果
@@ -461,6 +511,168 @@ let filterEvent = '';
 let alertFilter = 'all';
 let gtFilter = 'all';
 
+// 多选状态（所有模式通用）
+let selectMode = false;
+let selectedAlertIds = new Set();
+
+// ── 多选批量标注（所有模式通用） ──────────────────────────────────────────────
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  const btn = document.getElementById('btn-select-mode');
+  if (btn) btn.textContent = selectMode ? '退出选择模式' : '进入选择模式';
+  document.body.classList.toggle('select-mode', selectMode);
+  // 显示/隐藏全选和清空按钮
+  const btnAll = document.getElementById('btn-select-all');
+  const btnClear = document.getElementById('btn-clear-selection');
+  if (btnAll) btnAll.style.display = selectMode ? '' : 'none';
+  if (btnClear) btnClear.style.display = selectMode ? '' : 'none';
+  if (!selectMode) clearAlertSelection();
+  renderAlertGrid();
+}
+
+// 全选当前可见的告警
+function selectAllVisible() {
+  // 复用 renderAlertGrid 的过滤逻辑
+  let rows = alertResults.filter(r => {
+    if (filterVideo && r.video_id !== filterVideo) return false;
+    if (filterEvent && r.event_type !== filterEvent) return false;
+    const status = r.effective_status || (r.is_false_positive ? 'false_positive' : 'correct');
+    if (alertFilter === 'fp' && status !== 'false_positive') return false;
+    if (alertFilter === 'ok' && status !== 'correct') return false;
+    if (alertFilter === 'ignored' && status !== 'ignored') return false;
+    return true;
+  });
+  rows.forEach(r => selectedAlertIds.add(r.id));
+  renderAlertGrid();
+  updateBatchButtons();
+}
+
+function toggleAlertSelect(mergedId) {
+  if (selectedAlertIds.has(mergedId)) {
+    selectedAlertIds.delete(mergedId);
+  } else {
+    selectedAlertIds.add(mergedId);
+  }
+  // 更新 checkbox 视觉和计数
+  const checkbox = document.querySelector(`#alert-cell-${mergedId} .img-checkbox`);
+  if (checkbox) checkbox.classList.toggle('checked', selectedAlertIds.has(mergedId));
+  const cell = document.getElementById('alert-cell-' + mergedId);
+  if (cell) cell.classList.toggle('selected', selectedAlertIds.has(mergedId));
+  updateBatchButtons();
+}
+
+function clearAlertSelection() {
+  selectedAlertIds.clear();
+  document.querySelectorAll('.img-cell.selected').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('.img-checkbox.checked').forEach(el => el.classList.remove('checked'));
+  updateBatchButtons();
+}
+
+function updateBatchButtons() {
+  const count = selectedAlertIds.size;
+  const countEl = document.getElementById('selected-count');
+  if (countEl) countEl.textContent = `已选 ${count} 项`;
+  ['btn-batch-correct', 'btn-batch-fp', 'btn-batch-ignored'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = count === 0;
+  });
+}
+
+async function batchUpdateStatus(status) {
+  if (selectedAlertIds.size === 0) return;
+  const ids = Array.from(selectedAlertIds);
+  try {
+    const res = await fetch(`/evaluation/api/tasks/${TASK_ID}/merged-events/batch-status`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({merged_ids: ids, manual_status: status})
+    });
+    if (res.ok) {
+      // 更新本地数据
+      for (const id of ids) {
+        const r = alertResults.find(x => x.id === id);
+        if (r) {
+          r.manual_status = status;
+          r.effective_status = status === 'auto' ? (r.is_false_positive ? 'false_positive' : 'correct') : status;
+        }
+      }
+      clearAlertSelection();
+      renderAlertGrid();
+      recomputeMetrics();
+    }
+  } catch(e) {
+    alert('批量更新失败: ' + e.message);
+  }
+}
+
+// ── 框选功能 ────────────────────────────────────────────────────────────────
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let selectionBox = null;
+
+function initDragSelect() {
+  const grid = document.getElementById('alert-result-grid');
+  if (!grid) return;
+
+  grid.addEventListener('mousedown', (e) => {
+    // 只在选择模式下、点击空白区域或图片时触发框选
+    if (!selectMode) return;
+    if (e.target.classList.contains('img-checkbox')) return;
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'OPTION') return;
+
+    isDragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+
+    selectionBox = document.createElement('div');
+    selectionBox.style.cssText = `
+      position:fixed; border:2px dashed #3498db; background:rgba(52,152,219,0.15);
+      pointer-events:none; z-index:9999;
+    `;
+    document.body.appendChild(selectionBox);
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDragging || !selectionBox) return;
+    const x = Math.min(dragStartX, e.clientX);
+    const y = Math.min(dragStartY, e.clientY);
+    const w = Math.abs(e.clientX - dragStartX);
+    const h = Math.abs(e.clientY - dragStartY);
+    selectionBox.style.left = x + 'px';
+    selectionBox.style.top = y + 'px';
+    selectionBox.style.width = w + 'px';
+    selectionBox.style.height = h + 'px';
+  });
+
+  document.addEventListener('mouseup', (e) => {
+    if (!isDragging || !selectionBox) return;
+    isDragging = false;
+    const rect = selectionBox.getBoundingClientRect();
+    selectionBox.remove();
+    selectionBox = null;
+
+    if (rect.width < 10 || rect.height < 10) return;
+
+    const cells = document.querySelectorAll('#alert-result-grid .img-cell');
+    cells.forEach(cell => {
+      const cr = cell.getBoundingClientRect();
+      if (rect.left < cr.right && rect.right > cr.left &&
+          rect.top < cr.bottom && rect.bottom > cr.top) {
+        const id = parseInt(cell.dataset.id);
+        if (id) {
+          if (!selectedAlertIds.has(id)) {
+            selectedAlertIds.add(id);
+          }
+        }
+      }
+    });
+    renderAlertGrid();
+    updateBatchButtons();
+  });
+}
+
 // ── 状态徽章 ──────────────────────────────────────────────────────────────────
 function updateStatusBadge() {
   const status = '{{ task.status }}';
@@ -479,7 +691,7 @@ function renderAlgoVersions() {
     container.style.display = 'none';
     return;
   }
-  const TYPE_NAMES = { rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话', chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰' };
+  const TYPE_NAMES = {{ TYPE_NAMES | tojson | safe }};
   tagsEl.innerHTML = algoVersions.map(v =>
     `<span style="display:inline-block;background:#e8f4fd;color:#2980b9;padding:0.15rem 0.5rem;border-radius:10px;font-size:0.78rem;margin:0.15rem 0.3rem 0.15rem 0;">
       ${TYPE_NAMES[v.algorithm_type] || v.algorithm_type}: ${escHtml(v.name)} (${v.version_date})
@@ -515,6 +727,14 @@ async function saveParams() {
       trigger_rate: parseFloat(document.getElementById('param-trigger-rate').value),
       min_event_duration_sec: parseFloat(document.getElementById('param-min-duration').value)
     };
+
+    // 实时模式额外参数
+    if (IS_REALTIME) {
+      const durationHours = document.getElementById('param-duration-hours');
+      if (durationHours) {
+        params.duration_hours = parseFloat(durationHours.value) || null;
+      }
+    }
 
     const res = await fetch('/evaluation/api/tasks/' + TASK_ID, {
       method: 'PUT',
@@ -748,6 +968,15 @@ function pollExecProgress() {
   }, 1500);
 }
 
+async function executeTask() {
+  if (IS_REALTIME) {
+    // 实时模式直接执行，跳过分析阶段
+    await doExecute();
+  } else {
+    await analyzeTask();
+  }
+}
+
 async function doExecute() {
   goToStage('exec');
   const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/execute', {method:'POST'});
@@ -887,24 +1116,37 @@ function renderAlertGrid() {
     const badgeMap = { correct: ['ok', '正确'], false_positive: ['fp', '误检'], ignored: ['ignored', '忽略'] };
     const [badgeCls, badgeText] = badgeMap[status] || ['ok', '正确'];
     const cell = document.createElement('div');
-    cell.className = 'img-cell';
+    const isSelected = selectedAlertIds.has(r.id);
+    cell.className = 'img-cell' + (isSelected ? ' selected' : '');
     cell.id = 'alert-cell-' + r.id;
+    cell.dataset.id = r.id;
     const imgSrc = r.representative_image_id
       ? '/alerts/api/images/' + r.representative_image_id + '/file'
       : '';
     const tsLabel = formatTime(r.timestamp_seconds);
+
+    // 复选框（所有模式通用，仅在选择模式下显示）
+    const checkbox = `<div class="img-checkbox ${isSelected ? 'checked' : ''}"
+         onclick="event.stopPropagation(); toggleAlertSelect(${r.id})"></div>`;
+
+    // 下拉框（所有模式通用）
+    const statusControl = `
+      <select id="alert-status-${r.id}" class="btn btn-sm" style="width:100%;font-size:0.75rem;padding:2px 4px;"
+        onchange="updateManualStatus(${r.id}, this.value)">
+        <option value="auto" ${r.manual_status === 'auto' || !r.manual_status ? 'selected' : ''}>自动</option>
+        <option value="correct" ${r.manual_status === 'correct' ? 'selected' : ''}>正确</option>
+        <option value="false_positive" ${r.manual_status === 'false_positive' ? 'selected' : ''}>误检</option>
+        <option value="ignored" ${r.manual_status === 'ignored' ? 'selected' : ''}>忽略</option>
+      </select>
+    `;
+
     cell.innerHTML = `
+      ${checkbox}
       <img src="${imgSrc}" alt="" onclick="showAlertImageInModalById(${r.id})">
       <span id="alert-badge-${r.id}" class="img-badge badge-${badgeCls}">${badgeText}</span>
       <div class="img-label" style="flex-direction:column;align-items:flex-start;gap:2px;">
         <div>${escHtml(r.video_id||'')} ${escHtml(tsLabel)} ${escHtml(r.event_type||'')}</div>
-        <select id="alert-status-${r.id}" class="btn btn-sm" style="width:100%;font-size:0.75rem;padding:2px 4px;"
-          onchange="updateManualStatus(${r.id}, this.value)">
-          <option value="auto" ${r.manual_status === 'auto' || !r.manual_status ? 'selected' : ''}>自动</option>
-          <option value="correct" ${r.manual_status === 'correct' ? 'selected' : ''}>正确</option>
-          <option value="false_positive" ${r.manual_status === 'false_positive' ? 'selected' : ''}>误检</option>
-          <option value="ignored" ${r.manual_status === 'ignored' ? 'selected' : ''}>忽略</option>
-        </select>
+        ${statusControl}
       </div>
     `;
     grid.appendChild(cell);
@@ -1089,8 +1331,10 @@ async function saveGtEventCounts(gtId) {
 }
 
 function recomputeMetrics() {
-  const totalDuration = window.evalTotalDuration || 0;
-  const totalDurationHours = totalDuration / 3600;
+  // 实时模式使用 duration_hours，普通模式使用视频时长
+  const totalDurationHours = IS_REALTIME
+    ? (window.evalDurationHours || 0)
+    : (window.evalTotalDuration || 0) / 3600;
 
   // 按事件类型分组计算精确率和误检数
   const fpByType = {};
@@ -1124,32 +1368,36 @@ function recomputeMetrics() {
   window.evalAvgFpPerHour = avgFp;
   window.evalAccuracy = accuracy;
 
-  // 重新计算召回率（与后端逻辑保持一致）
-  const gtByType = {};
-  for (const g of gtResults) {
-    const confirmed = g.confirmed_count != null ? g.confirmed_count : (g.expected_count || 1);
-    const actual = g.actual_count || 0;
-    const et = g.event_type;
-    if (!et) continue;
-    if (!gtByType[et]) gtByType[et] = { confirmed: 0, hit: 0 };
-    if (confirmed === 0) {
-      if (actual > 0) {
-        gtByType[et].confirmed += 1;
-        gtByType[et].hit += 1;
+  // 实时模式不计算召回率
+  let recall = null;
+  if (!IS_REALTIME) {
+    // 重新计算召回率（与后端逻辑保持一致）
+    const gtByType = {};
+    for (const g of gtResults) {
+      const confirmed = g.confirmed_count != null ? g.confirmed_count : (g.expected_count || 1);
+      const actual = g.actual_count || 0;
+      const et = g.event_type;
+      if (!et) continue;
+      if (!gtByType[et]) gtByType[et] = { confirmed: 0, hit: 0 };
+      if (confirmed === 0) {
+        if (actual > 0) {
+          gtByType[et].confirmed += 1;
+          gtByType[et].hit += 1;
+        }
+      } else {
+        gtByType[et].confirmed += confirmed;
+        gtByType[et].hit += Math.min(actual, confirmed);
       }
-    } else {
-      gtByType[et].confirmed += confirmed;
-      gtByType[et].hit += Math.min(actual, confirmed);
     }
-  }
-  const typeRecalls = [];
-  for (const vals of Object.values(gtByType)) {
-    if (vals.confirmed > 0) {
-      typeRecalls.push(vals.hit / vals.confirmed);
+    const typeRecalls = [];
+    for (const vals of Object.values(gtByType)) {
+      if (vals.confirmed > 0) {
+        typeRecalls.push(vals.hit / vals.confirmed);
+      }
     }
+    recall = typeRecalls.length > 0 ? typeRecalls.reduce((a, b) => a + b, 0) / typeRecalls.length : null;
+    window.evalRecall = recall;
   }
-  const recall = typeRecalls.length > 0 ? typeRecalls.reduce((a, b) => a + b, 0) / typeRecalls.length : null;
-  window.evalRecall = recall;
 
   renderMetrics(accuracy, recall, avgFp);
 }
@@ -1263,10 +1511,7 @@ function renderEventMetricsTable(overall) {
           <th>告警事件个数</th>
           <th>准确预测个数</th>
           <th>精确率</th>
-          <th>GT事件个数</th>
-          <th>命中个数</th>
-          <th>漏检个数</th>
-          <th>召回率</th>
+          ${IS_REALTIME ? '' : '<th>GT事件个数</th><th>命中个数</th><th>漏检个数</th><th>召回率</th>'}
           <th>误检个数</th>
           <th>平均误检数/小时</th>
         </tr>
@@ -1278,16 +1523,18 @@ function renderEventMetricsTable(overall) {
           const fpCount = getFpCount(em);
           const avgFp = em.avg_fp_per_hour != null ? em.avg_fp_per_hour : computeAvgFp(fpCount);
           const fpClass = getFpMetricClass(avgFp);
+          const gtColumns = IS_REALTIME ? '' : `
+              <td>${em.gt_count}</td>
+              <td>${em.hit_count}</td>
+              <td>${em.missed_gt_count}</td>
+              <td class="${recallClass}">${em.recall != null ? (em.recall * 100).toFixed(1) + '%' : 'N/A'}</td>`;
           return `
             <tr>
               <td style="text-align:left;">${escHtml(em.event_type)}</td>
               <td>${em.alert_count}</td>
               <td>${em.correct_pred_count}</td>
               <td class="${precClass}">${em.precision != null ? (em.precision * 100).toFixed(1) + '%' : 'N/A'}</td>
-              <td>${em.gt_count}</td>
-              <td>${em.hit_count}</td>
-              <td>${em.missed_gt_count}</td>
-              <td class="${recallClass}">${em.recall != null ? (em.recall * 100).toFixed(1) + '%' : 'N/A'}</td>
+              ${gtColumns}
               <td>${fpCount}</td>
               <td class="${fpClass}">${avgFp.toFixed(2)}</td>
             </tr>
@@ -1298,10 +1545,10 @@ function renderEventMetricsTable(overall) {
           <td>${totalAlertCount}</td>
           <td>${totalCorrectPredCount}</td>
           <td class="${getMetricClass(overallPrecision)}">${overallPrecision != null ? (overallPrecision * 100).toFixed(1) + '%' : 'N/A'}</td>
-          <td>${totalGTCount}</td>
+          ${IS_REALTIME ? '' : `<td>${totalGTCount}</td>
           <td>${totalHitCount}</td>
           <td>${totalMissedGTCount}</td>
-          <td class="${getMetricClass(overallRecall, true)}">${overallRecall != null ? (overallRecall * 100).toFixed(1) + '%' : 'N/A'}</td>
+          <td class="${getMetricClass(overallRecall, true)}">${overallRecall != null ? (overallRecall * 100).toFixed(1) + '%' : 'N/A'}</td>`}
           <td>${totalFpCount}</td>
           <td class="${getFpMetricClass(overallAvgFp)}">${overallAvgFp.toFixed(2)}</td>
         </tr>
@@ -1452,12 +1699,28 @@ function renderImageModal() {
   let statusText = '—';
 
   let gtEditHtml = '';
+  let alertEditHtml = '';
   if (currentImageType === 'alert') {
     imgSrc = item.representative_image_id
       ? '/alerts/api/images/' + item.representative_image_id + '/file'
       : '';
     timeText = formatTime(item.timestamp_seconds) + ' (' + (item.timestamp_seconds != null ? item.timestamp_seconds + 's' : '-') + ')';
-    statusText = item.is_false_positive ? '误检' : '正确';
+    const effStatus = item.effective_status || (item.is_false_positive ? 'false_positive' : 'correct');
+    const statusLabels = { correct: '正确', false_positive: '误检', ignored: '忽略' };
+    statusText = statusLabels[effStatus] || '正确';
+    const ms = item.manual_status || 'auto';
+    // 大图模式标注下拉框
+    alertEditHtml = `
+      <div class="image-view-meta">
+        <label>标注状态</label>
+        <select id="modal-alert-status" class="btn btn-sm" style="width:100%;font-size:0.85rem;padding:0.3rem;" onchange="updateModalAlertStatus(${item.id}, this.value)">
+          <option value="auto" ${ms === 'auto' || !ms ? 'selected' : ''}>自动</option>
+          <option value="correct" ${ms === 'correct' ? 'selected' : ''}>正确</option>
+          <option value="false_positive" ${ms === 'false_positive' ? 'selected' : ''}>误检</option>
+          <option value="ignored" ${ms === 'ignored' ? 'selected' : ''}>忽略</option>
+        </select>
+      </div>
+    `;
   } else {
     imgSrc = item.mid_frame_id
       ? '/evaluation/api/gt-frames/' + item.mid_frame_id + '/file'
@@ -1497,6 +1760,7 @@ function renderImageModal() {
         <div class="image-view-meta"><label>事件类型</label><span>${escHtml(item.event_type||'—')}</span></div>
         <div class="image-view-meta"><label>时间</label><span>${escHtml(timeText)}</span></div>
         <div class="image-view-meta"><label>状态</label><span>${escHtml(statusText)}</span></div>
+        ${alertEditHtml}
         ${gtEditHtml}
         <div style="margin-top:auto; display:flex; justify-content:center; align-items:center; gap:0.5rem; flex-wrap:wrap;">
           ${currentImageType === 'alert' && item.representative_image_id
@@ -1505,7 +1769,9 @@ function renderImageModal() {
           ${currentImageType === 'gt' && item.gt_event_id && item.video_db_id
             ? `<button class="btn btn-sm" onclick="showGtFramesForEvent(${item.video_db_id}, ${item.gt_event_id})">查看所有GT帧</button>`
             : ''}
-          <a class="btn btn-sm btn-success" href="/videos/${item.video_db_id}/annotate/?from_eval_task=${TASK_ID}">重新标注</a>
+          ${currentImageType === 'alert' && item.video_db_id
+            ? `<a class="btn btn-sm btn-success" href="/videos/${item.video_db_id}/annotate/?from_eval_task=${TASK_ID}">重新标注</a>`
+            : ''}
           <button class="btn btn-sm btn-secondary" onclick="closeImageViewModal()">关闭</button>
         </div>
       </div>
@@ -1525,6 +1791,34 @@ function nextImage() {
   if (!currentImageList.length) return;
   currentImageIndex = (currentImageIndex + 1) % currentImageList.length;
   renderImageModal();
+}
+
+async function updateModalAlertStatus(mergedId, status) {
+  try {
+    const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/merged-events/' + mergedId + '/status', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({manual_status: status})
+    });
+    const data = await res.json();
+    if (!res.ok) { alert('更新失败: ' + (data.error || '未知')); return; }
+    // 更新本地数据
+    const r = alertResults.find(x => x.id === mergedId);
+    if (r) {
+      r.manual_status = status;
+      r.effective_status = status === 'auto' ? (r.is_false_positive ? 'false_positive' : 'correct') : status;
+    }
+    const cur = currentImageList[currentImageIndex];
+    if (cur && cur.id === mergedId) {
+      cur.manual_status = status;
+      cur.effective_status = r ? r.effective_status : cur.effective_status;
+    }
+    renderAlertGrid();
+    recomputeMetrics();
+    renderImageModal();
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+  }
 }
 
 // ── 查看事件全部 GT 帧 ─────────────────────────────────────────────────────────
@@ -1631,6 +1925,50 @@ async function doUnconfirm() {
   }
 }
 
+// ── 实时模式自动启动 ────────────────────────────────────────────────────────────
+async function realtimeAutoStart() {
+  // 实时模式：隐藏阶段标签，自动执行分析→确认→评测→进入结果
+  document.querySelector('.stage-tabs').style.display = 'none';
+  goToStage('exec');
+  document.getElementById('exec-progress-text').textContent = '正在初始化实时采集评测…';
+
+  try {
+    // Step 1: 分析
+    const analyzeRes = await fetch('/evaluation/api/tasks/' + TASK_ID + '/analyze', {method:'POST'});
+    const analyzeData = await analyzeRes.json();
+    if (!analyzeRes.ok) { alert('分析失败: ' + (analyzeData.error || '未知')); return; }
+
+    const merged = analyzeData.merged_alerts || [];
+    const gt = analyzeData.gt_events || [];
+
+    if (merged.length === 0) {
+      alert('没有可评测的告警图片！');
+      return;
+    }
+
+    // Step 2: 确认（全部单张，直接确认）
+    const confirmRes = await fetch('/evaluation/api/tasks/' + TASK_ID + '/confirm', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ merged_alerts: merged, gt_events: gt }),
+    });
+    if (!confirmRes.ok) {
+      const cd = await confirmRes.json();
+      alert('确认失败: ' + (cd.error || '未知'));
+      return;
+    }
+
+    // Step 3: 执行评测
+    const execRes = await fetch('/evaluation/api/tasks/' + TASK_ID + '/execute', {method:'POST'});
+    const execData = await execRes.json();
+    if (!execRes.ok) { alert('执行失败: ' + (execData.error || '未知')); return; }
+
+    pollExecProgress();
+  } catch(e) {
+    alert('自动启动失败: ' + e.message);
+  }
+}
+
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 updateStatusBadge();
 renderAlgoVersions();
@@ -1654,6 +1992,13 @@ if (isFinalized) {
     renderMetrics(window.evalAccuracy, window.evalRecall, window.evalAvgFpPerHour);
     document.getElementById('finalize-bar').style.display = '';
   });
+} else if (IS_REALTIME && (initStatus === 'created' || initStatus === 'confirming')) {
+  // 实时模式：跳过参数和确认，直接自动执行
+  realtimeAutoStart();
+} else if (IS_REALTIME) {
+  // 实时模式其他状态（evaluating等）
+  goToStage('exec');
+  pollExecProgress();
 } else {
   goToStage('params');
 }

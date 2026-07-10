@@ -100,13 +100,14 @@ def create_dataset():
     data = request.get_json() or {}
     name = data.get('name', '').strip()
     notes = data.get('notes', '').strip()
+    mode = data.get('mode', 'normal')
     algorithm_version_ids = data.get('algorithm_version_ids', [])
     if not name:
         return jsonify({'error': '数据集名称不能为空'}), 400
 
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('INSERT INTO datasets (name, notes) VALUES (?, ?)', (name, notes or None))
+    cursor.execute('INSERT INTO datasets (name, notes, mode) VALUES (?, ?, ?)', (name, notes or None, mode))
     db.commit()
     dataset_id = cursor.lastrowid
 
@@ -114,7 +115,7 @@ def create_dataset():
     if algorithm_version_ids:
         _set_dataset_algorithm_versions(db, dataset_id, algorithm_version_ids)
 
-    cursor.execute('SELECT id, name, notes, created_at FROM datasets WHERE id = ?', (dataset_id,))
+    cursor.execute('SELECT id, name, notes, mode, created_at FROM datasets WHERE id = ?', (dataset_id,))
     row = dict(cursor.fetchone())
     row['image_count'] = 0
     return jsonify({'success': True, 'dataset': row})
@@ -197,6 +198,25 @@ def set_dataset_algorithm_versions(dataset_id):
 
     _set_dataset_algorithm_versions(db, dataset_id, algorithm_version_ids)
     return jsonify({'success': True, 'algorithm_versions': _get_dataset_algorithm_versions(db, dataset_id)})
+
+
+@bp.route('/api/datasets/<int:dataset_id>/mode', methods=['PUT'])
+def update_dataset_mode(dataset_id):
+    """切换数据集模式（normal 或 realtime）"""
+    data = request.get_json() or {}
+    mode = data.get('mode')
+    if mode not in ('normal', 'realtime'):
+        return jsonify({'error': '无效的模式，必须是 normal 或 realtime'}), 400
+
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id FROM datasets WHERE id = ?', (dataset_id,))
+    if not cursor.fetchone():
+        return jsonify({'error': '数据集不存在'}), 404
+
+    cursor.execute('UPDATE datasets SET mode = ? WHERE id = ?', (mode, dataset_id))
+    db.commit()
+    return jsonify({'success': True, 'mode': mode})
 
 
 @bp.route('/api/datasets/<int:dataset_id>', methods=['DELETE'])
@@ -396,7 +416,7 @@ def import_zip(dataset_id):
 def dataset_detail_page(dataset_id):
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT id, name, notes, created_at FROM datasets WHERE id = ?', (dataset_id,))
+    cursor.execute('SELECT id, name, notes, mode, created_at FROM datasets WHERE id = ?', (dataset_id,))
     dataset = cursor.fetchone()
     if not dataset:
         return '数据集不存在', 404
@@ -406,6 +426,9 @@ def dataset_detail_page(dataset_id):
         dataset_dict['created_at'] = dataset_dict['created_at'].strftime('%Y-%m-%d %H:%M:%S')
     else:
         dataset_dict['created_at'] = str(dataset_dict.get('created_at', ''))
+    # 确保 mode 有默认值
+    if not dataset_dict.get('mode'):
+        dataset_dict['mode'] = 'normal'
     return render_template('dataset_detail.html', dataset=dataset_dict)
 
 

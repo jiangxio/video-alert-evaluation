@@ -10,14 +10,9 @@
   .toolbar { display:flex; gap:0.6rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap; }
 
   .algo-type-tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.78rem; font-weight:600; }
-  .type-rat    { background:#ffeaa7; color:#6c5ce7; }
-  .type-smoke  { background:#dfe6e9; color:#2d3436; }
-  .type-use_phone { background:#74b9ff; color:#0984e3; }
-  .type-call_phone { background:#a29bfe; color:#6c5ce7; }
-  .type-chef   { background:#fd79a8; color:#e84393; }
-  .type-trash  { background:#55efc4; color:#00b894; }
-  .type-mask   { background:#fab1a0; color:#d63031; }
-  .type-flame  { background:#ff7675; color:#d63031; }
+{% for etype, (bg, fg) in TYPE_TAG_COLORS.items() %}
+  .type-{{ etype }} { background:{{ bg }}; color:{{ fg }}; }
+{% endfor %}
 
   .file-link { font-size:0.8rem; color:#3498db; text-decoration:none; }
   .file-link:hover { text-decoration:underline; }
@@ -95,14 +90,9 @@
         <label>算法类型 *</label>
         <select id="algoType" required>
           <option value="">-- 请选择 --</option>
-          <option value="rat">老鼠 (rat)</option>
-          <option value="smoke">抽烟 (smoke)</option>
-          <option value="use_phone">玩手机 (use_phone)</option>
-          <option value="call_phone">打电话 (call_phone)</option>
-          <option value="chef">厨师服 (chef)</option>
-          <option value="trash">垃圾 (trash)</option>
-          <option value="mask">帽子/口罩 (mask)</option>
-          <option value="flame">火焰 (flame)</option>
+          {% for et in EVENT_TYPES %}
+          <option value="{{ et }}">{{ TYPE_NAMES.get(et, et) }} ({{ et }})</option>
+          {% endfor %}
         </select>
       </div>
 
@@ -199,10 +189,7 @@
 </div>
 
 <script>
-const TYPE_NAMES = {
-  rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话',
-  chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰'
-};
+const TYPE_NAMES = {{ TYPE_NAMES | tojson | safe }};
 
 let versionData = [];
 let selectedIds = new Set();
@@ -585,9 +572,7 @@ document.getElementById('algoFile').addEventListener('change', function(e) {
   const typeInput = document.getElementById('algoType');
   if (!typeInput.value) {
     const lowerName = baseName.toLowerCase();
-    const TYPE_KEYWORDS = [
-      'use_phone', 'call_phone', 'smoke', 'flame', 'rat', 'chef', 'trash', 'mask'
-    ];
+    const TYPE_KEYWORDS = Object.keys(TYPE_NAMES);
     for (const kw of TYPE_KEYWORDS) {
       if (lowerName.includes(kw)) {
         typeInput.value = kw;

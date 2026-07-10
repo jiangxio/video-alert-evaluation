@@ -49,6 +49,16 @@
   .img-label.no-label { background:#aaa; }
   .img-cell.ocr-ok .img-label { background:#27ae60; }
   .img-cell.ocr-fail .img-label { background:#e74c3c; }
+  .img-cell.selected { border-color:#3498db; box-shadow:0 0 0 2px #3498db; }
+
+  /* 实时模式标识 */
+  .mode-badge { display:inline-block; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.75rem; font-weight:600; margin-left:0.5rem; }
+  .mode-normal { background:#d4edda; color:#155724; }
+  .mode-realtime { background:#fff3cd; color:#856404; }
+
+  /* 批量标注工具栏 */
+  .batch-annotate-bar { display:flex; gap:0.5rem; align-items:center; padding:0.7rem; background:#f8f9fa; border-radius:6px; margin:1rem 0; }
+  .batch-annotate-bar .btn-sm { min-width:80px; }
 
   #empty-grid { text-align:center; color:#aaa; padding:3rem; grid-column:1/-1; }
   #upload-msg { margin-bottom:0.5rem; }
@@ -92,6 +102,12 @@
     <span class="ds-name">{{ dataset.name }}</span>
     <span class="ds-meta">创建于 {{ dataset.created_at[:10] }}</span>
     <span class="ds-meta" id="img-count-badge">-</span>
+    <span class="mode-badge {% if dataset.mode == 'realtime' %}mode-realtime{% else %}mode-normal{% endif %}">
+      {% if dataset.mode == 'realtime' %}⚡ 实时采集模式{% else %}📄 普通模式{% endif %}
+    </span>
+    <button class="btn btn-sm" onclick="switchMode()" style="margin-left:auto;">
+      {% if dataset.mode == 'realtime' %}切换为普通模式{% else %}切换为实时采集模式{% endif %}
+    </button>
   </div>
   {% if dataset.notes %}
   <div class="ds-notes">{{ dataset.notes }}</div>
@@ -126,6 +142,7 @@
     <span id="deleteMsg" style="margin-left:0.5rem;font-size:0.85rem;"></span>
   </div>
 
+  {% if dataset.mode != 'realtime' %}
   <div class="toolbar">
     <button class="btn btn-sm" onclick="openOcrModal()">批量 OCR</button>
     <button class="btn btn-sm" onclick="downloadDataset()">下载全部图片 (ZIP)</button>
@@ -139,9 +156,11 @@
     </label>
     <span id="ocr-summary" style="font-size:0.85rem;color:#666;"></span>
   </div>
+  {% endif %}
 
   <div class="toolbar" style="background:#f8f9fa;padding:0.7rem;border-radius:6px;">
     <span style="color:#555;">筛选：</span>
+    {% if dataset.mode != 'realtime' %}
     <select id="labelFilter" class="action-select" onchange="filterImages()">
       <option value="all">全部图片</option>
       <option value="unlabeled">未标注</option>
@@ -150,6 +169,7 @@
     </select>
     <span style="margin-left:1rem;color:#555;">视频ID：</span>
     <input type="text" id="videoIdFilter" class="action-select" placeholder="输入视频ID" style="width:120px;" oninput="filterImages()">
+    {% endif %}
     <span style="margin-left:1rem;color:#555;">事件类型：</span>
     <select id="eventTypeFilter" class="action-select" onchange="filterImages()">
       <option value="">全部类型</option>
@@ -159,6 +179,19 @@
   <div class="img-grid" id="img-grid">
     <div id="empty-grid">暂无图片，请上传</div>
   </div>
+
+  {% if dataset.mode == 'realtime' %}
+  <!-- 实时模式：批量标注工具栏 -->
+  <div id="batch-annotate-bar" class="batch-annotate-bar" style="display:none;">
+    <button class="btn btn-sm btn-secondary" onclick="clearSelection()">取消选择</button>
+    <span id="selected-count" style="font-size:0.85rem;color:#555;">已选 0 张</span>
+    <span style="color:#555;">批量设置事件类型：</span>
+    <select id="batch-label-select" class="action-select" style="width:180px;">
+      <option value="">-- 选择事件类型 --</option>
+    </select>
+    <button class="btn btn-sm btn-success" onclick="batchSetLabel()">应用</button>
+  </div>
+  {% endif %}
 
   <div style="margin-top:1.5rem;padding-top:1rem;border-top:1px solid #eee;">
     <h4 style="font-size:0.95rem;color:#555;margin-bottom:0.6rem;">操作记录</h4>
@@ -182,6 +215,7 @@
           <option value="">未标记</option>
         </select>
       </td></tr>
+      {% if dataset.mode != 'realtime' %}
       <tr><td>video_id</td><td>
         <input type="text" id="detail-video-id-input" style="padding:0.3rem;border:1px solid #ddd;border-radius:4px;font-size:0.9rem;width:120px;" placeholder="10位数字">
         <span id="detail-video-id" style="display:none;"></span>
@@ -191,12 +225,15 @@
         <span id="detail-timestamp" style="display:none;"></span>
       </td></tr>
       <tr><td>原始OCR</td><td id="detail-raw-ocr" style="font-size:0.85rem;color:#888;word-break:break-all;max-width:300px;">-</td></tr>
+      {% endif %}
       <tr><td>原始尺寸</td><td id="detail-size">-</td></tr>
       <tr><td>文件大小</td><td id="detail-filesize">-</td></tr>
     </table>
     <div class="detail-footer">
+      {% if dataset.mode != 'realtime' %}
       <button class="btn btn-sm" id="btn-ocr-single" onclick="runSingleOcr()">执行 OCR</button>
       <button class="btn btn-sm btn-success" id="btn-ocr-save" onclick="saveManualOcr()">保存 OCR</button>
+      {% endif %}
       <button class="btn btn-sm btn-danger" onclick="deleteCurrentImage()">删除图片</button>
     </div>
   </div>
@@ -219,11 +256,115 @@
 
 <script>
 const DATASET_ID = {{ dataset.id }};
+const DATASET_MODE = '{{ dataset.mode }}';
+const IS_REALTIME = DATASET_MODE === 'realtime';
 let EVENT_TYPES = [];  // 从配置文件动态加载
 
 let allImages = [];
 let currentImageId = null;
 let ocrPollTimer = null;
+
+// ── 实时模式：选择状态 ──────────────────────────────────────────────────────
+let selectMode = false;
+let selectedImages = new Set();
+
+// ── 模式切换 ─────────────────────────────────────────────────────────────────
+async function switchMode() {
+  const newMode = IS_REALTIME ? 'normal' : 'realtime';
+  const msg = newMode === 'realtime' ? '切换到实时采集模式？此模式下将禁用OCR功能。' : '切换到普通模式？';
+  if (!confirm(msg)) return;
+
+  try {
+    const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/mode`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode: newMode})
+    });
+    if (res.ok) {
+      location.reload();
+    } else {
+      const data = await res.json();
+      alert('切换失败: ' + (data.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+  }
+}
+
+// ── 选择模式控制 ──────────────────────────────────────────────────────────────
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  const btn = document.getElementById('btn-select-mode');
+  const bar = document.getElementById('batch-annotate-bar');
+
+  if (selectMode) {
+    btn.textContent = '退出选择';
+    btn.className = 'btn btn-sm btn-warning';
+    bar.style.display = 'flex';
+  } else {
+    btn.textContent = '进入选择模式';
+    btn.className = 'btn btn-sm btn-secondary';
+    bar.style.display = 'none';
+    clearSelection();
+  }
+  renderGrid(getFilteredImages());
+}
+
+function clearSelection() {
+  selectedImages.clear();
+  updateSelectedCount();
+  document.querySelectorAll('.img-cell.selected').forEach(el => el.classList.remove('selected'));
+}
+
+function updateSelectedCount() {
+  const countEl = document.getElementById('selected-count');
+  if (countEl) {
+    countEl.textContent = `已选 ${selectedImages.size} 张`;
+  }
+}
+
+function toggleImageSelection(imageId) {
+  if (selectedImages.has(imageId)) {
+    selectedImages.delete(imageId);
+  } else {
+    selectedImages.add(imageId);
+  }
+  updateSelectedCount();
+}
+
+async function batchSetLabel() {
+  const select = document.getElementById('batch-label-select');
+  const label = select.value;
+  if (!label) {
+    alert('请先选择事件类型');
+    return;
+  }
+  if (selectedImages.size === 0) {
+    alert('请先选择图片');
+    return;
+  }
+
+  if (!confirm(`确定要为 ${selectedImages.size} 张图片设置事件类型为 "${label}" 吗？`)) {
+    return;
+  }
+
+  try {
+    const promises = Array.from(selectedImages).map(imageId =>
+      fetch(`/alerts/api/images/${imageId}/label`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event_label: label})
+      })
+    );
+
+    await Promise.all(promises);
+    alert(`成功为 ${selectedImages.size} 张图片设置了事件类型`);
+    clearSelection();
+    await loadImages();
+  } catch (e) {
+    alert('批量设置失败: ' + e.message);
+  }
+}
 
 // ── 加载图片 ──────────────────────────────────────────────────────────────────
 async function loadImages() {
@@ -232,20 +373,25 @@ async function loadImages() {
   filterImages();
 }
 
-function filterImages() {
-  const mode = document.getElementById('labelFilter').value;
-  const videoIdFilter = document.getElementById('videoIdFilter').value.trim();
+function getFilteredImages() {
   const eventTypeFilter = document.getElementById('eventTypeFilter').value;
+  let labelFilterValue = 'all';
+  let videoIdFilterValue = '';
 
-  const filtered = allImages.filter(img => {
-    if (mode === 'unlabeled') return !img.ocr;
-    if (mode === 'failed') return img.ocr && !img.ocr.success;
-    if (mode === 'labeled') return img.ocr && img.ocr.success;
+  {% if dataset.mode != 'realtime' %}
+  labelFilterValue = document.getElementById('labelFilter').value;
+  videoIdFilterValue = document.getElementById('videoIdFilter').value.trim();
+  {% endif %}
+
+  return allImages.filter(img => {
+    if (labelFilterValue === 'unlabeled') return !img.ocr;
+    if (labelFilterValue === 'failed') return img.ocr && !img.ocr.success;
+    if (labelFilterValue === 'labeled') return img.ocr && img.ocr.success;
     return true;
   }).filter(img => {
-    if (videoIdFilter) {
+    if (videoIdFilterValue) {
       const vid = img.ocr?.video_id || '';
-      if (!vid.includes(videoIdFilter)) return false;
+      if (!vid.includes(videoIdFilterValue)) return false;
     }
     if (eventTypeFilter) {
       const et = img.alert_type || img.event_label || '';
@@ -253,6 +399,10 @@ function filterImages() {
     }
     return true;
   });
+}
+
+function filterImages() {
+  const filtered = getFilteredImages();
   renderGrid(filtered);
 }
 
@@ -267,17 +417,35 @@ function renderGrid(images) {
   if (!images.length) { empty.style.display = 'block'; return; }
   empty.style.display = 'none';
 
+  {% if dataset.mode != 'realtime' %}
   const ocrOk = images.filter(i => i.ocr && i.ocr.success).length;
   document.getElementById('ocr-summary').textContent =
     ocrOk ? `已完成 OCR ${ocrOk} / ${images.length} 张` : '';
+  {% endif %}
 
   for (const img of images) {
     const cell = document.createElement('div');
-    cell.className = 'img-cell' + (img.ocr ? (img.ocr.success ? ' ocr-ok' : ' ocr-fail') : '');
+    const isSelected = selectedImages.has(img.id);
+    cell.className = 'img-cell' + (isSelected ? ' selected' : '');
+    {% if dataset.mode != 'realtime' %}
+    cell.className += (img.ocr ? (img.ocr.success ? ' ocr-ok' : ' ocr-fail') : '');
+    {% endif %}
     cell.dataset.id = img.id;
-    cell.onclick = () => openDetail(img.id);
+
+    if (IS_REALTIME && selectMode) {
+      cell.onclick = (e) => {
+        e.stopPropagation();
+        toggleImageSelection(img.id);
+        cell.classList.toggle('selected');
+      };
+    } else {
+      cell.onclick = () => openDetail(img.id);
+    }
 
     let labelText;
+    {% if dataset.mode == 'realtime' %}
+    labelText = img.event_label || img.alert_type || '未标注';
+    {% else %}
     if (!img.ocr) {
       labelText = '未标注';
     } else if (!img.ocr.success) {
@@ -285,9 +453,11 @@ function renderGrid(images) {
     } else {
       labelText = img.ocr.video_id || '已标注';
     }
+    {% endif %}
+    const noLabelCls = (IS_REALTIME || (img.ocr && img.ocr.success)) ? '' : ' no-label';
     cell.innerHTML = `
       <img src="/alerts/api/images/${img.id}/file" loading="lazy" alt="${escHtml(img.filename)}">
-      <div class="img-label${img.ocr && img.ocr.success ? '' : ' no-label'}">${escHtml(labelText)}</div>
+      <div class="img-label${noLabelCls}">${escHtml(labelText)}</div>
     `;
     grid.appendChild(cell);
   }
@@ -736,7 +906,7 @@ async function loadAlgoVersions() {
       el.innerHTML = '<span style="color:#888;">未关联算法版本</span>';
       return;
     }
-    const TYPE_NAMES = { rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话', chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰' };
+    const TYPE_NAMES = {{ TYPE_NAMES | tojson | safe }};
     el.innerHTML = list.map(v =>
       `<span style="display:inline-block;background:#e8f4fd;color:#2980b9;padding:0.15rem 0.5rem;border-radius:10px;font-size:0.78rem;margin:0.15rem 0.3rem 0.15rem 0;">
         ${TYPE_NAMES[v.algorithm_type] || v.algorithm_type}: ${escHtml(v.name)} (${v.version_date})
@@ -756,7 +926,7 @@ async function openAlgoVersionModal() {
   const allVersions = await versionsR.json();
   const currentIds = (await currentR.json()).map(v => v.id);
 
-  const TYPE_NAMES = { rat:'老鼠', smoke:'抽烟', use_phone:'玩手机', call_phone:'打电话', chef:'厨师服', trash:'垃圾', mask:'帽子/口罩', flame:'火焰' };
+  const TYPE_NAMES = {{ TYPE_NAMES | tojson | safe }};
 
   // 按类型分组
   const byType = {};

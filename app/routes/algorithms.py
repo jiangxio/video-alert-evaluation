@@ -14,10 +14,11 @@ from werkzeug.utils import secure_filename
 from app.database import get_db
 from app.routes import send_file_with_cache
 from app.utils import allowed_file
+from app.event_types import get_event_types
 
 bp = Blueprint("algorithms", __name__, url_prefix="/algorithms")
 
-EVENT_TYPES = ["rat", "smoke", "use_phone", "call_phone", "chef", "trash", "mask", "flame"]
+EVENT_TYPES = get_event_types()
 
 
 # ── 页面路由 ────────────────────────────────────────────────────────────────

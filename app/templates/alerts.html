@@ -128,6 +128,13 @@
       <textarea id="new-notes" placeholder="可选备注信息"></textarea>
     </div>
     <div class="form-group">
+      <label>数据集模式</label>
+      <select id="new-mode" style="width:100%;padding:0.55rem 0.7rem;border:1px solid #ddd;border-radius:4px;font-size:0.95rem;">
+        <option value="normal">普通模式（含OCR+GT）</option>
+        <option value="realtime">实时采集模式（无OCR+无GT，人工判断）</option>
+      </select>
+    </div>
+    <div class="form-group">
       <label>上传数据集文件 <span style="color:#888;font-weight:normal;">（可选，.zip / .tar / .tar.gz）</span></label>
       <div class="zip-drop" id="zip-drop" onclick="document.getElementById('zip-input').click()">
         <p>拖拽压缩文件到这里，或点击选择</p>
@@ -192,7 +199,7 @@ async function loadDatasets() {
     card.innerHTML = `
       <input type="checkbox" class="dataset-checkbox" ${selectedDatasetIds.has(d.id) ? 'checked' : ''} data-id="${d.id}">
       <h3>${escHtml(d.name)}</h3>
-      <div class="dataset-meta">${date}</div>
+      <div class="dataset-meta">${date}${d.mode === 'realtime' ? ' <span style="color:#e67e22;font-size:0.78rem;font-weight:600;">⚡ 实时采集</span>' : ''}</div>
       <div class="dataset-count">共 ${d.image_count} 张图片</div>
       ${d.notes ? `<div class="dataset-notes" title="${escHtml(d.notes)}">${escHtml(d.notes)}</div>` : ''}
       <div class="dataset-actions">
@@ -346,6 +353,7 @@ async function createDataset() {
   const name = document.getElementById('new-name').value.trim();
   if (!name) { alert('请输入数据集名称'); return; }
   const notes = document.getElementById('new-notes').value.trim();
+  const mode = document.getElementById('new-mode').value;
   const zipFile = document.getElementById('zip-input').files[0];
 
   // 禁用按钮防重复
@@ -356,7 +364,7 @@ async function createDataset() {
   const res = await fetch('/alerts/api/datasets', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name, notes})
+    body: JSON.stringify({name, notes, mode})
   });
   const data = await res.json();
   if (!res.ok) {

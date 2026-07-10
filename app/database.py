@@ -1,4 +1,5 @@
 """数据库初始化和连接管理"""
+import json
 import sqlite3
 from pathlib import Path
 from flask import g, current_app
@@ -22,6 +23,65 @@ def close_db(e=None):
     db = g.pop('db', None)
     if db is not None:
         db.close()
+
+
+def _seed_event_types(cursor):
+    """从硬编码注册表和 config/alert_types.json 播种 event_types 表"""
+    from app.event_types import (
+        EVENT_TYPES,
+        TYPE_NAMES,
+        TYPE_DESCRIPTIONS,
+        TYPE_TAG_COLORS,
+    )
+
+    config_path = Path(__file__).parent.parent / 'config' / 'alert_types.json'
+    id_to_key = {}
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split(maxsplit=1)
+                    if len(parts) == 2:
+                        alert_id, alert_type = parts
+                        id_to_key[int(alert_id)] = alert_type
+        except Exception:
+            pass
+
+    key_to_id = {v: k for k, v in id_to_key.items()}
+
+    # 硬编码列表中的类型优先播种
+    for idx, key in enumerate(EVENT_TYPES):
+        et_id = key_to_id.get(key)
+        if et_id is None:
+            et_id = 100 + idx
+        name = TYPE_NAMES.get(key, key)
+        description = TYPE_DESCRIPTIONS.get(key, '')
+        bg_color, fg_color = TYPE_TAG_COLORS.get(key, ('#e0e0e0', '#333333'))
+        cursor.execute(
+            '''
+            INSERT OR IGNORE INTO event_types
+            (id, key, name, description, bg_color, fg_color, tags, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (et_id, key, name, description, bg_color, fg_color, '[]', idx)
+        )
+
+    # config 中存在但硬编码中没有的类型，用占位数据播种
+    existing_keys = set(EVENT_TYPES)
+    for alert_id, alert_key in id_to_key.items():
+        if alert_key in existing_keys:
+            continue
+        cursor.execute(
+            '''
+            INSERT OR IGNORE INTO event_types
+            (id, key, name, description, bg_color, fg_color, tags, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (alert_id, alert_key, alert_key, '', '#e0e0e0', '#333333', '[]', alert_id)
+        )
 
 
 def init_db():
@@ -480,6 +540,25 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # 事件类型注册表（算法类型）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS event_types (
+            id INTEGER PRIMARY KEY,
+            key TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT,
+            bg_color TEXT NOT NULL DEFAULT '#e0e0e0',
+            fg_color TEXT NOT NULL DEFAULT '#333333',
+            tags TEXT NOT NULL DEFAULT '[]',
+            sort_order INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 从硬编码注册表 + config/alert_types.json 播种 event_types
+    _seed_event_types(cursor)
 
     # 数据集算法版本关联表（带历史记录）
     cursor.execute('''

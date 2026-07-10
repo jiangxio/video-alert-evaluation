@@ -24,6 +24,8 @@ DEFAULT_CONFIG = {
     'video_codec': 'libx264',
     'crf': 23,
     'preset': 'medium',
+    'gop_size': 50,
+    'keyint_min': 50,
     'audio_codec': 'copy',
 }
 
@@ -216,6 +218,8 @@ def build_ffmpeg_cmd(input_path, output_path, video_id,
         '-c:v', config['video_codec'],
         '-crf', str(config['crf']),
         '-preset', config['preset'],
+        '-g', str(config['gop_size']),
+        '-keyint_min', str(config['keyint_min']),
         '-movflags', '+faststart',
         '-hide_banner',
         '-loglevel', 'error',

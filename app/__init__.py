@@ -22,7 +22,25 @@ def create_app(config_class=Config):
     app.register_blueprint(evaluation.bp)
     app.register_blueprint(auto_annotation.bp)
     app.register_blueprint(streaming.bp)
+    streaming.init_streaming_cleanup()
     app.register_blueprint(algorithms.bp)
+
+    # 向所有模板注入事件类型注册表
+    from app.event_types import (
+        get_event_types,
+        get_type_names,
+        get_type_descriptions,
+        get_type_tag_colors,
+    )
+
+    @app.context_processor
+    def inject_event_types():
+        return {
+            "EVENT_TYPES": get_event_types(),
+            "TYPE_NAMES": get_type_names(),
+            "TYPE_DESCRIPTIONS": get_type_descriptions(),
+            "TYPE_TAG_COLORS": get_type_tag_colors(),
+        }
 
     # 首页路由
     @app.route('/')

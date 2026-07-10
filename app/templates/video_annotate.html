@@ -328,14 +328,9 @@
 
       <div class="add-event-form" style="flex-wrap:wrap;align-items:center;">
         <select id="eventType">
-          <option value="rat">rat</option>
-          <option value="smoke">smoke</option>
-          <option value="use_phone">use_phone</option>
-          <option value="call_phone">call_phone</option>
-          <option value="chef">chef</option>
-          <option value="trash">trash</option>
-          <option value="mask">mask</option>
-          <option value="flame">flame</option>
+          {% for et in EVENT_TYPES %}
+          <option value="{{ et }}">{{ TYPE_NAMES.get(et, et) }}</option>
+          {% endfor %}
         </select>
         <div style="display:flex;gap:0.3rem;align-items:center;">
           <input type="number" id="startMin" placeholder="0" min="0" style="width:50px;padding:0.4rem;border:1px solid #ddd;border-radius:4px;font-size:0.88rem;">
@@ -464,6 +459,7 @@
 
 <script>
 const VIDEO_ID = {{ video.id }};
+const TYPE_NAMES = {{ TYPE_NAMES | tojson | safe }};
 const urlParams = new URLSearchParams(window.location.search);
 const FROM_EVAL_TASK = urlParams.get('from_eval_task');
 let videoData = null;
@@ -588,7 +584,7 @@ function renderEvents() {
       : '-';
     return `
       <tr data-event-id="${e.id}">
-        <td>${escHtml(e.event_type)}</td>
+        <td>${escHtml(TYPE_NAMES[e.event_type] || e.event_type)}</td>
         <td>${formatTime(e.start_seconds)}</td>
         <td>${formatTime(e.end_seconds)}</td>
         <td><span class="gt-status gt-status-${e.gt_frames_status}">${statusText}</span></td>

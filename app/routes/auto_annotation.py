@@ -20,10 +20,11 @@ from app.services.behavior_analysis_service import (
     get_api_client,
     load_config as load_anno_config,
 )
+from app.event_types import get_event_types
 
 bp = Blueprint("auto_annotation", __name__, url_prefix="/auto-annotation")
 
-EVENT_TYPES = ["rat", "smoke", "use_phone", "call_phone", "chef", "trash", "mask", "flame"]
+EVENT_TYPES = get_event_types()
 
 # ── 内存任务状态 ────────────────────────────────────────────────────────────
 _auto_anno_tasks = {}

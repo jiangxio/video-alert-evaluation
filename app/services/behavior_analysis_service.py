@@ -55,16 +55,9 @@ def _encode_image(image_path: str) -> tuple[str, str]:
 
 def build_prompt(valid_event_types: list[str]) -> str:
     """根据允许的事件类型构建多模态分析 prompt"""
-    type_descriptions = {
-        "rat": "老鼠：画面中出现老鼠",
-        "smoke": "抽烟：有人正在抽烟，手持香烟靠近嘴边，可能有烟雾",
-        "use_phone": "玩手机：低头看着手中的手机屏幕（发短信、刷视频、玩游戏），手机不在耳边",
-        "call_phone": "打电话：手机贴在耳朵旁，正在语音通话",
-        "chef": "厨师服：穿着白色厨师服或围裙",
-        "trash": "垃圾：画面中有垃圾或废弃物堆积",
-        "mask": "帽子/口罩：戴着帽子、口罩或头套",
-        "flame": "火焰：画面中出现明火或火焰",
-    }
+    from app.event_types import get_type_descriptions
+
+    type_descriptions = get_type_descriptions()
 
     lines = [
         "Analyze the image and identify if any of the following events are present. "

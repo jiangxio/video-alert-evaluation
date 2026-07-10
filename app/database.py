@@ -451,6 +451,16 @@ def init_db():
             suggested_algorithms TEXT,
             error_message TEXT,
             pid INTEGER,
+            log_path TEXT,
+            resume_video_index INTEGER,
+            resume_offset REAL,
+            resume_loop INTEGER,
+            resume_at TIMESTAMP,
+            restart_count INTEGER DEFAULT 0,
+            max_restarts INTEGER DEFAULT 3,
+            last_error TEXT,
+            current_video_index INTEGER,
+            current_loop INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             started_at TIMESTAMP,
             ended_at TIMESTAMP
@@ -485,6 +495,42 @@ def init_db():
     # 为 eval_tasks 追加 algorithm_versions 字段（兼容已有数据）
     try:
         cursor.execute('ALTER TABLE eval_tasks ADD COLUMN algorithm_versions TEXT')
+    except Exception:
+        pass  # 列已存在
+
+    # 为 stream_tasks 追加 log_path 字段（兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE stream_tasks ADD COLUMN log_path TEXT')
+    except Exception:
+        pass  # 列已存在
+
+    # 为 stream_tasks 追加 resume 字段（兼容已有数据）
+    resume_cols = [
+        ('resume_video_index', 'INTEGER'),
+        ('resume_offset', 'REAL'),
+        ('resume_loop', 'INTEGER'),
+        ('resume_at', 'TIMESTAMP'),
+        ('restart_count', 'INTEGER'),
+        ('max_restarts', 'INTEGER'),
+        ('last_error', 'TEXT'),
+        ('current_video_index', 'INTEGER'),
+        ('current_loop', 'INTEGER'),
+    ]
+    for col, col_type in resume_cols:
+        try:
+            cursor.execute(f'ALTER TABLE stream_tasks ADD COLUMN {col} {col_type}')
+        except Exception:
+            pass  # 列已存在
+
+    # 为 eval_tasks 追加 duration_hours 列（实时模式采集时长）
+    try:
+        cursor.execute('ALTER TABLE eval_tasks ADD COLUMN duration_hours REAL')
+    except Exception:
+        pass  # 列已存在
+
+    # 为 datasets 追加 mode 列（数据集模式）
+    try:
+        cursor.execute("ALTER TABLE datasets ADD COLUMN mode TEXT DEFAULT 'normal'")
     except Exception:
         pass  # 列已存在
 

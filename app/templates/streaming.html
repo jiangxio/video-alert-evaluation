@@ -53,6 +53,37 @@
 
   .error-detail { font-size:0.8rem; color:#721c24; background:#f8d7da; padding:0.4rem 0.6rem; border-radius:4px; margin-top:0.3rem; word-break:break-all; max-height:80px; overflow-y:auto; }
 
+  /* 日志弹窗 */
+  .log-modal { background:white; border-radius:8px; padding:1.5rem; width:800px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column; }
+  .log-modal h3 { margin:0 0 1rem; display:flex; justify-content:space-between; align-items:center; }
+  .log-modal .log-meta { font-size:0.8rem; color:#666; font-weight:normal; }
+  .log-content { background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:6px; font-family:monospace; font-size:0.82rem; line-height:1.5; overflow:auto; max-height:60vh; white-space:pre-wrap; word-break:break-all; }
+  .log-actions { display:flex; gap:0.6rem; justify-content:flex-end; margin-top:1rem; }
+
+  /* 进度弹窗 */
+  .progress-modal { background:white; border-radius:8px; padding:1.5rem; width:640px; max-width:95vw; max-height:85vh; display:flex; flex-direction:column; }
+  .progress-modal h3 { margin:0 0 1rem; }
+  .progress-summary { display:flex; flex-wrap:wrap; gap:0.8rem; margin-bottom:1rem; font-size:0.85rem; color:#555; }
+  .progress-summary span { background:#f0f7ff; padding:0.25rem 0.7rem; border-radius:12px; }
+  .overall-progress { margin-bottom:1rem; }
+  .overall-progress .progress-label { display:flex; justify-content:space-between; font-size:0.85rem; color:#555; margin-bottom:0.3rem; }
+  .progress-bar { height:10px; background:#e9ecef; border-radius:5px; overflow:hidden; }
+  .progress-bar-fill { height:100%; background:#3498db; border-radius:5px; transition:width 0.3s; }
+  .video-list { list-style:none; padding:0; margin:0; max-height:50vh; overflow:auto; }
+  .video-item { display:flex; align-items:center; gap:0.8rem; padding:0.7rem 0.8rem; border-radius:6px; margin-bottom:0.4rem; border:1px solid #e9ecef; }
+  .video-item.done { background:#d4edda; border-color:#c3e6cb; color:#155724; }
+  .video-item.current { background:#cce5ff; border-color:#b8daff; color:#004085; }
+  .video-item.pending { background:#f8f9fa; border-color:#e9ecef; color:#6c757d; }
+  .video-index { width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:50%; background:#e9ecef; font-size:0.8rem; font-weight:600; flex-shrink:0; }
+  .video-item.done .video-index { background:#28a745; color:white; }
+  .video-item.current .video-index { background:#007bff; color:white; }
+  .video-info { flex:1; min-width:0; }
+  .video-name { font-weight:600; font-size:0.9rem; word-break:break-all; }
+  .video-meta { font-size:0.78rem; margin-top:0.15rem; opacity:0.85; }
+  .video-icon { font-size:1.1rem; }
+  .mini-progress { width:80px; }
+  .mini-progress .progress-bar { height:6px; }
+
   .run-info { display:flex; flex-wrap:wrap; gap:0.6rem; margin-top:0.4rem; font-size:0.8rem; color:#555; }
   .run-info span { background:#f0f7ff; padding:0.15rem 0.5rem; border-radius:3px; }
 </style>
@@ -149,14 +180,66 @@
   </div>
 </div>
 
+<!-- 日志查看弹窗 -->
+<div class="modal-overlay" id="logModalOverlay">
+  <div class="log-modal">
+    <h3>FFmpeg 日志 <span class="log-meta" id="logMeta"></span></h3>
+    <div class="log-content" id="logContent">加载中...</div>
+    <div class="log-actions">
+      <button class="btn btn-secondary" onclick="closeLogModal()">关闭</button>
+      <button class="btn" onclick="copyLog()" style="background:#5dade2;color:white;border:none;">复制</button>
+    </div>
+  </div>
+</div>
+
+<!-- 推流进度弹窗 -->
+<div class="modal-overlay" id="progressModalOverlay">
+  <div class="progress-modal">
+    <h3>推流进展</h3>
+    <div class="progress-summary" id="progressSummary"></div>
+    <div class="overall-progress">
+      <div class="progress-label">
+        <span id="progressLabelText">整体进度</span>
+        <span id="progressPercent">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-bar-fill" id="progressFill" style="width:0%"></div>
+      </div>
+    </div>
+    <ul class="video-list" id="progressVideoList"></ul>
+    <div class="modal-actions" style="margin-top:1.2rem;">
+      <button class="btn btn-secondary" onclick="closeProgressModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 续播选择弹窗 -->
+<div class="modal-overlay" id="resumeModalOverlay">
+  <div class="modal" style="width:420px;">
+    <h3>选择启动方式</h3>
+    <p style="color:#555;font-size:0.9rem;margin-bottom:1.2rem;">
+      该任务此前已推流到 <strong id="resumeDesc">—</strong>，请选择：
+    </p>
+    <input type="hidden" id="resumeTaskId" value="">
+    <div style="display:flex;flex-direction:column;gap:0.8rem;">
+      <button class="btn" onclick="doStartTask(true)" style="background:#28a745;color:white;border:none;padding:0.7rem;">
+        📍 继续上次推流
+      </button>
+      <button class="btn" onclick="doStartTask(false)" style="background:#6c757d;color:white;border:none;padding:0.7rem;">
+        🔄 从头开始
+      </button>
+    </div>
+    <div class="modal-actions" style="margin-top:1.2rem;">
+      <button class="btn btn-secondary" onclick="closeResumeModal()">取消</button>
+    </div>
+  </div>
+</div>
+
 <script>
-const ALGO_NAMES = {
-  rat: '老鼠', smoke: '抽烟', use_phone: '玩手机',
-  call_phone: '打电话', chef: '厨师服', trash: '垃圾',
-  mask: '帽子/口罩', flame: '火焰'
-};
+const ALGO_NAMES = {{ TYPE_NAMES | tojson | safe }};
 
 let _previewTimer = null;
+let _tasksData = [];
 
 // ── 初始化 ──────────────────────────────────────────────────────────────────
 
@@ -191,6 +274,7 @@ async function loadVideoSets() {
 async function loadTasks() {
   const r = await fetch('/streaming/api/tasks');
   const tasks = await r.json();
+  _tasksData = tasks;
   renderTasks(tasks);
 }
 
@@ -228,28 +312,40 @@ function renderRow(t) {
     const startStr = t.started_at ? fmtDatetime(t.started_at) : '—';
     const elapsedStr = t.elapsed_seconds != null ? fmtDur(t.elapsed_seconds) : '—';
     const endStr = t.estimated_end_ts ? fmtLocalTime(t.estimated_end_ts * 1000) : '—';
+    const restartInfo = (t.restart_count || 0) > 0
+      ? `<span style="background:#fff3cd;color:#856404;">已自动重连 ${t.restart_count}/${t.max_restarts || 3} 次</span>`
+      : '';
     runInfoHtml = `
       <div class="run-info">
         <span>开始：${startStr}</span>
         <span>已运行：${elapsedStr}</span>
         <span>预计结束：${endStr}</span>
+        ${restartInfo}
       </div>`;
   }
 
   let actions = '';
   if (t.status === 'running') {
-    actions = `<button class="btn btn-danger btn-sm" onclick="stopTask(${t.id})">停止</button>`;
+    actions = `<button class="btn btn-sm" onclick="viewProgress(${t.id})" style="margin-right:0.4rem;background:#5dade2;color:white;border:none;">进展</button>
+               <button class="btn btn-danger btn-sm" onclick="stopTask(${t.id})">停止</button>`;
   } else if (['created','done','failed','stopped'].includes(t.status)) {
+    const logBtn = t.log_path ? `<button class="btn btn-sm" onclick="viewLogs(${t.id})" style="margin-right:0.4rem;background:#5dade2;color:white;border:none;">日志</button>` : '';
     actions = `<button class="btn btn-success btn-sm" onclick="startTask(${t.id})" style="margin-right:0.4rem">开始</button>
+               ${logBtn}
                <button class="btn btn-warning btn-sm" onclick="openEditModal(${t.id})" style="margin-right:0.4rem;background:#f39c12;color:white;border:none;">编辑</button>
                <button class="btn btn-secondary btn-sm" onclick="deleteTask(${t.id})">删除</button>`;
+  }
+
+  let resumeHtml = '';
+  if (t.resume_video_index !== null && t.resume_video_index !== undefined) {
+    resumeHtml = `<div style="font-size:0.75rem;color:#17a2b8;margin-top:0.3rem;">📍 可续播：第 ${t.resume_loop || 1} 轮第 ${(t.resume_video_index || 0) + 1} 个视频 @ ${fmtDur(t.resume_offset)}</div>`;
   }
 
   const errorHtml = t.error_message
     ? `<div class="error-detail">${escHtml(t.error_message)}</div>` : '';
 
   return `<tr id="row-${t.id}">
-    <td>${escHtml(t.name || '—')}</td>
+    <td>${escHtml(t.name || '—')}${resumeHtml}</td>
     <td>
       <div style="font-weight:600;margin-bottom:0.2rem">${escHtml(t.stream_name)}</div>
       ${t.status === 'running' ? rtspHtml : ''}
@@ -312,6 +408,145 @@ async function openEditModal(taskId) {
 function closeModal() {
   document.getElementById('modalOverlay').classList.remove('active');
   document.getElementById('editingTaskId').value = '';
+}
+
+// ── 日志弹窗 ─────────────────────────────────────────────────────────────────
+
+async function viewLogs(taskId) {
+  const overlay = document.getElementById('logModalOverlay');
+  const content = document.getElementById('logContent');
+  const meta = document.getElementById('logMeta');
+  content.textContent = '加载中...';
+  meta.textContent = '';
+  overlay.classList.add('active');
+  try {
+    const r = await fetch(`/streaming/api/tasks/${taskId}/logs`);
+    const d = await r.json();
+    if (!r.ok) {
+      content.textContent = '加载失败：' + (d.error || '未知错误');
+      return;
+    }
+    content.textContent = d.content || '（日志为空）';
+    meta.textContent = d.lines ? `共 ${d.lines} 行` : '';
+  } catch(e) {
+    content.textContent = '网络错误，请重试';
+  }
+}
+
+function closeLogModal() {
+  document.getElementById('logModalOverlay').classList.remove('active');
+}
+
+async function copyLog() {
+  const text = document.getElementById('logContent').textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => btn.textContent = orig, 1200);
+  } catch(e) {
+    alert('复制失败');
+  }
+}
+
+// ── 进度弹窗 ─────────────────────────────────────────────────────────────────
+
+async function viewProgress(taskId) {
+  const overlay = document.getElementById('progressModalOverlay');
+  overlay.classList.add('active');
+  renderProgressLoading();
+  try {
+    const r = await fetch(`/streaming/api/tasks/${taskId}/progress`);
+    const d = await r.json();
+    if (!r.ok) {
+      renderProgressError(d.error || '加载失败');
+      return;
+    }
+    renderProgress(d);
+  } catch(e) {
+    renderProgressError('网络错误，请重试');
+  }
+}
+
+function renderProgressLoading() {
+  document.getElementById('progressSummary').innerHTML = '<span>加载中...</span>';
+  document.getElementById('progressLabelText').textContent = '整体进度';
+  document.getElementById('progressPercent').textContent = '0%';
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('progressVideoList').innerHTML = '<li class="video-item pending"><div class="video-info"><div class="video-name">加载中...</div></div></li>';
+}
+
+function renderProgressError(msg) {
+  document.getElementById('progressSummary').innerHTML = `<span style="color:#e74c3c">${escHtml(msg)}</span>`;
+  document.getElementById('progressVideoList').innerHTML = '';
+}
+
+function renderProgress(d) {
+  const p = d.progress || {};
+  const videos = d.videos || [];
+  const currentIdx = p.current_video_index || 0;
+  const loopInfo = d.loop_count > 1 ? `第 ${p.current_loop || 1}/${d.loop_count} 轮` : '单次播放';
+
+  document.getElementById('progressSummary').innerHTML = `
+    <span>状态：${statusLabel(d.status)}</span>
+    <span>${loopInfo}</span>
+    <span>总时长：${fmtDur(d.total_duration)}</span>
+    <span>已播放：${fmtDur(d.elapsed_seconds)}</span>
+  `;
+
+  const overallPercent = Math.min(100, Math.max(0, p.overall_percent || 0));
+  document.getElementById('progressLabelText').textContent = '整体进度';
+  document.getElementById('progressPercent').textContent = `${overallPercent}%`;
+  document.getElementById('progressFill').style.width = `${overallPercent}%`;
+
+  const list = document.getElementById('progressVideoList');
+  if (!videos.length) {
+    list.innerHTML = '<li class="video-item pending"><div class="video-info"><div class="video-name">暂无视频信息</div></div></li>';
+    return;
+  }
+
+  list.innerHTML = videos.map((v, idx) => {
+    let stateClass, icon, metaText;
+    if (idx < currentIdx) {
+      stateClass = 'done';
+      icon = '✓';
+      metaText = `已完成 · ${fmtDur(v.duration)}`;
+    } else if (idx === currentIdx) {
+      stateClass = 'current';
+      icon = '▶';
+      metaText = `正在推流 · ${fmtDur(p.current_video_offset || 0)} / ${fmtDur(v.duration)} (${p.current_video_percent || 0}%)`;
+    } else {
+      stateClass = 'pending';
+      icon = '○';
+      metaText = `未推 · ${fmtDur(v.duration)}`;
+    }
+    // 如果任务已完成，全部标记为已完成
+    if (d.status === 'done' || p.is_finished) {
+      stateClass = 'done';
+      icon = '✓';
+      metaText = `已完成 · ${fmtDur(v.duration)}`;
+    }
+    const miniProgress = idx === currentIdx && d.status === 'running' ? `
+      <div class="mini-progress">
+        <div class="progress-bar"><div class="progress-bar-fill" style="width:${p.current_video_percent || 0}%"></div></div>
+      </div>` : '';
+    return `
+      <li class="video-item ${stateClass}">
+        <div class="video-index">${idx + 1}</div>
+        <div class="video-info">
+          <div class="video-name">${escHtml(v.filename || v.video_id || '未命名视频')}</div>
+          <div class="video-meta">${metaText}</div>
+        </div>
+        ${miniProgress}
+        <div class="video-icon">${icon}</div>
+      </li>
+    `;
+  }).join('');
+}
+
+function closeProgressModal() {
+  document.getElementById('progressModalOverlay').classList.remove('active');
 }
 
 function onSourceTypeChange() {
@@ -417,10 +652,43 @@ async function saveTask() {
 }
 
 async function startTask(id) {
-  const btn = event.target;
-  btn.disabled = true; btn.textContent = '启动中...';
+  const task = _tasksData.find(t => t.id === id);
+  if (task && task.resume_video_index != null) {
+    openResumeModal(task);
+    return;
+  }
+  document.getElementById('resumeTaskId').value = id;
+  await doStartTask(true);
+}
+
+function openResumeModal(task) {
+  document.getElementById('resumeTaskId').value = task.id;
+  const desc = `第 ${task.resume_loop || 1} 轮第 ${(task.resume_video_index || 0) + 1} 个视频（${fmtDur(task.resume_offset || 0)} 处）`;
+  document.getElementById('resumeDesc').textContent = desc;
+  document.getElementById('resumeModalOverlay').classList.add('active');
+}
+
+function closeResumeModal() {
+  document.getElementById('resumeModalOverlay').classList.remove('active');
+  document.getElementById('resumeTaskId').value = '';
+}
+
+async function doStartTask(useResume) {
+  const id = parseInt(document.getElementById('resumeTaskId').value, 10);
+  closeResumeModal();
+  if (!id) return;
+
+  // 找到按钮并置为启动中
+  const btn = document.querySelector(`#row-${id} button[onclick^="startTask"]`);
+  const originalText = btn ? btn.textContent : '开始';
+  if (btn) { btn.disabled = true; btn.textContent = '启动中...'; }
+
   try {
-    const r = await fetch(`/streaming/api/tasks/${id}/start`, { method: 'POST' });
+    const r = await fetch(`/streaming/api/tasks/${id}/start`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ resume: !!useResume }),
+    });
     const d = await r.json();
     if (!r.ok) {
       alert('启动失败：' + (d.error || '') + (d.detail ? '\n\n' + d.detail : ''));
@@ -429,7 +697,7 @@ async function startTask(id) {
   } catch(e) {
     alert('网络错误');
   } finally {
-    btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
   }
 }
 
@@ -494,6 +762,15 @@ function escHtml(str) {
 // 关闭弹窗点击遮罩
 document.getElementById('modalOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
+});
+document.getElementById('logModalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeLogModal();
+});
+document.getElementById('progressModalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeProgressModal();
+});
+document.getElementById('resumeModalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeResumeModal();
 });
 
 // 自动刷新运行中任务

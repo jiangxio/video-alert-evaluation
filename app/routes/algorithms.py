@@ -3,6 +3,7 @@
 管理算法版本：增删改查 + 文件上传 + 配置解析 + 批量下载
 """
 
+import json
 import os
 import tempfile
 import zipfile
@@ -18,8 +19,6 @@ from app.event_types import get_event_types
 
 bp = Blueprint("algorithms", __name__, url_prefix="/algorithms")
 
-EVENT_TYPES = get_event_types()
-
 
 # ── 页面路由 ────────────────────────────────────────────────────────────────
 
@@ -28,12 +27,17 @@ def algorithms_page():
     return render_template("algorithms.html")
 
 
+@bp.route("/types")
+def event_types_page():
+    return render_template("event_types.html")
+
+
 # ── API 路由 ────────────────────────────────────────────────────────────────
 
 @bp.route("/api/types")
 def list_types():
     """获取所有算法类型列表"""
-    return jsonify(EVENT_TYPES)
+    return jsonify(get_event_types())
 
 
 @bp.route("/api/versions", methods=["GET"])
@@ -68,7 +72,7 @@ def create_version():
     version_date = request.form.get("version_date", "").strip()
     description = request.form.get("description", "").strip()
 
-    if algorithm_type not in EVENT_TYPES:
+    if algorithm_type not in get_event_types():
         return jsonify({"error": "算法类型无效"}), 400
     if not name:
         return jsonify({"error": "算法名不能为空"}), 400
@@ -122,7 +126,7 @@ def update_version(version_id):
     version_date = request.form.get("version_date", "").strip()
     description = request.form.get("description", "").strip()
 
-    if algorithm_type and algorithm_type not in EVENT_TYPES:
+    if algorithm_type and algorithm_type not in get_event_types():
         return jsonify({"error": "算法类型无效"}), 400
 
     # 文件上传处理
@@ -327,3 +331,206 @@ def batch_download():
         except Exception:
             pass
         return jsonify({"error": f"打包失败: {e}"}), 500
+
+
+# ── 事件类型（算法类型）管理 API ─────────────────────────────────────────────
+
+@bp.route("/api/event-types", methods=["GET"])
+def list_event_types():
+    """获取所有事件类型详情（含中文名、描述、颜色、标签）"""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT id, key, name, description, bg_color, fg_color, tags, sort_order "
+        "FROM event_types ORDER BY sort_order, id"
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    for row in rows:
+        try:
+            row["tags"] = json.loads(row["tags"] or "[]")
+        except Exception:
+            row["tags"] = []
+    return jsonify(rows)
+
+
+@bp.route("/api/event-types", methods=["POST"])
+def create_event_type():
+    """新增事件类型"""
+    data = request.get_json() or {}
+    key = data.get("key", "").strip()
+    name = data.get("name", "").strip()
+    description = data.get("description", "").strip()
+    bg_color = data.get("bg_color", "#e0e0e0").strip() or "#e0e0e0"
+    fg_color = data.get("fg_color", "#333333").strip() or "#333333"
+    tags = data.get("tags", [])
+    et_id = data.get("id")
+
+    if not key:
+        return jsonify({"error": "英文标识不能为空"}), 400
+    if not name:
+        return jsonify({"error": "中文名不能为空"}), 400
+    if not all(c.isalnum() or c == "_" for c in key):
+        return jsonify({"error": "英文标识只能包含字母、数字和下划线"}), 400
+
+    if not isinstance(tags, list):
+        return jsonify({"error": "标签必须是数组"}), 400
+    tags = [str(t).strip() for t in tags if str(t).strip()]
+
+    db = get_db()
+    cur = db.cursor()
+
+    # 检查 key 是否已存在
+    cur.execute("SELECT id FROM event_types WHERE key = ?", (key,))
+    if cur.fetchone():
+        return jsonify({"error": f"英文标识 '{key}' 已存在"}), 409
+
+    # 确定 id
+    if et_id is None:
+        cur.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM event_types")
+        et_id = cur.fetchone()[0]
+    else:
+        try:
+            et_id = int(et_id)
+        except ValueError:
+            return jsonify({"error": "ID 必须是整数"}), 400
+        cur.execute("SELECT id FROM event_types WHERE id = ?", (et_id,))
+        if cur.fetchone():
+            return jsonify({"error": f"ID {et_id} 已存在"}), 409
+
+    cur.execute(
+        "INSERT INTO event_types (id, key, name, description, bg_color, fg_color, tags) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (et_id, key, name, description, bg_color, fg_color, json.dumps(tags, ensure_ascii=False)),
+    )
+    db.commit()
+
+    from app.event_types import _sync_alert_types_json
+    _sync_alert_types_json()
+
+    return jsonify({"id": et_id, "key": key}), 201
+
+
+@bp.route("/api/event-types/<int:et_id>", methods=["PATCH"])
+def update_event_type(et_id):
+    """修改事件类型（不允许修改英文标识 key）"""
+    data = request.get_json() or {}
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id FROM event_types WHERE id = ?", (et_id,))
+    if not cur.fetchone():
+        return jsonify({"error": "事件类型不存在"}), 404
+
+    allowed_fields = {
+        "name": ("name", str),
+        "description": ("description", str),
+        "bg_color": ("bg_color", str),
+        "fg_color": ("fg_color", str),
+        "sort_order": ("sort_order", int),
+    }
+    updates = []
+    values = []
+
+    for field, (col, converter) in allowed_fields.items():
+        if field in data:
+            value = data[field]
+            if converter == str:
+                value = str(value).strip()
+            else:
+                try:
+                    value = converter(value)
+                except (ValueError, TypeError):
+                    return jsonify({"error": f"字段 {field} 格式错误"}), 400
+            updates.append(f"{col} = ?")
+            values.append(value)
+
+    if "tags" in data:
+        tags = data["tags"]
+        if not isinstance(tags, list):
+            return jsonify({"error": "标签必须是数组"}), 400
+        tags = [str(t).strip() for t in tags if str(t).strip()]
+        updates.append("tags = ?")
+        values.append(json.dumps(tags, ensure_ascii=False))
+
+    if not updates:
+        return jsonify({"error": "没有要更新的字段"}), 400
+
+    values.append(et_id)
+    cur.execute(
+        f"UPDATE event_types SET {', '.join(updates)} WHERE id = ?",
+        values,
+    )
+    db.commit()
+
+    from app.event_types import _sync_alert_types_json
+    _sync_alert_types_json()
+
+    return jsonify({"id": et_id})
+
+
+@bp.route("/api/event-types/<int:et_id>/references", methods=["GET"])
+def get_event_type_references(et_id):
+    """获取事件类型被引用的情况"""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT key FROM event_types WHERE id = ?", (et_id,))
+    row = cur.fetchone()
+    if not row:
+        return jsonify({"error": "事件类型不存在"}), 404
+    key = row["key"]
+
+    refs = {}
+    tables = [
+        ("algorithm_versions", "algorithm_type"),
+        ("events", "event_type"),
+        ("auto_annotation_tasks", "event_type"),
+        ("eval_merged_events", "event_type"),
+        ("eval_gt_events", "event_type"),
+    ]
+    for table, col in tables:
+        try:
+            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} = ?", (key,))
+            refs[table] = cur.fetchone()[0]
+        except Exception:
+            refs[table] = 0
+
+    total = sum(refs.values())
+    return jsonify({"key": key, "total": total, "refs": refs})
+
+
+@bp.route("/api/event-types/<int:et_id>", methods=["DELETE"])
+def delete_event_type(et_id):
+    """删除事件类型（有被引用时禁止删除）"""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT key FROM event_types WHERE id = ?", (et_id,))
+    row = cur.fetchone()
+    if not row:
+        return jsonify({"error": "事件类型不存在"}), 404
+    key = row["key"]
+
+    # 检查引用
+    tables = [
+        ("algorithm_versions", "algorithm_type"),
+        ("events", "event_type"),
+        ("auto_annotation_tasks", "event_type"),
+        ("eval_merged_events", "event_type"),
+        ("eval_gt_events", "event_type"),
+    ]
+    total = 0
+    for table, col in tables:
+        try:
+            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} = ?", (key,))
+            total += cur.fetchone()[0]
+        except Exception:
+            pass
+
+    if total > 0:
+        return jsonify({"error": f"事件类型 '{key}' 仍有 {total} 处引用，无法删除"}), 400
+
+    cur.execute("DELETE FROM event_types WHERE id = ?", (et_id,))
+    db.commit()
+
+    from app.event_types import _sync_alert_types_json
+    _sync_alert_types_json()
+
+    return jsonify({"ok": True})

@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block title %}算法类型管理{% endblock %}
+
+{% block content %}
+<style>
+  .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; }
+  .page-header h2 { margin:0; }
+
+  .type-tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:10px; font-size:0.78rem; font-weight:600; margin-right:0.3rem; margin-bottom:0.2rem; }
+  .label-tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:4px; font-size:0.78rem; background:#ecf0f1; color:#2c3e50; margin-right:0.3rem; margin-bottom:0.2rem; }
+
+  .btn-sm { padding:0.3rem 0.7rem; font-size:0.85rem; }
+  .btn-danger { background:#e74c3c; }
+  .btn-danger:hover { background:#c0392b; }
+  .btn-warning { background:#f39c12; color:white; }
+  .btn-warning:hover { background:#d68910; }
+
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
+  .modal-overlay.active { display:flex; }
+  .modal { background:white; border-radius:8px; padding:2rem; width:560px; max-width:95vw; max-height:90vh; overflow-y:auto; }
+  .modal h3 { margin:0 0 1.5rem; }
+  .form-group { margin-bottom:1.2rem; }
+  .form-group label { display:block; font-weight:600; margin-bottom:0.4rem; font-size:0.9rem; }
+  .form-group input, .form-group select, .form-group textarea { width:100%; padding:0.5rem 0.7rem; border:1px solid #ddd; border-radius:4px; font-size:0.95rem; }
+  .form-group textarea { resize:vertical; min-height:80px; }
+  .form-row { display:flex; gap:1rem; }
+  .form-row .form-group { flex:1; }
+  .form-group .hint { font-size:0.8rem; color:#888; margin-top:0.3rem; }
+  .modal-actions { display:flex; gap:0.8rem; justify-content:flex-end; margin-top:1.5rem; }
+
+  .tag-input { display:flex; flex-wrap:wrap; gap:0.4rem; padding:0.4rem; border:1px solid #ddd; border-radius:4px; min-height:42px; align-items:center; }
+  .tag-input input { flex:1; min-width:120px; border:none; outline:none; padding:0.2rem; }
+  .tag-chip { display:inline-flex; align-items:center; gap:0.3rem; padding:0.2rem 0.5rem; border-radius:4px; background:#ecf0f1; font-size:0.85rem; }
+  .tag-chip .remove { cursor:pointer; color:#e74c3c; font-weight:bold; }
+  .tag-suggestions { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.4rem; }
+  .tag-suggestions span { font-size:0.8rem; color:#3498db; cursor:pointer; }
+  .tag-suggestions span:hover { text-decoration:underline; }
+
+  .color-preview { display:inline-block; width:24px; height:24px; border-radius:4px; border:1px solid #ddd; vertical-align:middle; margin-left:0.5rem; }
+
+  .empty-state { text-align:center; padding:3rem; color:#888; }
+  .desc-text { font-size:0.85rem; color:#666; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+</style>
+
+<div class="page-header">
+  <h2>算法类型管理</h2>
+  <button class="btn btn-success" onclick="openModal()">+ 新增类型</button>
+</div>
+
+<div class="card">
+  <div id="typeList">
+    <div class="empty-state"><div class="loading"></div><p>加载中...</p></div>
+  </div>
+</div>
+
+<!-- 新建/编辑弹窗 -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3 id="modalTitle">新增算法类型</h3>
+    <input type="hidden" id="editingId" value="">
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>英文标识 *</label>
+        <input type="text" id="etKey" placeholder="如 flame">
+        <div class="hint">只能包含字母、数字和下划线</div>
+      </div>
+      <div class="form-group">
+        <label>ID</label>
+        <input type="number" id="etId" placeholder="留空自动分配">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>中文名 *</label>
+      <input type="text" id="etName" placeholder="如 火焰检测">
+    </div>
+
+    <div class="form-group">
+      <label>描述</label>
+      <textarea id="etDescription" placeholder="简要描述该算法检测的行为"></textarea>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>背景色</label>
+        <input type="color" id="etBgColor" value="#e0e0e0">
+      </div>
+      <div class="form-group">
+        <label>文字色</label>
+        <input type="color" id="etFgColor" value="#333333">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>标签</label>
+      <div class="tag-input" id="tagInput" onclick="document.getElementById('tagInputField').focus()">
+        <input type="text" id="tagInputField" placeholder="输入后回车添加">
+      </div>
+      <div class="tag-suggestions" id="tagSuggestions"></div>
+      <div class="hint">可添加关联的事件类型 key，如 fire、smoke</div>
+    </div>
+
+    <div id="modalError" class="message message-error hidden"></div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button class="btn btn-success" id="saveBtn" onclick="saveEventType()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let _types = [];
+let _tags = new Set();
+
+function escHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function loadTypes() {
+  const r = await fetch('/algorithms/api/event-types');
+  _types = await r.json();
+  renderTypes();
+}
+
+function renderTypes() {
+  const el = document.getElementById('typeList');
+  if (!_types.length) {
+    el.innerHTML = '<div class="empty-state"><p>暂无算法类型</p></div>';
+    return;
+  }
+  el.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>ID</th><th>英文标识</th><th>中文名</th><th>标签</th><th>颜色</th><th>描述</th><th>操作</th>
+      </tr></thead>
+      <tbody>
+        ${_types.map(t => renderRow(t)).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderRow(t) {
+  const tags = Array.isArray(t.tags) ? t.tags : [];
+  const tagHtml = tags.map(tag => `<span class="label-tag">${escHtml(tag)}</span>`).join('');
+  return `
+    <tr>
+      <td>${t.id}</td>
+      <td><code>${escHtml(t.key)}</code></td>
+      <td>${escHtml(t.name)}</td>
+      <td>${tagHtml || '<span style="color:#999">—</span>'}</td>
+      <td>
+        <span class="type-tag" style="background:${escHtml(t.bg_color)};color:${escHtml(t.fg_color)}">${escHtml(t.name)}</span>
+      </td>
+      <td class="desc-text" title="${escHtml(t.description || '')}">${escHtml(t.description || '—')}</td>
+      <td>
+        <button class="btn btn-warning btn-sm" onclick="editType(${t.id})">编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteType(${t.id}, '${escHtml(t.key)}')">删除</button>
+      </td>
+    </tr>
+  `;
+}
+
+// ── 弹窗 ────────────────────────────────────────────────────────────────────
+
+function openModal() {
+  document.getElementById('modalTitle').textContent = '新增算法类型';
+  document.getElementById('editingId').value = '';
+  document.getElementById('etKey').value = '';
+  document.getElementById('etKey').disabled = false;
+  document.getElementById('etId').value = '';
+  document.getElementById('etName').value = '';
+  document.getElementById('etDescription').value = '';
+  document.getElementById('etBgColor').value = '#e0e0e0';
+  document.getElementById('etFgColor').value = '#333333';
+  _tags.clear();
+  renderTags();
+  hideError();
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+}
+
+function editType(id) {
+  const t = _types.find(x => x.id === id);
+  if (!t) return;
+  document.getElementById('modalTitle').textContent = '编辑算法类型';
+  document.getElementById('editingId').value = t.id;
+  document.getElementById('etKey').value = t.key;
+  document.getElementById('etKey').disabled = true;
+  document.getElementById('etId').value = t.id;
+  document.getElementById('etId').disabled = true;
+  document.getElementById('etName').value = t.name;
+  document.getElementById('etDescription').value = t.description || '';
+  document.getElementById('etBgColor').value = t.bg_color;
+  document.getElementById('etFgColor').value = t.fg_color;
+  _tags = new Set(Array.isArray(t.tags) ? t.tags : []);
+  renderTags();
+  hideError();
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+async function saveEventType() {
+  const editingId = document.getElementById('editingId').value;
+  const key = document.getElementById('etKey').value.trim();
+  const name = document.getElementById('etName').value.trim();
+  const description = document.getElementById('etDescription').value.trim();
+  const bg_color = document.getElementById('etBgColor').value;
+  const fg_color = document.getElementById('etFgColor').value;
+  const tags = Array.from(_tags);
+
+  if (!key) return showError('英文标识不能为空');
+  if (!/^[a-zA-Z0-9_]+$/.test(key)) return showError('英文标识只能包含字母、数字和下划线');
+  if (!name) return showError('中文名不能为空');
+
+  const payload = { key, name, description, bg_color, fg_color, tags };
+  let url = '/algorithms/api/event-types';
+  let method = 'POST';
+  if (editingId) {
+    url = `/algorithms/api/event-types/${editingId}`;
+    method = 'PATCH';
+  } else {
+    const idVal = document.getElementById('etId').value.trim();
+    if (idVal) payload.id = parseInt(idVal, 10);
+  }
+
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    const r = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await r.json();
+    if (!r.ok) {
+      showError(result.error || '保存失败');
+      return;
+    }
+    closeModal();
+    await loadTypes();
+  } catch (e) {
+    showError('网络错误：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+}
+
+async function deleteType(id, key) {
+  const r = await fetch(`/algorithms/api/event-types/${id}/references`);
+  const ref = await r.json();
+  let msg = `确定要删除算法类型 "${key}" 吗？`;
+  if (ref.total > 0) {
+    alert(`无法删除：该类型仍有 ${ref.total} 处引用。`);
+    return;
+  }
+  if (!confirm(msg)) return;
+
+  const dr = await fetch(`/algorithms/api/event-types/${id}`, { method: 'DELETE' });
+  const dresult = await dr.json();
+  if (!dr.ok) {
+    alert(dresult.error || '删除失败');
+    return;
+  }
+  await loadTypes();
+}
+
+// ── 标签输入 ─────────────────────────────────────────────────────────────────
+
+function renderTags() {
+  const container = document.getElementById('tagInput');
+  const input = document.getElementById('tagInputField');
+  const chips = Array.from(_tags).map(tag => `
+    <span class="tag-chip">${escHtml(tag)}<span class="remove" onclick="removeTag('${escHtml(tag)}')">×</span></span>
+  `).join('');
+  container.innerHTML = chips + '<input type="text" id="tagInputField" placeholder="输入后回车添加">';
+  document.getElementById('tagInputField').addEventListener('keydown', onTagInputKey);
+  renderTagSuggestions();
+}
+
+function renderTagSuggestions() {
+  const existingKeys = new Set(_types.map(t => t.key));
+  const suggestions = Array.from(existingKeys).filter(k => !_tags.has(k)).slice(0, 10);
+  const el = document.getElementById('tagSuggestions');
+  if (!suggestions.length) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = '建议：' + suggestions.map(k =>
+    `<span onclick="addTag('${escHtml(k)}')">${escHtml(k)}</span>`
+  ).join('');
+}
+
+function onTagInputKey(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const val = e.target.value.trim();
+    if (val) {
+      addTag(val);
+      e.target.value = '';
+    }
+  } else if (e.key === 'Backspace' && !e.target.value && _tags.size) {
+    const last = Array.from(_tags).pop();
+    removeTag(last);
+  }
+}
+
+function addTag(tag) {
+  _tags.add(tag);
+  renderTags();
+}
+
+function removeTag(tag) {
+  _tags.delete(tag);
+  renderTags();
+}
+
+function showError(msg) {
+  const el = document.getElementById('modalError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function hideError() {
+  const el = document.getElementById('modalError');
+  el.classList.add('hidden');
+  el.textContent = '';
+}
+
+// 点击遮罩关闭弹窗
+document.getElementById('modalOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadTypes();
+  document.getElementById('tagInputField').addEventListener('keydown', onTagInputKey);
+});
+</script>
+{% endblock %}

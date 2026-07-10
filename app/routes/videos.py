@@ -15,11 +15,8 @@ from app.database import get_db, DATABASE_PATH
 from app.services.watermark_service import add_watermark, cancel_task
 from app.routes import send_file_with_cache
 from app.utils import allowed_file
-from app.event_types import get_event_types
 
 bp = Blueprint('videos', __name__, url_prefix='/videos')
-
-EVENT_TYPES = get_event_types()
 
 # GT帧生成锁：每个 video_db_id 一个锁，确保同一视频的GT帧生成串行（避免并发重复生成）
 _gt_frame_locks = {}

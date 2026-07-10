@@ -24,8 +24,6 @@ from app.event_types import get_event_types
 
 bp = Blueprint("auto_annotation", __name__, url_prefix="/auto-annotation")
 
-EVENT_TYPES = get_event_types()
-
 # ── 内存任务状态 ────────────────────────────────────────────────────────────
 _auto_anno_tasks = {}
 _auto_anno_lock = threading.Lock()
@@ -433,7 +431,7 @@ def config_page(video_db_id):
         "auto_annotation_config.html",
         video=dict(video),
         watermarked=dict(wm),
-        event_types=EVENT_TYPES,
+        event_types=get_event_types(),
     )
 
 

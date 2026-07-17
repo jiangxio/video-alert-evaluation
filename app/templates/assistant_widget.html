@@ -1,0 +1,62 @@
+<!-- AI 助手聊天组件 -->
+<div class="assistant-widget">
+    <button id="assistant-fab" class="assistant-fab" title="AI 助手">
+        <svg viewBox="0 0 64 64" width="30" height="30" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- 天线 -->
+            <line x1="32" y1="12" x2="32" y2="4" stroke="white" stroke-width="3" stroke-linecap="round"/>
+            <circle cx="32" cy="4" r="3" fill="white"/>
+            <!-- 头 -->
+            <rect x="18" y="14" width="28" height="22" rx="8" fill="white"/>
+            <!-- 眼睛 -->
+            <circle cx="26" cy="25" r="4" fill="#3498db"/>
+            <circle cx="38" cy="25" r="4" fill="#3498db"/>
+            <!-- 身体 -->
+            <rect x="22" y="34" width="20" height="20" rx="5" fill="white"/>
+            <!-- 胸口灯 -->
+            <rect x="28" y="40" width="8" height="8" rx="2" fill="#3498db"/>
+            <!-- 手臂 -->
+            <rect x="12" y="36" width="6" height="14" rx="3" fill="white"/>
+            <rect x="46" y="36" width="6" height="14" rx="3" fill="white"/>
+            <!-- 脚 -->
+            <rect x="24" y="52" width="6" height="8" rx="2" fill="white"/>
+            <rect x="34" y="52" width="6" height="8" rx="2" fill="white"/>
+        </svg>
+    </button>
+    <div id="assistant-panel" class="assistant-panel">
+        <div class="assistant-header">
+            <h3>AI 助手</h3>
+            <div class="assistant-header-actions">
+                <button id="assistant-tasks-toggle" class="assistant-clear" title="任务列表">任务</button>
+                <button id="assistant-clear" class="assistant-clear" title="清除对话">清除</button>
+                <button id="assistant-close" class="assistant-close">&times;</button>
+            </div>
+        </div>
+
+        <div id="assistant-tasks-panel" class="assistant-tasks-panel">
+            <div class="assistant-tasks-header">
+                <h4>异步任务</h4>
+                <button id="assistant-tasks-refresh" class="assistant-clear">刷新</button>
+            </div>
+            <div id="assistant-tasks-list" class="assistant-tasks-list">
+                <div class="assistant-task-empty">暂无任务</div>
+            </div>
+        </div>
+
+        <div id="assistant-messages" class="assistant-messages">
+            <div class="assistant-message assistant">
+                <div class="assistant-bubble">你好！我是平台的 AI 助手，可以帮你查询视频/告警、打标签、跑评测等。
+
+试试问我：
+• 包含老鼠标签的视频有哪些？
+• 给视频 046 添加老鼠标签，时间 10-20 秒
+• 评测任务 1 的结果怎么样？</div>
+            </div>
+        </div>
+        <div class="assistant-input-area">
+            <div class="assistant-input-row">
+                <input id="assistant-input" type="text" class="assistant-input" placeholder="输入问题或指令...">
+                <button id="assistant-send" class="assistant-send">发送</button>
+            </div>
+        </div>
+    </div>
+</div>

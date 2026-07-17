@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}AI 助手设置 - 视频数据预处理与告警评估平台{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h3>AI 助手设置</h3>
+    <form id="assistant-settings-form">
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">OpenAI API Key</label>
+            <input type="password" id="openai_api_key" name="openai_api_key"
+                   value="{{ settings.openai_api_key }}"
+                   placeholder="sk-..."
+                   style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+            <small style="color: #666;">留空表示使用环境变量 OPENAI_API_KEY 的值。</small>
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">API Base URL</label>
+            <input type="text" id="openai_base_url" name="openai_base_url"
+                   value="{{ settings.openai_base_url }}"
+                   placeholder="https://api.openai.com/v1"
+                   style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">模型名</label>
+            <input type="text" id="openai_model" name="openai_model"
+                   value="{{ settings.openai_model }}"
+                   placeholder="gpt-4o-mini"
+                   style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">每会话最大消息数</label>
+            <input type="number" id="max_messages_per_session" name="max_messages_per_session"
+                   value="{{ settings.max_messages_per_session }}"
+                   style="width: 200px; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">每会话最大写入操作数</label>
+            <input type="number" id="max_write_actions_per_session" name="max_write_actions_per_session"
+                   value="{{ settings.max_write_actions_per_session }}"
+                   style="width: 200px; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+        </div>
+
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem; font-weight: 600;">确认令牌过期时间（秒）</label>
+            <input type="number" id="confirmation_ttl_seconds" name="confirmation_ttl_seconds"
+                   value="{{ settings.confirmation_ttl_seconds }}"
+                   style="width: 200px; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+        </div>
+
+        <button type="submit" class="btn">保存设置</button>
+    </form>
+
+    <div id="settings-message" class="message hidden" style="margin-top: 1rem;"></div>
+</div>
+
+<script>
+document.getElementById('assistant-settings-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const data = {};
+    ['openai_api_key', 'openai_base_url', 'openai_model',
+     'max_messages_per_session', 'max_write_actions_per_session', 'confirmation_ttl_seconds']
+        .forEach(id => {
+            const el = document.getElementById(id);
+            data[id] = el.value;
+        });
+
+    const resp = await fetch('/assistant/api/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data),
+    });
+    const result = await resp.json();
+    const msgEl = document.getElementById('settings-message');
+    msgEl.classList.remove('hidden', 'message-success', 'message-error');
+    if (result.success) {
+        msgEl.classList.add('message-success');
+        msgEl.textContent = '设置已保存';
+    } else {
+        msgEl.classList.add('message-error');
+        msgEl.textContent = '保存失败：' + (result.error || '未知错误');
+    }
+});
+</script>
+{% endblock %}

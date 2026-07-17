@@ -613,6 +613,80 @@ def init_db():
     except Exception:
         pass  # 列已存在
 
+    # AI 助手设置表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assistant_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            openai_api_key TEXT,
+            openai_base_url TEXT DEFAULT 'https://api.openai.com/v1',
+            openai_model TEXT DEFAULT 'gpt-4o-mini',
+            max_messages_per_session INTEGER DEFAULT 50,
+            max_write_actions_per_session INTEGER DEFAULT 30,
+            confirmation_ttl_seconds INTEGER DEFAULT 300,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # AI 助手待确认操作表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pending_confirmations (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            params TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_pending_confirmations_session ON pending_confirmations(session_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_pending_confirmations_expires ON pending_confirmations(expires_at)')
+
+    # AI 助手审计日志表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assistant_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            params TEXT,
+            result TEXT,
+            status TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_audit_session ON assistant_audit_log(session_id)')
+
+    # AI 助手统一任务表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assistant_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_type TEXT NOT NULL,
+            ref_type TEXT,
+            ref_id INTEGER,
+            status TEXT DEFAULT 'pending',
+            params TEXT,
+            result_summary TEXT,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_tasks_status ON assistant_tasks(status)')
+
+    # AI 助手对话历史表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assistant_conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_calls TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_conversations_session ON assistant_conversations(session_id)')
+
     # 常用查询索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_ocr_alert_image ON ocr_results(alert_image_id)')

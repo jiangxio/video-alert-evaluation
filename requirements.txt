@@ -12,6 +12,11 @@ Pillow>=9.0
 # Claude API
 anthropic>=0.30.0
 
+# AI 助手
+openai>=1.30.0
+cryptography>=42.0.0
+python-dotenv>=1.0.0
+
 # Config file parsing
 PyYAML>=6.0
 

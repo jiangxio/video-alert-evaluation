@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}统一 API 配置 - 视频数据预处理与告警评估平台{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h3>统一 API 配置</h3>
+    <p style="color:#666;margin-bottom:1.5rem;">
+        集中管理平台用到的模型 API。密钥（API Key / Token）保存到项目根目录的 <code>.env</code> 文件，
+        其它配置项保存在数据库。所有功能（AI 助手、自动标注、智能审查、报告生成）共用这里的配置。
+    </p>
+
+    <!-- OpenAI 兼容组 -->
+    <div class="config-section">
+        <div class="config-section-header">
+            <h4>OpenAI 兼容组</h4>
+            <span class="status-badge {{ 'status-ok' if config.openai_key_configured else 'status-no' }}">
+                {{ '已配置' if config.openai_key_configured else '未配置' }}
+            </span>
+        </div>
+        <small style="color:#666;display:block;margin-bottom:1rem;">
+            供 AI 助手、自动标注、智能审查（多模态）使用。兼容 OpenAI 协议的端点均可（如通义 Qwen-VL）。
+        </small>
+
+        <div style="margin-bottom:1rem;">
+            <label style="display:block;margin-bottom:0.5rem;font-weight:600;">API Key</label>
+            <input type="password" id="openai_api_key" placeholder="sk-..."
+                   style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+            <small style="color:#666;">留空表示不修改。保存后写入 .env 的 <code>OPENAI_API_KEY</code>。</small>
+        </div>
+        <div style="margin-bottom:1rem;">
+            <label style="display:block;margin-bottom:0.5rem;font-weight:600;">Base URL</label>
+            <input type="text" id="openai_base_url" value="{{ config.openai_base_url }}"
+                   placeholder="https://api.openai.com/v1"
+                   style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+        </div>
+        <div style="margin-bottom:1rem;">
+            <label style="display:block;margin-bottom:0.5rem;font-weight:600;">模型名</label>
+            <input type="text" id="openai_model" value="{{ config.openai_model }}"
+                   placeholder="gpt-4o-mini"
+                   style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+            <small style="color:#666;">AI 助手、自动标注、智能审查共用此模型。<strong>需选支持多模态（图片输入）的模型</strong>，如 <code>Qwen3-VL-8B-Instruct</code>、<code>gpt-4o</code>。</small>
+        </div>
+        <div style="margin-bottom:1rem;">
+            <label style="display:block;margin-bottom:0.5rem;font-weight:600;">多模态调用请求间隔（秒）</label>
+            <input type="number" id="openai_request_interval_sec" value="{{ config.openai_request_interval_sec }}"
+                   min="0" step="0.5"
+                   style="width:200px;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+            <small style="color:#666;">批量调用多模态模型时的限流间隔。</small>
+        </div>
+
+        <div style="display:flex;gap:0.5rem;align-items:center;">
+            <button class="btn" onclick="saveConfig()">保存本组</button>
+            <button class="btn btn-secondary" onclick="testConn('openai')">测试连接</button>
+            <span id="openai-test-msg" class="test-msg"></span>
+        </div>
+    </div>
+
+    <hr style="border:none;border-top:1px solid #eee;margin:1.5rem 0;">
+
+    <!-- Claude 组 -->
+    <div class="config-section">
+        <div class="config-section-header">
+            <h4>Claude 组</h4>
+            <span class="status-badge {{ 'status-ok' if config.claude_key_configured else 'status-no' }}">
+                {{ '已配置' if config.claude_key_configured else '未配置' }}
+            </span>
+        </div>
+        <small style="color:#666;display:block;margin-bottom:1rem;">
+            供评测报告生成（总结/结论/对话改写）使用。
+        </small>
+
+        <div style="margin-bottom:1rem;">
+            <label style="display:block;margin-bottom:0.5rem;font-weight:600;">API Token</label>
+            <input type="password" id="claude_api_key" placeholder="sk-ant-..."
+                   style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+            <small style="color:#666;">留空表示不修改。保存后写入 .env 的 <code>ANTHROPIC_AUTH_TOKEN</code>。</small>
+        </div>
+        <div style="margin-bottom:1rem;">
+            <label style="display:block;margin-bottom:0.5rem;font-weight:600;">Base URL（留空使用官方默认）</label>
+            <input type="text" id="claude_base_url" value="{{ config.claude_base_url or '' }}"
+                   placeholder="https://api.anthropic.com"
+                   style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+        </div>
+        <div style="margin-bottom:1rem;">
+            <label style="display:block;margin-bottom:0.5rem;font-weight:600;">模型名</label>
+            <input type="text" id="claude_model" value="{{ config.claude_model }}"
+                   placeholder="claude-sonnet-5"
+                   style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+        </div>
+
+        <div style="display:flex;gap:0.5rem;align-items:center;">
+            <button class="btn" onclick="saveConfig()">保存本组</button>
+            <button class="btn btn-secondary" onclick="testConn('claude')">测试连接</button>
+            <span id="claude-test-msg" class="test-msg"></span>
+        </div>
+    </div>
+
+    <div id="save-msg" class="message hidden" style="margin-top:1.5rem;"></div>
+</div>
+
+<style>
+.config-section { padding: 1rem 0; }
+.config-section-header { display: flex; align-items: center; gap: 0.75rem; }
+.config-section-header h4 { margin: 0; }
+.status-badge { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; font-weight: 600; }
+.status-ok { background: #d4edda; color: #155724; }
+.status-no { background: #f8d7da; color: #721c24; }
+.btn-secondary { background: #7f8c8d; }
+.btn-secondary:hover { background: #6c7a7a; }
+.test-msg { font-size: 0.88rem; margin-left: 0.5rem; }
+</style>
+
+<script>
+function collectData() {
+    return {
+        openai_api_key: document.getElementById('openai_api_key').value,
+        openai_base_url: document.getElementById('openai_base_url').value,
+        openai_model: document.getElementById('openai_model').value,
+        openai_request_interval_sec: document.getElementById('openai_request_interval_sec').value,
+        claude_api_key: document.getElementById('claude_api_key').value,
+        claude_base_url: document.getElementById('claude_base_url').value,
+        claude_model: document.getElementById('claude_model').value,
+    };
+}
+
+async function saveConfig() {
+    const msgEl = document.getElementById('save-msg');
+    msgEl.classList.remove('hidden', 'message-success', 'message-error');
+    msgEl.textContent = '保存中...';
+    const resp = await fetch('/api-config/api/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(collectData()),
+    });
+    const result = await resp.json();
+    if (result.success) {
+        msgEl.classList.add('message-success');
+        msgEl.textContent = '配置已保存（密钥已写入 .env）';
+        // 刷新页面状态徽标
+        if (result.config) {
+            updateBadges(result.config);
+            document.getElementById('openai_api_key').value = '';
+            document.getElementById('claude_api_key').value = '';
+        }
+    } else {
+        msgEl.classList.add('message-error');
+        msgEl.textContent = '保存失败：' + (result.error || '未知错误');
+    }
+}
+
+async function testConn(provider) {
+    const msgEl = document.getElementById(provider + '-test-msg');
+    msgEl.style.color = '#666';
+    msgEl.textContent = '测试中...';
+    const resp = await fetch('/api-config/api/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider}),
+    });
+    const result = await resp.json();
+    msgEl.style.color = result.ok ? '#27ae60' : '#e74c3c';
+    msgEl.textContent = result.msg || (result.ok ? '成功' : '失败');
+}
+
+function updateBadges(config) {
+    const oBadge = document.querySelectorAll('.config-section .status-badge')[0];
+    const cBadge = document.querySelectorAll('.config-section .status-badge')[1];
+    oBadge.className = 'status-badge ' + (config.openai_key_configured ? 'status-ok' : 'status-no');
+    oBadge.textContent = config.openai_key_configured ? '已配置' : '未配置';
+    cBadge.className = 'status-badge ' + (config.claude_key_configured ? 'status-ok' : 'status-no');
+    cBadge.textContent = config.claude_key_configured ? '已配置' : '未配置';
+}
+</script>
+{% endblock %}

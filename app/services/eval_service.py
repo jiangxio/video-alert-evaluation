@@ -638,11 +638,19 @@ def _img_to_base64(path, max_width=400):
 
 
 def _call_claude(prompt_text, api_key=None, base_url=None):
-    """调用 Claude API，失败时返回 None。"""
+    """调用 Claude API，失败时返回 None。
+
+    api_key/base_url/model 优先用传入参数，缺失时回退到统一 API 配置（api_config_service）。
+    """
+    from app.services import api_config_service
+    creds = api_config_service.get_claude_creds()
     if not api_key:
-        api_key = os.environ.get('ANTHROPIC_AUTH_TOKEN')
+        api_key = creds.get('auth_token')
     if not api_key:
         return None
+    if not base_url:
+        base_url = creds.get('base_url')
+    model = creds.get('model', 'claude-sonnet-5')
     try:
         import anthropic
         kwargs = {'api_key': api_key}
@@ -650,7 +658,7 @@ def _call_claude(prompt_text, api_key=None, base_url=None):
             kwargs['base_url'] = base_url
         client = anthropic.Anthropic(**kwargs)
         resp = client.messages.create(
-            model='claude-sonnet-4-6',
+            model=model,
             max_tokens=2048,
             system='你是一位计算机视觉算法验证专家，请用中文回答，语言简洁专业。',
             messages=[{'role': 'user', 'content': prompt_text}],
@@ -1533,7 +1541,17 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
 
 
 def _call_claude_chat(messages, current_summary, current_conclusion, metrics_json, api_key, base_url=None):
-    """根据对话上下文调用 Claude API 修改摘要和结论。"""
+    """根据对话上下文调用 Claude API 修改摘要和结论。
+
+    api_key/base_url/model 优先用传入参数，缺失时回退到统一 API 配置（api_config_service）。
+    """
+    from app.services import api_config_service
+    creds = api_config_service.get_claude_creds()
+    if not api_key:
+        api_key = creds.get('auth_token')
+    if not base_url:
+        base_url = creds.get('base_url')
+    model = creds.get('model', 'claude-sonnet-5')
     if not api_key:
         return {'summary': current_summary, 'conclusion': current_conclusion}
 
@@ -1584,7 +1602,7 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
             kwargs['base_url'] = base_url
         client = anthropic.Anthropic(**kwargs)
         resp = client.messages.create(
-            model='claude-sonnet-4-6',
+            model=model,
             max_tokens=4096,
             system=system_prompt,
             messages=claude_messages,

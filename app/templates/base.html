@@ -12,6 +12,11 @@
         nav { margin-top: 1rem; }
         nav a { color: white; text-decoration: none; margin-right: 1.5rem; padding: 0.5rem 0; border-bottom: 2px solid transparent; }
         nav a:hover, nav a.active { border-bottom-color: #3498db; }
+        /* 二级子导航 tab */
+        .subnav { background: #34495e; padding: 0.5rem 2rem; }
+        .subnav a { color: #bdc3c7; text-decoration: none; margin-right: 1.2rem; padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.9rem; }
+        .subnav a:hover { color: white; background: #3a526a; }
+        .subnav a.active { color: white; background: #3498db; }
         .container { max-width: 1200px; margin: 2rem auto; padding: 0 2rem; }
         .btn { display: inline-block; padding: 0.6rem 1.2rem; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; text-decoration: none; }
         .btn:hover { background: #2980b9; }
@@ -43,17 +48,37 @@
         <h1>视频数据预处理与告警评估平台</h1>
         <nav>
             <a href="/" class="{% if request.path == '/' %}active{% endif %}">首页</a>
-            <a href="/videos/upload/" class="{% if request.path == '/videos/upload/' %}active{% endif %}">视频上传</a>
-            <a href="/videos/" class="{% if request.path == '/videos/' %}active{% endif %}">视频管理</a>
-            <a href="/alerts/" class="{% if request.path.startswith('/alerts') %}active{% endif %}">告警数据集</a>
-            <a href="/evaluation/" class="{% if request.path.startswith('/evaluation') %}active{% endif %}">评测</a>
-            <a href="/auto-annotation/" class="{% if request.path.startswith('/auto-annotation') %}active{% endif %}">自动标注</a>
+            <a href="/videos/" class="{% if request.path.startswith('/videos') or request.path.startswith('/auto-annotation') %}active{% endif %}">视频</a>
+            <a href="/evaluation/" class="{% if request.path.startswith('/alerts') or request.path.startswith('/evaluation') or request.path.startswith('/review') %}active{% endif %}">告警与评测</a>
             <a href="/streaming/" class="{% if request.path.startswith('/streaming') %}active{% endif %}">推流</a>
-            <a href="/algorithms/" class="{% if request.path.startswith('/algorithms') %}active{% endif %}">算法管理</a>
-            <a href="/algorithms/types" class="{% if request.path == '/algorithms/types' %}active{% endif %}">算法类型</a>
-            <a href="/assistant/settings" class="{% if request.path.startswith('/assistant') %}active{% endif %}">AI 助手设置</a>
+            <a href="/algorithms/" class="{% if request.path.startswith('/algorithms') %}active{% endif %}">算法</a>
+            <a href="/api-config/" class="{% if request.path.startswith('/api-config') or request.path.startswith('/assistant') %}active{% endif %}">设置</a>
         </nav>
     </header>
+    {% set path = request.path %}
+    {% if path.startswith('/videos') or path.startswith('/auto-annotation') %}
+    <div class="subnav">
+        <a href="/videos/upload/" class="{% if path.startswith('/videos/upload') %}active{% endif %}">视频上传</a>
+        <a href="/videos/" class="{% if path.startswith('/videos') and not path.startswith('/videos/upload') %}active{% endif %}">视频管理</a>
+        <a href="/auto-annotation/" class="{% if path.startswith('/auto-annotation') %}active{% endif %}">自动标注</a>
+    </div>
+    {% elif path.startswith('/alerts') or path.startswith('/evaluation') or path.startswith('/review') %}
+    <div class="subnav">
+        <a href="/alerts/" class="{% if path.startswith('/alerts') %}active{% endif %}">告警数据集</a>
+        <a href="/evaluation/" class="{% if path.startswith('/evaluation') and not path.startswith('/evaluation/compare') or path.startswith('/review') %}active{% endif %}">评测</a>
+        <a href="/evaluation/compare" class="{% if path.startswith('/evaluation/compare') %}active{% endif %}">对比</a>
+    </div>
+    {% elif path.startswith('/algorithms') %}
+    <div class="subnav">
+        <a href="/algorithms/" class="{% if path.startswith('/algorithms/') and not path.startswith('/algorithms/types') %}active{% endif %}">算法版本管理</a>
+        <a href="/algorithms/types" class="{% if path.startswith('/algorithms/types') %}active{% endif %}">算法类型</a>
+    </div>
+    {% elif path.startswith('/api-config') or path.startswith('/assistant') %}
+    <div class="subnav">
+        <a href="/api-config/" class="{% if path.startswith('/api-config') %}active{% endif %}">API 配置</a>
+        <a href="/assistant/settings" class="{% if path.startswith('/assistant') %}active{% endif %}">AI 助手设置</a>
+    </div>
+    {% endif %}
     <div class="container">
         {% block content %}{% endblock %}
     </div>

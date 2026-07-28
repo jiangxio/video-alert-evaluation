@@ -13,7 +13,7 @@ from app.database import get_db, DATABASE_PATH
 from app.services.verification_service import (
     parse_alert_config, extract_alert_type_id, run_ocr
 )
-from app.routes import send_file_with_cache
+from app.routes import send_file_with_cache, send_image_with_thumbnail
 from app.utils import allowed_file
 
 bp = Blueprint('alerts', __name__, url_prefix='/alerts')
@@ -740,6 +740,7 @@ def get_image_detail(image_id):
 
 @bp.route('/api/images/<int:image_id>/file', methods=['GET'])
 def serve_image(image_id):
+    """提供告警图片文件，支持 ?w= 和 ?h= 生成缩略图。"""
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT file_path, filename FROM alert_images WHERE id = ?', (image_id,))
@@ -749,6 +750,10 @@ def serve_image(image_id):
     path = Path(row['file_path'])
     if not path.exists():
         return jsonify({'error': '文件不存在于磁盘'}), 404
+    max_w = request.args.get('w', type=int)
+    max_h = request.args.get('h', type=int)
+    if max_w or max_h:
+        return send_image_with_thumbnail(str(path), max_width=max_w, max_height=max_h)
     return send_file_with_cache(str(path))
 
 

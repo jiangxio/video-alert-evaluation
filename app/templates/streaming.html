@@ -42,6 +42,17 @@
   .form-row { display:flex; gap:1rem; }
   .form-row .form-group { flex:1; }
 
+  /* 可搜索下拉 combobox */
+  .combo { position:relative; }
+  .combo input.combo-input { width:100%; padding:0.5rem 0.7rem; border:1px solid #ddd; border-radius:4px; font-size:0.95rem; box-sizing:border-box; }
+  .combo input.combo-input:focus { outline:none; border-color:#3498db; }
+  .combo-dropdown { position:absolute; top:100%; left:0; right:0; max-height:240px; overflow-y:auto; background:white; border:1px solid #ddd; border-top:none; border-radius:0 0 4px 4px; z-index:1000; box-shadow:0 4px 8px rgba(0,0,0,0.1); display:none; }
+  .combo-dropdown.show { display:block; }
+  .combo-option { padding:0.5rem 0.7rem; cursor:pointer; font-size:0.9rem; border-bottom:1px solid #f0f0f0; }
+  .combo-option:hover, .combo-option.active { background:#e3f2fd; }
+  .combo-option.selected { background:#3498db; color:white; }
+  .combo-empty { padding:0.6rem; color:#999; font-size:0.85rem; text-align:center; }
+
   .preview-box { background:#f8f9fa; border-radius:6px; padding:1rem; margin-bottom:1.2rem; font-size:0.88rem; }
   .preview-box .preview-row { display:flex; gap:0.5rem; margin-bottom:0.5rem; align-items:flex-start; }
   .preview-box .preview-row:last-child { margin-bottom:0; }
@@ -125,16 +136,12 @@
 
     <div class="form-group" id="singleVideoGroup">
       <label>选择视频</label>
-      <select id="singleVideoSelect" onchange="refreshPreview()">
-        <option value="">-- 加载中 --</option>
-      </select>
+      <div id="singleVideoSelect" class="combo" data-placeholder="输入视频ID或名称搜索..."></div>
     </div>
 
     <div class="form-group hidden" id="videoSetGroup">
       <label>选择视频集</label>
-      <select id="videoSetSelect" onchange="refreshPreview()">
-        <option value="">-- 加载中 --</option>
-      </select>
+      <div id="videoSetSelect" class="combo" data-placeholder="输入视频集名称搜索..."></div>
     </div>
 
     <div class="form-row">
@@ -240,6 +247,109 @@ const ALGO_NAMES = {{ TYPE_NAMES | tojson | safe }};
 
 let _previewTimer = null;
 let _tasksData = [];
+let _taskRefreshTimer = null;
+
+// ── 可搜索下拉 combobox 组件 ─────────────────────────────────────────────────
+// 用法：initCombo(el, {placeholder, onSelect}) 初始化
+//       el.setOptions([{value,label,search}])  设置选项
+//       el.getValue() / el.setValue(id)        读写值
+function initCombo(el, opts) {
+  opts = opts || {};
+  let options = [];      // [{value, label, search}]
+  let selectedValue = '';
+  let highlightIdx = -1;
+
+  el.innerHTML = `
+    <input type="text" class="combo-input" placeholder="${opts.placeholder || '搜索...'}" autocomplete="off">
+    <div class="combo-dropdown"></div>
+  `;
+  const input = el.querySelector('.combo-input');
+  const dropdown = el.querySelector('.combo-dropdown');
+
+  el.setOptions = function(opts) {
+    options = opts || [];
+    selectedValue = '';
+    input.value = '';
+  };
+
+  el.getValue = function() { return selectedValue; };
+
+  el.setValue = function(val) {
+    selectedValue = String(val || '');
+    const match = options.find(o => String(o.value) === selectedValue);
+    input.value = match ? match.label : '';
+  };
+
+  function getFiltered() {
+    const kw = input.value.trim().toLowerCase();
+    if (!kw) return options;
+    return options.filter(o => (o.search || o.label).toLowerCase().includes(kw));
+  }
+
+  function renderDropdown() {
+    const filtered = getFiltered();
+    highlightIdx = -1;
+    if (!filtered.length) {
+      dropdown.innerHTML = '<div class="combo-empty">无匹配项</div>';
+    } else {
+      dropdown.innerHTML = filtered.map((o, i) => {
+        const sel = String(o.value) === selectedValue ? ' selected' : '';
+        return `<div class="combo-option${sel}" data-idx="${i}" data-value="${o.value}">${o.label}</div>`;
+      }).join('');
+    }
+    dropdown.classList.add('show');
+  }
+
+  input.addEventListener('focus', renderDropdown);
+  input.addEventListener('input', renderDropdown);
+  input.addEventListener('keydown', e => {
+    const filtered = getFiltered();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      highlightIdx = Math.min(highlightIdx + 1, filtered.length - 1);
+      updateHighlight(filtered);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlightIdx = Math.max(highlightIdx - 1, 0);
+      updateHighlight(filtered);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (highlightIdx >= 0 && highlightIdx < filtered.length) {
+        pick(filtered[highlightIdx]);
+      }
+    } else if (e.key === 'Escape') {
+      dropdown.classList.remove('show');
+    }
+  });
+
+  function updateHighlight(filtered) {
+    const items = dropdown.querySelectorAll('.combo-option');
+    items.forEach((it, i) => it.classList.toggle('active', i === highlightIdx));
+    if (highlightIdx >= 0 && items[highlightIdx]) items[highlightIdx].scrollIntoView({block:'nearest'});
+  }
+
+  dropdown.addEventListener('click', e => {
+    const opt = e.target.closest('.combo-option');
+    if (!opt) return;
+    const val = opt.dataset.value;
+    const match = options.find(o => String(o.value) === String(val));
+    if (match) pick(match);
+  });
+
+  function pick(o) {
+    selectedValue = String(o.value);
+    input.value = o.label;
+    dropdown.classList.remove('show');
+    if (opts.onSelect) opts.onSelect(o);
+  }
+
+  // 点击外部关闭
+  document.addEventListener('click', e => {
+    if (!el.contains(e.target)) dropdown.classList.remove('show');
+  });
+
+  return el;
+}
 
 // ── 初始化 ──────────────────────────────────────────────────────────────────
 
@@ -251,24 +361,38 @@ async function loadVideos() {
   const r = await fetch('/streaming/api/videos');
   const data = await r.json();
   const sel = document.getElementById('singleVideoSelect');
+  if (!sel.setOptions) {
+    initCombo(sel, { placeholder: '输入视频ID或名称搜索...', onSelect: () => refreshPreview() });
+  }
   if (!data.length) {
-    sel.innerHTML = '<option value="">暂无已打水印的视频</option>';
+    sel.setOptions([]);
+    sel.querySelector('.combo-input').placeholder = '暂无已打水印的视频';
     return;
   }
-  sel.innerHTML = '<option value="">-- 请选择 --</option>' +
-    data.map(v => `<option value="${v.id}" data-dur="${v.duration||0}">${v.video_id || v.filename} ${v.duration ? '(' + fmtDur(v.duration) + ')' : ''}</option>`).join('');
+  sel.setOptions(data.map(v => ({
+    value: v.id,
+    label: `${v.video_id || v.filename} ${v.duration ? '(' + fmtDur(v.duration) + ')' : ''}`,
+    search: `${v.video_id || ''} ${v.filename || ''}`
+  })));
 }
 
 async function loadVideoSets() {
   const r = await fetch('/streaming/api/video-sets');
   const data = await r.json();
   const sel = document.getElementById('videoSetSelect');
+  if (!sel.setOptions) {
+    initCombo(sel, { placeholder: '输入视频集名称搜索...', onSelect: () => refreshPreview() });
+  }
   if (!data.length) {
-    sel.innerHTML = '<option value="">暂无视频集</option>';
+    sel.setOptions([]);
+    sel.querySelector('.combo-input').placeholder = '暂无视频集';
     return;
   }
-  sel.innerHTML = '<option value="">-- 请选择 --</option>' +
-    data.map(s => `<option value="${s.id}">${s.name}（${s.video_count} 个视频）</option>`).join('');
+  sel.setOptions(data.map(s => ({
+    value: s.id,
+    label: `${s.name}（${s.video_count} 个视频）`,
+    search: s.name || ''
+  })));
 }
 
 async function loadTasks() {
@@ -276,6 +400,7 @@ async function loadTasks() {
   const tasks = await r.json();
   _tasksData = tasks;
   renderTasks(tasks);
+  startTaskRefresh();
 }
 
 function renderTasks(tasks) {
@@ -369,8 +494,8 @@ function openModal() {
   document.getElementById('loopCount').value = '1';
   document.getElementById('taskName').value = '';
   document.querySelector('input[name="sourceType"][value="single"]').checked = true;
-  document.getElementById('singleVideoSelect').value = '';
-  document.getElementById('videoSetSelect').value = '';
+  document.getElementById('singleVideoSelect').setValue('');
+  document.getElementById('videoSetSelect').setValue('');
   onSourceTypeChange();
   document.getElementById('previewBox').style.display = 'none';
   document.getElementById('modalError').classList.add('hidden');
@@ -392,9 +517,9 @@ async function openEditModal(taskId) {
   document.querySelector(`input[name="sourceType"][value="${task.source_type}"]`).checked = true;
   onSourceTypeChange();
   if (task.source_type === 'single') {
-    document.getElementById('singleVideoSelect').value = task.source_id;
+    document.getElementById('singleVideoSelect').setValue(task.source_id);
   } else {
-    document.getElementById('videoSetSelect').value = task.source_id;
+    document.getElementById('videoSetSelect').setValue(task.source_id);
   }
   document.getElementById('streamName').value = task.stream_name;
   document.getElementById('loopCount').value = task.loop_count;
@@ -564,8 +689,8 @@ function refreshPreview() {
 async function doPreview() {
   const type = document.querySelector('input[name="sourceType"]:checked').value;
   const sourceId = type === 'single'
-    ? document.getElementById('singleVideoSelect').value
-    : document.getElementById('videoSetSelect').value;
+    ? document.getElementById('singleVideoSelect').getValue()
+    : document.getElementById('videoSetSelect').getValue();
   const streamName = document.getElementById('streamName').value.trim();
   const loopCount = parseInt(document.getElementById('loopCount').value) || 1;
 
@@ -613,8 +738,8 @@ async function saveTask() {
   const editingId = document.getElementById('editingTaskId').value;
   const type = document.querySelector('input[name="sourceType"]:checked').value;
   const sourceId = type === 'single'
-    ? document.getElementById('singleVideoSelect').value
-    : document.getElementById('videoSetSelect').value;
+    ? document.getElementById('singleVideoSelect').getValue()
+    : document.getElementById('videoSetSelect').getValue();
   const streamName = document.getElementById('streamName').value.trim();
   const loopCount = parseInt(document.getElementById('loopCount').value) || 1;
   const name = document.getElementById('taskName').value.trim();
@@ -774,11 +899,37 @@ document.getElementById('resumeModalOverlay').addEventListener('click', function
 });
 
 // 自动刷新运行中任务
-setInterval(async () => {
-  const rows = document.querySelectorAll('[id^="row-"]');
-  const hasRunning = Array.from(rows).some(r => r.querySelector('.status-running'));
-  if (hasRunning) await loadTasks();
-}, 4000);
+function startTaskRefresh() {
+    if (_taskRefreshTimer) {
+        clearInterval(_taskRefreshTimer);
+        _taskRefreshTimer = null;
+    }
+    const rows = document.querySelectorAll('[id^="row-"]');
+    const hasRunning = Array.from(rows).some(r => r.querySelector('.status-running'));
+    if (!hasRunning) return;
+    _taskRefreshTimer = setInterval(async () => {
+        if (document.hidden) return;
+        const rows = document.querySelectorAll('[id^="row-"]');
+        const hasRunning = Array.from(rows).some(r => r.querySelector('.status-running'));
+        if (hasRunning) {
+            await loadTasks();
+        } else {
+            clearInterval(_taskRefreshTimer);
+            _taskRefreshTimer = null;
+        }
+    }, 4000);
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        if (_taskRefreshTimer) {
+            clearInterval(_taskRefreshTimer);
+            _taskRefreshTimer = null;
+        }
+    } else {
+        startTaskRefresh();
+    }
+});
 
 init();
 </script>

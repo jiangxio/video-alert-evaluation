@@ -102,15 +102,15 @@
         <textarea id="projectBackground" rows="3" placeholder="简述项目背景..."></textarea>
       </div>
       <div class="form-group">
-        <label>API Base URL（留空则读取环境变量 ANTHROPIC_BASE_URL）</label>
+        <label>API Base URL（留空则使用统一配置）</label>
         <input type="text" id="apiBaseUrl" placeholder="https://api.anthropic.com">
       </div>
       <div class="form-group">
-        <label>Claude API Key（留空则读取环境变量 ANTHROPIC_API_TOKEN）</label>
+        <label>Claude API Key（留空则使用统一配置）</label>
         <input type="password" id="apiKey" placeholder="sk-...">
       </div>
       <div style="background:#e8f5e9;border:1px solid #81c784;border-radius:4px;padding:0.6rem 0.8rem;font-size:0.82rem;color:#2e7d32;margin-top:0.5rem;">
-        💡 提示：服务器管理员可在环境变量中预置 <code>ANTHROPIC_AUTH_TOKEN</code> 和 <code>ANTHROPIC_BASE_URL</code>，此处留空即可直接使用。
+        💡 提示：请在 <a href="/api-config/" target="_blank">统一 API 配置</a> 页面集中管理 Claude Token 与 Base URL，此处留空即可直接使用。
       </div>
     </div>
 

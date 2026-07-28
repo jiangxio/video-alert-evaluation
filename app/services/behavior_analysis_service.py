@@ -14,20 +14,61 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "auto_anno_config.json"
 
 
 def load_config(config_path: str | None = None) -> dict:
-    """加载 API 配置，找不到返回空字典"""
+    """加载 API 配置。
+
+    优先使用统一 API 配置（api_config_service，密钥来自 .env）；
+    若统一来源未提供某项，回退到 auto_anno_config.json（向后兼容）。
+    """
+    from app.services import api_config_service
+
+    # 先读 JSON 文件作为兜底默认值
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    file_cfg = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            file_cfg = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        file_cfg = {}
+
+    creds = api_config_service.get_openai_creds()
+    interval = api_config_service.get_openai_request_interval()
+
+    return {
+        "api_key": creds.get("api_key") or file_cfg.get("api_key", ""),
+        "base_url": creds.get("base_url") or file_cfg.get("base_url", "https://openapi-ai.cmaiot.cn/v1"),
+        "model": creds.get("model") or file_cfg.get("model", "Qwen3-VL-8B-Instruct"),
+        "request_interval_sec": interval if interval is not None else file_cfg.get("request_interval_sec", 1),
+    }
 
 
 def save_config(config: dict, config_path: str | None = None) -> None:
-    """保存 API 配置"""
+    """保存 API 配置。
+
+    已迁移到统一配置（/api-config/ 页面，密钥写 .env）。
+    此函数保留以兼容旧调用：
+    - api_key 委托给 api_config_service 写入 .env（不再明文存 JSON）
+    - base_url/model/request_interval_sec 落 auto_anno_config.json 作非敏感兜底
+    """
+    from app.services import api_config_service
+
+    api_key = config.get("api_key")
+    if api_key:
+        # 委托统一服务把 key 写入 .env，并同步 base_url/model
+        api_config_service.save_config({
+            'openai_api_key': api_key,
+            'openai_base_url': config.get('base_url', ''),
+            'openai_model': config.get('model', ''),
+            'openai_request_interval_sec': config.get('request_interval_sec'),
+        })
+
+    # 非敏感项落 JSON 兜底（不含 key）
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    safe = {
+        k: v for k, v in config.items()
+        if k != "api_key" and v is not None
+    }
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump(safe, f, ensure_ascii=False, indent=2)
 
 
 def get_api_client(config: dict | None = None):
@@ -39,7 +80,7 @@ def get_api_client(config: dict | None = None):
     base_url = cfg.get("base_url", "https://openapi-ai.cmaiot.cn/v1")
 
     if not api_key:
-        raise ValueError("未配置 API Key，请填写 auto_anno_config.json 或设置 OPENAI_API_KEY 环境变量")
+        raise ValueError("未配置 API Key，请在 /api-config/ 页面统一配置 OpenAI 兼容组")
 
     return OpenAI(api_key=api_key, base_url=base_url)
 

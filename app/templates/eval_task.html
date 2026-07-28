@@ -99,6 +99,14 @@
   .result-tab { padding:0.5rem 1.2rem; cursor:pointer; font-size:0.92rem; color:#888; border-bottom:2px solid transparent; margin-bottom:-2px; }
   .result-tab.active { color:#3498db; border-bottom-color:#3498db; font-weight:600; }
 
+  .charts-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+  .chart-box { background:white; border:1px solid #eee; border-radius:8px; padding:1rem; }
+  .chart-box.chart-full { grid-column:1 / -1; }
+  .chart-box h4 { margin:0 0 0.8rem 0; font-size:0.95rem; color:#2c3e50; display:flex; align-items:center; }
+  .chart-canvas { width:100%; height:320px; }
+  .timeline-legend { display:flex; gap:1rem; font-size:0.8rem; color:#666; margin-top:0.5rem; flex-wrap:wrap; }
+  .timeline-legend span { display:flex; align-items:center; gap:0.3rem; }
+
   .filter-bar { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.8rem; }
   .filter-bar select { padding:0.35rem 0.6rem; border:1px solid #ddd; border-radius:4px; font-size:0.88rem; }
   .filter-bar .btn-group { display:flex; gap:0.3rem; }
@@ -393,11 +401,15 @@
     </div>
 
     <!-- Tab 切换 -->
-    <div class="result-tabs">
-      <div class="result-tab active" id="rtab-alerts" onclick="switchResultTab('alerts')">告警检测结果</div>
-      {% if task.dataset_mode != 'realtime' %}
-      <div class="result-tab" id="rtab-gt" onclick="switchResultTab('gt')">GT 事件得分</div>
-      {% endif %}
+    <div class="result-tabs" style="display:flex; align-items:center; justify-content:space-between;">
+      <div style="display:flex;">
+        <div class="result-tab active" id="rtab-alerts" onclick="switchResultTab('alerts')">告警检测结果</div>
+        {% if task.dataset_mode != 'realtime' %}
+        <div class="result-tab" id="rtab-gt" onclick="switchResultTab('gt')">GT 事件得分</div>
+        {% endif %}
+        <div class="result-tab" id="rtab-charts" onclick="switchResultTab('charts')">可视化</div>
+      </div>
+      <a class="btn btn-sm" href="/review/{{ task.id }}/" target="_blank" style="margin-bottom:-2px;">告警复核工作台</a>
     </div>
 
     <!-- Tab A：告警图片 -->
@@ -419,6 +431,7 @@
         <button class="btn btn-sm btn-secondary" id="btn-batch-ignored" onclick="batchUpdateStatus('ignored')" disabled>批量忽略</button>
       </div>
       <div class="img-grid" id="alert-result-grid"></div>
+      <div id="alert-pagination"></div>
     </div>
 
     {% if task.dataset_mode != 'realtime' %}
@@ -433,8 +446,35 @@
         <span style="font-size:0.8rem;color:#888;">* 表示预期触发次数已手动修改</span>
       </div>
       <div class="img-grid" id="gt-result-grid"></div>
+      <div id="gt-pagination"></div>
     </div>
     {% endif %}
+
+    <!-- Tab C：可视化 -->
+    <div class="result-panel" id="rpanel-charts">
+      <div class="charts-grid">
+        <div class="chart-box">
+          <h4>各事件类型 召回率 / 精确率</h4>
+          <div id="chart-recall" class="chart-canvas"></div>
+        </div>
+        <div class="chart-box">
+          <h4>误检分布（按事件类型）</h4>
+          <div id="chart-fp-pie" class="chart-canvas"></div>
+        </div>
+        <div class="chart-box chart-full">
+          <h4>命中 / 误检 时间轴
+            <select id="chart-video-select" onchange="renderTimeline()" style="margin-left:0.5rem;"></select>
+          </h4>
+          <div id="chart-timeline" class="chart-canvas" style="height:380px;"></div>
+          <div class="timeline-legend">
+            <span><i style="background:#27ae60;opacity:0.4;display:inline-block;width:14px;height:10px;"></i> GT事件区间</span>
+            <span><i style="background:#27ae60;border-radius:50%;display:inline-block;width:10px;height:10px;"></i> 正确告警</span>
+            <span><i style="background:#e74c3c;border-radius:50%;display:inline-block;width:10px;height:10px;"></i> 误检告警</span>
+            <span><i style="background:#95a5a6;border-radius:50%;display:inline-block;width:10px;height:10px;"></i> 忽略</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -486,9 +526,11 @@
   </div>
 </div>
 
+<script src="/static/js/echarts.min.js"></script>
 <script>
 const TASK_ID = {{ task.id }};
 const IS_REALTIME = {{ task.dataset_mode | tojson }} === 'realtime';
+const TYPE_NAMES = {{ TYPE_NAMES | tojson | safe }};  // 事件类型中文名映射（全局，供图表使用）
 let currentStage = 'params';
 
 // 分析结果
@@ -510,6 +552,11 @@ let filterVideo = '';
 let filterEvent = '';
 let alertFilter = 'all';
 let gtFilter = 'all';
+
+// 分页状态
+const PAGE_SIZE = 50;
+let alertPage = 1;
+let gtPage = 1;
 
 // 多选状态（所有模式通用）
 let selectMode = false;
@@ -812,7 +859,7 @@ function renderConfirmCols() {
         ? `onclick="showMergedGroupImages(${idx})"`
         : '';
       const imgTag = repId
-        ? `<img class="alert-card-thumb" src="/alerts/api/images/${repId}/file" alt="" ${imgClick}>`
+        ? `<img class="alert-card-thumb" src="${thumbUrl('/alerts/api/images/' + repId + '/file', 240)}" alt="" ${imgClick}>`
         : `<div class="alert-card-thumb" style="background:#eee;display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#aaa;">无图</div>`;
       const isConfirmed = confirmedAlertIndices.has(idx);
       return `
@@ -848,7 +895,7 @@ function renderConfirmCols() {
         ? `onclick="showImageView('gt', ${frameId}, '${escHtml(g.video_id)} · ${escHtml(g.event_type)}', '${tsRange}')"`
         : '';
       const imgTag = frameId
-        ? `<img class="gt-card-thumb" src="/evaluation/api/gt-frames/${frameId}/file" alt="" ${imgClick}>`
+        ? `<img class="gt-card-thumb" src="${thumbUrl('/evaluation/api/gt-frames/' + frameId + '/file', 240)}" alt="" ${imgClick}>`
         : `<div class="gt-card-thumb" style="background:#eee;display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#aaa;">无帧</div>`;
       return `
         <div class="gt-card">
@@ -1077,6 +1124,8 @@ function buildFilterOptions() {
 function applyFilters() {
   filterVideo = document.getElementById('filter-video').value;
   filterEvent = document.getElementById('filter-event').value;
+  alertPage = 1;
+  gtPage = 1;
   renderAlertGrid();
   renderGtGrid();
 }
@@ -1084,6 +1133,7 @@ function applyFilters() {
 // ── 告警结果 Tab ──────────────────────────────────────────────────────────────
 function setAlertFilter(f) {
   alertFilter = f;
+  alertPage = 1;
   ['all','fp','ok','ignored'].forEach(k => {
     const btn = document.getElementById('ra-btn-' + k);
     if (btn) btn.className = 'btn btn-sm ' + (k === f ? 'btn-success' : 'btn-secondary');
@@ -1104,14 +1154,20 @@ function renderAlertGrid() {
   });
   console.log('[renderAlertGrid] filtered rows=', rows.length);
 
+  const totalPages = Math.ceil(rows.length / PAGE_SIZE) || 1;
+  if (alertPage > totalPages) alertPage = totalPages;
+  if (alertPage < 1) alertPage = 1;
+  const pagedRows = rows.slice((alertPage - 1) * PAGE_SIZE, alertPage * PAGE_SIZE);
+
   const grid = document.getElementById('alert-result-grid');
   if (!grid) { console.error('alert-result-grid not found'); return; }
   grid.innerHTML = '';
   if (!rows.length) {
     grid.innerHTML = '<div id="empty-state">该条件下无结果</div>';
+    renderPagination('alert-pagination', 1, 1, 'setAlertPage');
     return;
   }
-  rows.forEach((r) => {
+  pagedRows.forEach((r) => {
     const status = r.effective_status || (r.is_false_positive ? 'false_positive' : 'correct');
     const badgeMap = { correct: ['ok', '正确'], false_positive: ['fp', '误检'], ignored: ['ignored', '忽略'] };
     const [badgeCls, badgeText] = badgeMap[status] || ['ok', '正确'];
@@ -1142,7 +1198,7 @@ function renderAlertGrid() {
 
     cell.innerHTML = `
       ${checkbox}
-      <img src="${imgSrc}" alt="" onclick="showAlertImageInModalById(${r.id})">
+      <img src="${thumbUrl(imgSrc, 240)}" alt="" onclick="showAlertImageInModalById(${r.id})">
       <span id="alert-badge-${r.id}" class="img-badge badge-${badgeCls}">${badgeText}</span>
       <div class="img-label" style="flex-direction:column;align-items:flex-start;gap:2px;">
         <div>${escHtml(r.video_id||'')} ${escHtml(tsLabel)} ${escHtml(r.event_type||'')}</div>
@@ -1151,11 +1207,19 @@ function renderAlertGrid() {
     `;
     grid.appendChild(cell);
   });
+  renderPagination('alert-pagination', alertPage, totalPages, 'setAlertPage');
+}
+
+function setAlertPage(p) {
+  alertPage = p;
+  renderAlertGrid();
+  document.getElementById('alert-result-grid').scrollIntoView({ block: 'nearest' });
 }
 
 // ── GT 得分 Tab ───────────────────────────────────────────────────────────────
 function setGtFilter(f) {
   gtFilter = f;
+  gtPage = 1;
   ['all','miss','hit'].forEach(k => {
     document.getElementById('rg-btn-' + k).className =
       'btn btn-sm ' + (k === f ? 'btn-success' : 'btn-secondary');
@@ -1188,15 +1252,21 @@ function renderGtGrid() {
     if (gtFilter === 'miss' && actual >= confirmed) return false;
     if (gtFilter === 'hit' && actual < confirmed) return false;
     return true;
-  });
+  }).map((r, idx) => { r._rowIdx = idx; return r; });
+
+  const totalPages = Math.ceil(rows.length / PAGE_SIZE) || 1;
+  if (gtPage > totalPages) gtPage = totalPages;
+  if (gtPage < 1) gtPage = 1;
+  const pagedRows = rows.slice((gtPage - 1) * PAGE_SIZE, gtPage * PAGE_SIZE);
 
   const grid = document.getElementById('gt-result-grid');
   grid.innerHTML = '';
   if (!rows.length) {
     grid.innerHTML = '<div id="empty-state">该条件下无结果</div>';
+    renderPagination('gt-pagination', 1, 1, 'setGtPage');
     return;
   }
-  rows.forEach((r, idx) => {
+  pagedRows.forEach((r) => {
     // 应用新逻辑到显示
     const confirmed_raw = r.confirmed_count !== undefined && r.confirmed_count !== null ? r.confirmed_count : r.expected_count;
     const actual = r.actual_count || 0;
@@ -1217,8 +1287,8 @@ function renderGtGrid() {
     cell.className = 'img-cell';
     const timeLabel = formatTime(r.start_sec) + ' – ' + formatTime(r.end_sec);
     const imgTag = r.mid_frame_id
-      ? `<img src="/evaluation/api/gt-frames/${r.mid_frame_id}/file" alt="" onclick="showGtImageInModal(${idx})">`
-      : `<div style="width:100%;aspect-ratio:4/3;background:#eee;display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#aaa;cursor:default;" onclick="showGtImageInModal(${idx})">无中间帧</div>`;
+      ? `<img src="${thumbUrl('/evaluation/api/gt-frames/' + r.mid_frame_id + '/file', 240)}" alt="" onclick="showGtImageInModal(${r._rowIdx})">`
+      : `<div style="width:100%;aspect-ratio:4/3;background:#eee;display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#aaa;cursor:default;" onclick="showGtImageInModal(${r._rowIdx})">无中间帧</div>`;
     cell.innerHTML = `
       ${imgTag}
       <span class="img-badge ${badgeCls}">${badgeText}</span>
@@ -1230,18 +1300,230 @@ function renderGtGrid() {
     `;
     grid.appendChild(cell);
   });
+  renderPagination('gt-pagination', gtPage, totalPages, 'setGtPage');
+}
+
+function setGtPage(p) {
+  gtPage = p;
+  renderGtGrid();
+  document.getElementById('gt-result-grid').scrollIntoView({ block: 'nearest' });
+}
+
+// 通用分页控件
+function renderPagination(containerId, page, totalPages, fnName) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (totalPages <= 1) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = `
+    <div style="display:flex;justify-content:center;align-items:center;gap:0.5rem;margin-top:0.8rem;font-size:0.85rem;">
+      <button class="btn btn-sm" onclick="${fnName}(${page - 1})" ${page <= 1 ? 'disabled' : ''}>上一页</button>
+      <span>第 ${page} / ${totalPages} 页（每页 ${PAGE_SIZE} 条）</span>
+      <button class="btn btn-sm" onclick="${fnName}(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>下一页</button>
+    </div>
+  `;
 }
 
 // ── 结果 Tab 切换 ─────────────────────────────────────────────────────────────
 function switchResultTab(tab) {
-  ['alerts','gt'].forEach(k => {
+  const tabs = IS_REALTIME ? ['alerts','charts'] : ['alerts','gt','charts'];
+  const prevTab = document.querySelector('.result-tab.active');
+  const prevWasCharts = prevTab && prevTab.id === 'rtab-charts';
+  tabs.forEach(k => {
     document.getElementById('rtab-' + k).classList.toggle('active', k === tab);
     document.getElementById('rpanel-' + k).classList.toggle('active', k === tab);
   });
+  if (tab === 'charts') {
+    // 容器可见后再画图，否则 echarts 拿不到宽高
+    requestAnimationFrame(() => renderCharts());
+  } else if (prevWasCharts) {
+    disposeCharts();
+  }
 }
+
+function disposeCharts() {
+  Object.keys(echartsInstances).forEach(k => {
+    const c = echartsInstances[k];
+    if (c && typeof c.dispose === 'function') {
+      try { c.dispose(); } catch (e) {}
+    }
+    delete echartsInstances[k];
+  });
+}
+
+window.addEventListener('pagehide', disposeCharts);
+
+// ── 可视化图表 ────────────────────────────────────────────────────────────────
+const echartsInstances = {};  // 缓存 echarts 实例，避免重复 init
+
+async function renderCharts() {
+  if (typeof echarts === 'undefined') {
+    alert('echarts 未加载，请检查 /static/js/echarts.min.js');
+    return;
+  }
+  // 确保数据已加载
+  if (!alertResults || alertResults.length === 0) {
+    await loadResults();
+  }
+  if (!eventMetricsData || eventMetricsData.length === 0) {
+    try {
+      const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/event-metrics');
+      const data = await res.json();
+      if (res.ok) eventMetricsData = data.event_metrics || [];
+    } catch (e) { /* 忽略 */ }
+  }
+  renderRecallChart();
+  renderFpPieChart();
+  initTimelineSelect();
+  renderTimeline();
+}
+
+function getTypeName(etype) {
+  return (TYPE_NAMES && TYPE_NAMES[etype]) || etype;
+}
+
+function renderRecallChart() {
+  const dom = document.getElementById('chart-recall');
+  if (!dom) return;
+  const existing = echarts.getInstanceByDom(dom);
+  if (existing) existing.dispose();
+  const chart = echarts.init(dom);
+  const types = eventMetricsData.filter(m => m.gt_count > 0 || m.alert_count > 0);
+  const names = types.map(m => getTypeName(m.event_type));
+  const recalls = types.map(m => m.recall != null ? +(m.recall * 100).toFixed(1) : null);
+  const precisions = types.map(m => m.precision != null ? +(m.precision * 100).toFixed(1) : null);
+  chart.setOption({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: p => p.map(x => `${x.marker}${x.seriesName}: ${x.value == null ? 'N/A' : x.value + '%'}`).join('<br/>') },
+    legend: { data: ['召回率', '精确率'], top: 0 },
+    grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
+    xAxis: { type: 'category', data: names, axisLabel: { rotate: names.length > 5 ? 30 : 0, interval: 0, fontSize: 10 } },
+    yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+    series: [
+      { name: '召回率', type: 'bar', data: recalls, itemStyle: { color: '#3498db' }, barGap: '10%' },
+      { name: '精确率', type: 'bar', data: precisions, itemStyle: { color: '#27ae60' } }
+    ]
+  });
+  echartsInstances.recall = chart;
+}
+
+function renderFpPieChart() {
+  const dom = document.getElementById('chart-fp-pie');
+  if (!dom) return;
+  const existing = echarts.getInstanceByDom(dom);
+  if (existing) existing.dispose();
+  const chart = echarts.init(dom);
+  const data = eventMetricsData
+    .filter(m => (m.false_positive_count || 0) > 0)
+    .map(m => ({ name: getTypeName(m.event_type), value: m.false_positive_count }));
+  if (!data.length) {
+    chart.setOption({ title: { text: '本任务无误检', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } } });
+    echartsInstances.fpPie = chart;
+    return;
+  }
+  chart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { type: 'scroll', orient: 'vertical', right: '5%', top: 'middle', fontSize: 11 },
+    series: [{
+      type: 'pie', radius: ['35%', '65%'], center: ['40%', '50%'],
+      data: data,
+      itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
+      label: { formatter: '{b}\n{c}' }
+    }]
+  });
+  echartsInstances.fpPie = chart;
+}
+
+function initTimelineSelect() {
+  const sel = document.getElementById('chart-video-select');
+  if (!sel) return;
+  const videos = [...new Set((alertResults || []).map(a => a.video_id))].sort();
+  // 如果已填充且数量一致，不重复填充
+  if (sel.options.length === videos.length + 1 && sel.value) return;
+  sel.innerHTML = '<option value="">选择视频…</option>' + videos.map(v => `<option value="${v}">${v}</option>`).join('');
+}
+
+function renderTimeline() {
+  const dom = document.getElementById('chart-timeline');
+  if (!dom) return;
+  const existing = echarts.getInstanceByDom(dom);
+  if (existing) existing.dispose();
+  const chart = echarts.init(dom);
+  const sel = document.getElementById('chart-video-select');
+  const vid = sel ? sel.value : '';
+  if (!vid) {
+    chart.setOption({ title: { text: '请选择视频查看时间轴', left: 'center', top: 'center', textStyle: { color: '#999', fontSize: 14 } } });
+    echartsInstances.timeline = chart;
+    return;
+  }
+  const alerts = (alertResults || []).filter(a => a.video_id === vid);
+  const gts = (gtResults || []).filter(g => g.video_id === vid);
+
+  // 计算时间范围
+  const pts = [];
+  alerts.forEach(a => { if (a.ts_start != null) pts.push(a.ts_start); if (a.ts_end != null) pts.push(a.ts_end); });
+  gts.forEach(g => { if (g.start_sec != null) pts.push(g.start_sec); if (g.end_sec != null) pts.push(g.end_sec); });
+  if (!pts.length) {
+    chart.setOption({ title: { text: '该视频无时间数据', left: 'center', top: 'center', textStyle: { color: '#999' } } });
+    echartsInstances.timeline = chart;
+    return;
+  }
+  const minT = Math.min(...pts);
+  const maxT = Math.max(...pts);
+  const pad = (maxT - minT) * 0.05 || 5;
+
+  // GT 区间用 markArea
+  const gtAreas = gts.filter(g => g.start_sec != null && g.end_sec != null).map(g => ([
+    { xAxis: g.start_sec, itemStyle: { color: 'rgba(39,174,96,0.25)' } },
+    { xAxis: g.end_sec }
+  ]));
+
+  // 告警散点：正确=绿、误检=红、忽略=灰。y 用 1 固定一条线
+  const correctPts = [], fpPts = [], ignoredPts = [];
+  alerts.forEach(a => {
+    const t = a.ts_start != null ? a.ts_start : a.ts_end;
+    if (t == null) return;
+    const st = a.effective_status || (a.is_false_positive ? 'false_positive' : 'correct');
+    const pt = { value: [t, 1], info: `${getTypeName(a.event_type)} ${a.ts_start != null ? a.ts_start + 's' : ''}` };
+    if (st === 'correct') correctPts.push(pt);
+    else if (st === 'false_positive') fpPts.push(pt);
+    else ignoredPts.push(pt);
+  });
+
+  chart.setOption({
+    tooltip: { formatter: p => p.data.info || (p.seriesName + ': ' + p.value[0].toFixed(1) + 's') },
+    grid: { left: '3%', right: '4%', top: '10%', bottom: '15%', containLabel: true },
+    xAxis: { type: 'value', name: '时间(秒)', min: minT - pad, max: maxT + pad },
+    yAxis: { type: 'value', min: 0, max: 2, axisLabel: { show: false }, splitLine: { show: false } },
+    series: [{
+      type: 'scatter',
+      name: '告警',
+      symbolSize: 10,
+      data: correctPts,
+      itemStyle: { color: '#27ae60' },
+      markArea: { data: gtAreas, silent: true }
+    }, {
+      type: 'scatter', symbolSize: 10, data: fpPts, itemStyle: { color: '#e74c3c' }
+    }, {
+      type: 'scatter', symbolSize: 10, data: ignoredPts, itemStyle: { color: '#95a5a6' }
+    }]
+  });
+  echartsInstances.timeline = chart;
+}
+
+// 窗口尺寸变化时重绘
+window.addEventListener('resize', () => {
+  Object.values(echartsInstances).forEach(c => c && c.resize && c.resize());
+});
 
 function escHtml(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function thumbUrl(url, width) {
+  if (!url) return '';
+  return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'w=' + width;
 }
 
 function formatTime(sec) {
@@ -1600,7 +1882,7 @@ function showMergedGroupImages(groupIndex) {
     <div class="multi-img-grid">
       ${images.map((img, idx) => `
         <div class="multi-img-cell" onclick="showSingleImage(${groupIndex}, ${idx})">
-          <img src="/alerts/api/images/${img.id}/file" alt="">
+          <img src="${thumbUrl('/alerts/api/images/' + img.id + '/file', 240)}" alt="">
           <div class="img-label">#${idx + 1} · ${(img.timestamp_seconds != null ? formatTime(img.timestamp_seconds) : '')}</div>
         </div>
       `).join('')}
@@ -1839,7 +2121,7 @@ async function showGtFramesForEvent(videoDbId, eventId) {
     <div class="multi-img-grid">
       ${frames.map(f => `
         <div class="multi-img-cell">
-          <img src="/evaluation/api/gt-frames/${f.id}/file" alt="" loading="lazy">
+          <img src="${thumbUrl('/evaluation/api/gt-frames/' + f.id + '/file', 240)}" alt="" loading="lazy">
           <div class="img-label">${formatTime(f.timestamp_sec)} (${f.timestamp_sec}s)</div>
         </div>
       `).join('')}

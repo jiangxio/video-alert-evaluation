@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+
+{% block title %}多任务对比 - 评测平台{% endblock %}
+
+{% block content %}
+<script src="/static/js/echarts.min.js"></script>
+<style>
+  .compare-section { background:white; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.1); padding:1.5rem; margin-bottom:1.5rem; }
+  .compare-section h3 { margin:0 0 1rem 0; font-size:1.05rem; color:#2c3e50; }
+  .step-label { display:inline-block; background:#3498db; color:white; width:1.6rem; height:1.6rem; line-height:1.6rem; text-align:center; border-radius:50%; margin-right:0.5rem; font-size:0.85rem; }
+  .filter-row { display:flex; gap:0.8rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; }
+  .filter-row select { padding:0.5rem 0.8rem; border:1px solid #ddd; border-radius:4px; font-size:0.95rem; min-width:240px; }
+  .task-pick-list { display:flex; flex-direction:column; gap:0.4rem; max-height:280px; overflow-y:auto; }
+  .task-pick { display:flex; align-items:center; gap:0.6rem; padding:0.6rem 0.8rem; border:1px solid #eee; border-radius:6px; cursor:pointer; }
+  .task-pick:hover { background:#f8f9fa; }
+  .task-pick.selected { background:#e3f2fd; border-color:#3498db; }
+  .task-pick input { margin:0; }
+  .task-pick .tp-name { font-weight:600; min-width:180px; }
+  .task-pick .tp-meta { color:#888; font-size:0.85rem; }
+  .task-pick .tp-metric { font-size:0.82rem; margin-left:0.5rem; }
+  .empty-hint { color:#999; padding:1rem; text-align:center; }
+
+  table.compare-table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+  table.compare-table th, table.compare-table td { padding:0.6rem 0.8rem; border-bottom:1px solid #eee; text-align:center; }
+  table.compare-table th { background:#f8f9fa; font-weight:600; }
+  table.compare-table td.task-name { text-align:left; font-weight:600; }
+  .best { background:#d4edda; color:#155724; font-weight:700; }
+  .worst { background:#f8d7da; color:#721c24; }
+
+  .diff-cell-up { color:#27ae60; font-weight:600; }
+  .diff-cell-down { color:#e74c3c; font-weight:600; }
+  .ab-select-row { display:flex; gap:0.8rem; align-items:center; margin-bottom:1rem; }
+  .ab-select-row select { padding:0.4rem; border:1px solid #ddd; border-radius:4px; min-width:200px; }
+  .charts-row { display:grid; grid-template-columns:1fr; gap:1rem; }
+  .chart-box { width:100%; height:380px; }
+  .hidden { display:none; }
+</style>
+
+<div class="compare-section">
+  <h3><span class="step-label">1</span>选择视频集（对比前提：相同视频集 = 相同测试数据）</h3>
+  <div class="filter-row">
+    <select id="evalset-select" onchange="onEvalsetChange()">
+      <option value="">— 选择视频集 —</option>
+    </select>
+    <span id="evalset-hint" style="color:#888;font-size:0.88rem;"></span>
+  </div>
+</div>
+
+<div class="compare-section">
+  <h3><span class="step-label">2</span>勾选要对比的任务（至少 2 个，仅显示已确认任务）</h3>
+  <div id="task-pick-list" class="task-pick-list">
+    <div class="empty-hint">请先选择视频集</div>
+  </div>
+</div>
+
+<div id="result-area" class="hidden">
+  <div class="compare-section">
+    <h3>对比表（绿色=该列最优）</h3>
+    <div style="overflow-x:auto;">
+      <table class="compare-table" id="compare-table"></table>
+    </div>
+  </div>
+
+  <div class="compare-section">
+    <h3>指标趋势（按任务创建时间）</h3>
+    <div id="trend-chart" class="chart-box"></div>
+  </div>
+
+  <div class="compare-section">
+    <h3>A/B 对比（逐事件类型 diff）</h3>
+    <div class="ab-select-row">
+      <label>任务 A：</label>
+      <select id="ab-a" onchange="renderDiff()"></select>
+      <label>任务 B：</label>
+      <select id="ab-b" onchange="renderDiff()"></select>
+      <span style="color:#888;font-size:0.85rem;">正值=B优于A（提升，绿），负值=B差于A（回归，红）</span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="compare-table" id="diff-table"></table>
+    </div>
+  </div>
+</div>
+
+<script>
+const TYPE_NAMES = {{ TYPE_NAMES | tojson | safe }};
+let allTasks = [];        // 所有 finalized 任务
+let tasksBySet = {};      // {eval_set_id: [task,...]}
+let selectedTaskIds = new Set();
+let trendChart = null;
+
+async function init() {
+  try {
+    const res = await fetch('/evaluation/api/tasks');
+    const data = await res.json();
+    // 只取 finalized 的任务
+    allTasks = (data || []).filter(t => t.finalized == 1);
+    // 按 eval_set_id 分组（无 eval_set_id 的归到 'none'，无法对比）
+    tasksBySet = {};
+    allTasks.forEach(t => {
+      const k = t.eval_set_id || 'none';
+      (tasksBySet[k] = tasksBySet[k] || []).push(t);
+    });
+    renderEvalsetOptions();
+  } catch (e) {
+    document.getElementById('evalset-hint').textContent = '加载失败：' + e;
+  }
+}
+
+function renderEvalsetOptions() {
+  const sel = document.getElementById('evalset-select');
+  const options = [];
+  Object.keys(tasksBySet).forEach(k => {
+    if (k === 'none') return;  // 无视频集的不参与对比
+    const tasks = tasksBySet[k];
+    if (tasks.length < 2) return;  // 不足2个无法对比
+    const name = tasks[0].eval_set_name || ('视频集#' + k);
+    options.push(`<option value="${k}">${name}（${tasks.length} 个任务）</option>`);
+  });
+  if (!options.length) {
+    sel.innerHTML = '<option value="">— 无可对比的视频集 —</option>';
+    document.getElementById('evalset-hint').textContent = '需至少有2个已确认任务使用同一视频集';
+    return;
+  }
+  sel.innerHTML = '<option value="">— 选择视频集 —</option>' + options.join('');
+}
+
+function onEvalsetChange() {
+  const setId = document.getElementById('evalset-select').value;
+  selectedTaskIds.clear();
+  document.getElementById('result-area').classList.add('hidden');
+  const listEl = document.getElementById('task-pick-list');
+  if (!setId) {
+    listEl.innerHTML = '<div class="empty-hint">请先选择视频集</div>';
+    return;
+  }
+  const tasks = tasksBySet[setId] || [];
+  // 按 created_at 排序
+  tasks.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+  document.getElementById('evalset-hint').textContent = `该视频集下有 ${tasks.length} 个已确认任务`;
+  listEl.innerHTML = tasks.map(t => `
+    <label class="task-pick" data-id="${t.id}">
+      <input type="checkbox" onchange="onTaskToggle(${t.id}, this.checked)">
+      <span class="tp-name">${escHtml(t.name)}</span>
+      <span class="tp-meta">${(t.created_at||'').slice(0,16)}</span>
+      <span class="tp-metric">精确率 ${pct(t.accuracy)}</span>
+      <span class="tp-metric">召回率 ${pct(t.recall)}</span>
+      <span class="tp-metric">误检/h ${(t.avg_fp_per_hour ?? 0).toFixed(2)}</span>
+    </label>
+  `).join('');
+}
+
+function onTaskToggle(taskId, checked) {
+  if (checked) selectedTaskIds.add(taskId);
+  else selectedTaskIds.delete(taskId);
+  // 更新选中样式
+  document.querySelectorAll('.task-pick').forEach(el => {
+    el.classList.toggle('selected', selectedTaskIds.has(parseInt(el.dataset.id)));
+  });
+  // 选中>=2 才显示结果
+  if (selectedTaskIds.size >= 2) {
+    document.getElementById('result-area').classList.remove('hidden');
+    renderResults();
+  } else {
+    document.getElementById('result-area').classList.add('hidden');
+  }
+}
+
+function getSelectedTasks() {
+  const setId = document.getElementById('evalset-select').value;
+  return (tasksBySet[setId] || []).filter(t => selectedTaskIds.has(t.id))
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+}
+
+function renderResults() {
+  const tasks = getSelectedTasks();
+  renderCompareTable(tasks);
+  renderTrendChart(tasks);
+  renderAbOptions(tasks);
+  renderDiff();
+}
+
+function renderCompareTable(tasks) {
+  const el = document.getElementById('compare-table');
+  // 找各列最优值
+  const maxAcc = Math.max(...tasks.map(t => t.accuracy ?? 0));
+  const maxRec = Math.max(...tasks.map(t => t.recall ?? 0));
+  const minFp = Math.min(...tasks.map(t => t.avg_fp_per_hour ?? Infinity));
+  let html = '<thead><tr><th>任务</th><th>精确率</th><th>召回率</th><th>误检数/小时</th></tr></thead><tbody>';
+  tasks.forEach(t => {
+    html += `<tr>
+      <td class="task-name">${escHtml(t.name)}</td>
+      <td class="${t.accuracy === maxAcc ? 'best' : ''}">${pct(t.accuracy)}</td>
+      <td class="${t.recall === maxRec ? 'best' : ''}">${pct(t.recall)}</td>
+      <td class="${t.avg_fp_per_hour === minFp ? 'best' : ''}">${(t.avg_fp_per_hour ?? 0).toFixed(2)}</td>
+    </tr>`;
+  });
+  html += '</tbody>';
+  el.innerHTML = html;
+}
+
+function renderTrendChart(tasks) {
+  const dom = document.getElementById('trend-chart');
+  if (trendChart) trendChart.dispose();
+  trendChart = echarts.init(dom);
+  const names = tasks.map(t => t.name);
+  const accs = tasks.map(t => t.accuracy != null ? +(t.accuracy * 100).toFixed(1) : null);
+  const recs = tasks.map(t => t.recall != null ? +(t.recall * 100).toFixed(1) : null);
+  trendChart.setOption({
+    tooltip: { trigger: 'axis', formatter: p => p.map(x => `${x.marker}${x.seriesName}: ${x.value == null ? 'N/A' : x.value + '%'}`).join('<br/>') },
+    legend: { data: ['精确率', '召回率'], top: 0 },
+    grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
+    xAxis: { type: 'category', data: names, axisLabel: { rotate: names.length > 4 ? 20 : 0, interval: 0 } },
+    yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+    series: [
+      { name: '精确率', type: 'line', data: accs, smooth: true, itemStyle: { color: '#27ae60' }, label: { show: true, formatter: '{c}%' } },
+      { name: '召回率', type: 'line', data: recs, smooth: true, itemStyle: { color: '#3498db' }, label: { show: true, formatter: '{c}%' } }
+    ]
+  });
+}
+
+function renderAbOptions(tasks) {
+  const aSel = document.getElementById('ab-a');
+  const bSel = document.getElementById('ab-b');
+  const opts = tasks.map(t => `<option value="${t.id}">${escHtml(t.name)}</option>`).join('');
+  aSel.innerHTML = opts;
+  bSel.innerHTML = opts;
+  // 默认选前两个
+  if (tasks.length >= 2) {
+    aSel.value = tasks[0].id;
+    bSel.value = tasks[1].id;
+  }
+}
+
+function renderDiff() {
+  const el = document.getElementById('diff-table');
+  const aId = parseInt(document.getElementById('ab-a').value);
+  const bId = parseInt(document.getElementById('ab-b').value);
+  const tasks = getSelectedTasks();
+  const ta = tasks.find(t => t.id === aId);
+  const tb = tasks.find(t => t.id === bId);
+  if (!ta || !tb || aId === bId) {
+    el.innerHTML = '<tr><td class="empty-hint">请选择两个不同的任务</td></tr>';
+    return;
+  }
+  const emA = parseEm(ta.event_metrics);
+  const emB = parseEm(tb.event_metrics);
+  const allTypes = [...new Set([...Object.keys(emA), ...Object.keys(emB)])];
+  let html = `<thead><tr>
+    <th>事件类型</th>
+    <th>${escHtml(ta.name)}<br>召回率</th>
+    <th>${escHtml(tb.name)}<br>召回率</th>
+    <th>召回率 diff</th>
+    <th>${escHtml(ta.name)}<br>精确率</th>
+    <th>${escHtml(tb.name)}<br>精确率</th>
+    <th>精确率 diff</th>
+  </tr></thead><tbody>`;
+  allTypes.forEach(et => {
+    const ra = emA[et]?.recall, rb = emB[et]?.recall;
+    const pa = emA[et]?.precision, pb = emB[et]?.precision;
+    const rdiff = (ra != null && rb != null) ? (rb - ra) : null;
+    const pdiff = (pa != null && pb != null) ? (pb - pa) : null;
+    html += `<tr>
+      <td class="task-name">${TYPE_NAMES[et] || et}</td>
+      <td>${pct(ra)}</td><td>${pct(rb)}</td>
+      <td class="${rdiff == null ? '' : (rdiff >= 0 ? 'diff-cell-up' : 'diff-cell-down')}">${rdiff == null ? '—' : (rdiff >= 0 ? '+' : '') + (rdiff * 100).toFixed(1) + 'pp'}</td>
+      <td>${pct(pa)}</td><td>${pct(pb)}</td>
+      <td class="${pdiff == null ? '' : (pdiff >= 0 ? 'diff-cell-up' : 'diff-cell-down')}">${pdiff == null ? '—' : (pdiff >= 0 ? '+' : '') + (pdiff * 100).toFixed(1) + 'pp'}</td>
+    </tr>`;
+  });
+  html += '</tbody>';
+  el.innerHTML = html;
+}
+
+function parseEm(em) {
+  // event_metrics 可能是 JSON 字符串或已解析的 list
+  let arr = em;
+  if (typeof em === 'string') {
+    try { arr = JSON.parse(em); } catch (e) { arr = []; }
+  }
+  const map = {};
+  (arr || []).forEach(m => { map[m.event_type] = m; });
+  return map;
+}
+
+function pct(v) { return v == null ? 'N/A' : (v * 100).toFixed(1) + '%'; }
+function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+window.addEventListener('resize', () => { if (trendChart) trendChart.resize(); });
+init();
+</script>
+{% endblock %}

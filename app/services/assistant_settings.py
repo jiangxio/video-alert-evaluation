@@ -101,16 +101,24 @@ def get_assistant_settings() -> dict:
 
 
 def get_openai_credentials() -> dict:
-    """返回 OpenAI 调用所需配置，若未配置则返回空值。"""
+    """返回 OpenAI 调用所需配置，若未配置则返回空值。
+
+    优先走统一 API 配置（api_config_service，密钥来自 .env）；
+    若统一来源未配置 key，回退到助手设置页 DB 中加密存储的 key（向后兼容）。
+    """
+    from app.services import api_config_service
+    creds = api_config_service.get_openai_creds()
+    if creds.get('api_key'):
+        return creds
+    # 回退：DB 加密存储的 key
     settings = get_assistant_settings()
-    base_url = settings.get('openai_base_url', 'https://api.openai.com/v1')
-    # 兼容用户只填域名未填 /v1 的情况
+    base_url = creds.get('base_url') or settings.get('openai_base_url', 'https://api.openai.com/v1')
     if base_url and not base_url.rstrip('/').endswith('/v1'):
         base_url = base_url.rstrip('/') + '/v1'
     return {
         'api_key': settings.get('openai_api_key', ''),
         'base_url': base_url,
-        'model': settings.get('openai_model', 'gpt-4o-mini'),
+        'model': creds.get('model') or settings.get('openai_model', 'gpt-4o-mini'),
     }
 
 

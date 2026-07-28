@@ -893,7 +893,7 @@ def list_tasks():
     # 校验 running 状态的任务：进程若已消失则自动修正状态
     for r in rows:
         if r.get("status") == "running" and r.get("pid"):
-            if not _is_process_alive(r["pid"]):
+            if not _is_pid_alive(r["pid"]):
                 cur.execute(
                     "UPDATE stream_tasks SET status = 'done', ended_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (r["id"],),

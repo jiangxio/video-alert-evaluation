@@ -31,6 +31,7 @@ class Config:
     THUMBNAILS_DIR = str(BASE_DIR / 'thumbnails')
     GENERATED_VIDEOS_DIR = str(BASE_DIR / 'generated_videos')
     ALERT_TYPES_CONFIG = str(BASE_DIR / 'config' / 'alert_types.json')
+    EXTRACTED_FRAMES_DIR = str(BASE_DIR / 'extracted_frames')
 
     # 允许的文件扩展名
     ALLOWED_VIDEO_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv'}
@@ -50,3 +51,4 @@ class Config:
         # 确保必要的目录存在
         Path(cls.THUMBNAILS_DIR).mkdir(parents=True, exist_ok=True)
         Path(cls.GENERATED_VIDEOS_DIR).mkdir(parents=True, exist_ok=True)
+        Path(cls.EXTRACTED_FRAMES_DIR).mkdir(parents=True, exist_ok=True)

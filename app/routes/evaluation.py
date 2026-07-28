@@ -9,7 +9,7 @@ import subprocess
 import io
 
 from app.database import get_db, DATABASE_PATH
-from app.routes import send_file_with_cache
+from app.routes import send_file_with_cache, send_image_with_thumbnail
 from app.services.eval_service import (
     calc_expected_count,
     get_effective_status,
@@ -61,6 +61,12 @@ def _is_realtime_task(cursor, task_id):
 def evaluation_page():
     """评测任务列表页"""
     return render_template('evaluation.html')
+
+
+@bp.route('/compare')
+def compare_page():
+    """多任务横向对比页"""
+    return render_template('compare.html')
 
 
 @bp.route('/<int:task_id>/')
@@ -1213,7 +1219,7 @@ def get_report_image(task_id):
 
 @bp.route('/api/gt-frames/<int:frame_id>/file', methods=['GET'])
 def serve_gt_frame(frame_id):
-    """提供GT帧图片文件"""
+    """提供GT帧图片文件，支持 ?w= 和 ?h= 生成缩略图。"""
     db = get_db()
     cursor = db.cursor()
     cursor.execute('SELECT file_path FROM gt_frames WHERE id = ?', (frame_id,))
@@ -1225,6 +1231,10 @@ def serve_gt_frame(frame_id):
     if not file_path.exists():
         return 'File not found', 404
 
+    max_w = request.args.get('w', type=int)
+    max_h = request.args.get('h', type=int)
+    if max_w or max_h:
+        return send_image_with_thumbnail(str(file_path), max_width=max_w, max_height=max_h)
     return send_file_with_cache(str(file_path))
 
 
@@ -1902,10 +1912,12 @@ def detailed_report_preview(task_id):
     if not task:
         return jsonify({'error': '任务不存在'}), 404
 
-    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_AUTH_TOKEN')
-    api_base_url = data.get('api_base_url', '').strip() or os.environ.get('ANTHROPIC_BASE_URL') or None
+    from app.services import api_config_service
+    claude_creds = api_config_service.get_claude_creds()
+    api_key = data.get('api_key') or claude_creds.get('auth_token')
+    api_base_url = data.get('api_base_url', '').strip() or claude_creds.get('base_url') or None
     if not api_key:
-        return jsonify({'error': '缺少 API Key'}), 400
+        return jsonify({'error': '缺少 API Key，请在 /api-config/ 页面配置 Claude 组'}), 400
 
     import json
     event_metrics = []
@@ -2003,10 +2015,12 @@ def detailed_report_chat(task_id):
     if not task:
         return jsonify({'error': '任务不存在'}), 404
 
-    api_key = data.get('api_key') or os.environ.get('ANTHROPIC_AUTH_TOKEN')
-    api_base_url = data.get('api_base_url', '').strip() or os.environ.get('ANTHROPIC_BASE_URL') or None
+    from app.services import api_config_service
+    claude_creds = api_config_service.get_claude_creds()
+    api_key = data.get('api_key') or claude_creds.get('auth_token')
+    api_base_url = data.get('api_base_url', '').strip() or claude_creds.get('base_url') or None
     if not api_key:
-        return jsonify({'error': '缺少 API Key'}), 400
+        return jsonify({'error': '缺少 API Key，请在 /api-config/ 页面配置 Claude 组'}), 400
 
     messages = data.get('messages', [])
     current_summary = data.get('current_summary', '')

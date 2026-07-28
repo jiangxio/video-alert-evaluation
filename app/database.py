@@ -346,6 +346,7 @@ def init_db():
         'is_false_positive INTEGER DEFAULT 0',
         'matched_gt_event_id INTEGER',
         'manual_status TEXT DEFAULT "auto"',
+        'ai_suggestion TEXT',
     ]:
         col_name = col_def.split()[0]
         try:
@@ -527,6 +528,33 @@ def init_db():
         )
     ''')
 
+    # 视频抽帧任务表（视频转图片用于测试模型，支持批量）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS extracted_frames_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wm_ids TEXT,
+            video_id TEXT NOT NULL,
+            video_count INTEGER DEFAULT 1,
+            target_width INTEGER,
+            interval_sec REAL DEFAULT 1.0,
+            include_normal INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'running',
+            frame_count INTEGER DEFAULT 0,
+            output_dir TEXT,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # 兼容已存在的表：补 video_count / wm_ids 列
+    try:
+        cursor.execute('ALTER TABLE extracted_frames_tasks ADD COLUMN video_count INTEGER DEFAULT 1')
+    except Exception:
+        pass
+    try:
+        cursor.execute('ALTER TABLE extracted_frames_tasks ADD COLUMN wm_ids TEXT')
+    except Exception:
+        pass
+
     # 算法版本表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS algorithm_versions (
@@ -623,6 +651,21 @@ def init_db():
             max_messages_per_session INTEGER DEFAULT 50,
             max_write_actions_per_session INTEGER DEFAULT 30,
             confirmation_ttl_seconds INTEGER DEFAULT 300,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # 统一 API Token 配置表（非敏感项；密钥仅存 .env，此处只存"是否已配置"标记）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS api_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            openai_base_url TEXT,
+            openai_model TEXT DEFAULT 'Qwen3-VL-8B-Instruct',
+            openai_request_interval_sec INTEGER DEFAULT 1,
+            claude_base_url TEXT,
+            claude_model TEXT DEFAULT 'claude-sonnet-5',
+            openai_key_configured INTEGER DEFAULT 0,
+            claude_key_configured INTEGER DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')

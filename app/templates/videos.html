@@ -170,8 +170,8 @@
       <div class="btn-group">
         <span class="action-label">批量操作：</span>
         <button class="btn btn-sm" onclick="concatSelected()" id="concatBtn" disabled>拼接视频</button>
-        <button class="btn btn-sm" onclick="packageSelected()" id="packageBtn" disabled>打包下载</button>
-        <button class="btn btn-sm" onclick="batchDownloadSelected()" id="batchDownloadBtn" disabled>批量下载</button>
+        <button class="btn btn-sm" onclick="packageSelected()" id="packageBtn" disabled>打包视频</button>
+        <button class="btn btn-sm" style="background:#9b59b6;color:white;" onclick="extractSelected()" id="extractBtn" disabled>视频抽帧</button>
         <label style="font-size:0.82rem;color:#555;cursor:pointer;display:flex;align-items:center;gap:0.25rem;">
           <input type="checkbox" id="includeGtJson" style="margin:0;"> 包含JSON
         </label>
@@ -189,7 +189,7 @@
         <select id="evalSetSelect" class="action-select">
           <option value="">选择评测集...</option>
         </select>
-        <button class="btn btn-sm" onclick="editEvalSetName()">修改</button>
+        <button class="btn btn-sm" onclick="openEditEvalSetModal()">编辑</button>
         <button class="btn btn-sm" onclick="addToEvalSet()">添加</button>
         <button class="btn btn-sm btn-secondary" onclick="batchRemoveFromEvalSet()">移出</button>
         <button class="btn btn-sm btn-danger" onclick="deleteEvalSet()">删除</button>
@@ -234,6 +234,14 @@
     <h3 style="margin-bottom:1rem;">生成的视频</h3>
     <div class="generated-list" id="generatedList">
       <div style="color:#888;font-size:0.9rem;">暂无生成的视频</div>
+    </div>
+  </div>
+
+  <!-- 生成的图片集区域 -->
+  <div class="generated-section" style="margin-top:1.5rem;padding-top:1.5rem;border-top:2px solid #eee;">
+    <h3 style="margin-bottom:1rem;">生成的图片集</h3>
+    <div class="generated-list" id="extractedList">
+      <div style="color:#888;font-size:0.9rem;">暂无生成的图片集</div>
     </div>
   </div>
 </div>
@@ -296,6 +304,189 @@
     </div>
   </div>
 </div>
+
+<!-- 评测集编辑弹窗 -->
+<div class="modal-overlay" id="editEvalSetModal">
+  <div class="modal-content" style="min-width:420px;max-width:500px;">
+    <h3 style="margin-top:0;">编辑评测集</h3>
+    <div id="editEvalSetMeta" style="margin-bottom:0.8rem;font-size:0.82rem;color:#888;"></div>
+    <div style="margin-bottom:0.8rem;">
+      <label>名称 <span style="color:#e74c3c">*</span></label>
+      <input type="text" id="editEvalSetName" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+    </div>
+    <div style="margin-bottom:1rem;">
+      <label>说明</label>
+      <textarea id="editEvalSetNotes" rows="3" placeholder="可填写该评测集的用途、来源等说明..." style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;resize:vertical;"></textarea>
+    </div>
+    <div style="display:flex;gap:0.6rem;justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="closeEditEvalSetModal()">取消</button>
+      <button class="btn btn-success" onclick="saveEvalSet()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 抽帧弹窗 -->
+<div class="modal-overlay" id="extractModal">
+  <div class="modal-content" style="min-width:420px;max-width:500px;">
+    <h3 style="margin-top:0;">视频抽帧</h3>
+    <div style="margin-bottom:0.8rem;font-size:0.85rem;color:#666;">
+      将视频抽帧成图片，命名格式：<code>视频id_时间_事件.jpg</code>，看名字即知视频/时段/事件。
+    </div>
+    <div style="margin-bottom:0.8rem;font-size:0.82rem;">
+      当前视频：<strong id="extractVideoId" style="color:#2c3e50;"></strong>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:0.8rem;">
+      <div>
+        <label>目标宽度（等比例缩放）</label>
+        <input type="number" id="extractWidth" value="1280" min="1" placeholder="留空=原尺寸" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+      </div>
+      <div>
+        <label>抽帧间隔（秒）</label>
+        <input type="number" id="extractInterval" value="1.0" min="0.1" step="0.1" style="width:100%;padding:0.5rem;border:1px solid #ddd;border-radius:4px;">
+      </div>
+    </div>
+    <div style="margin-bottom:1rem;">
+      <label style="display:block;margin-bottom:0.4rem;font-weight:600;">抽帧范围</label>
+      <label style="display:block;margin-bottom:0.3rem;font-weight:normal;"><input type="radio" name="extractRange" value="events" checked> 仅GT事件时段（只抽有事件的帧）</label>
+      <label style="display:block;font-weight:normal;"><input type="radio" name="extractRange" value="all"> 全程抽帧（无事件帧标 normal，可测误检）</label>
+    </div>
+    <div style="display:flex;gap:0.6rem;justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="closeExtractModal()">取消</button>
+      <button class="btn" style="background:#9b59b6;color:white;" onclick="startExtract()" id="extractStartBtn">开始抽帧</button>
+    </div>
+  </div>
+</div>
+
+<!-- 抽帧进度浮层 -->
+<div class="modal-overlay" id="extractProgressModal" style="display:none;"></div>
+
+<script>
+// 批量抽帧：对选中的视频逐个启动抽帧任务，进度融入"处理中的任务"
+function extractSelected() {
+  if (!selectedIds.size) { alert('请先选择视频'); return; }
+  // 取选中视频的 wm_id 列表（v.id 即 wm_id）
+  const targets = allVideos.filter(v => selectedIds.has(v.video_db_id));
+  if (!targets.length) { alert('未找到选中的视频'); return; }
+  document.getElementById('extractVideoId').textContent = `${targets.length} 个视频`;
+  document.getElementById('extractModal').classList.add('visible');
+}
+function closeExtractModal() {
+  document.getElementById('extractModal').classList.remove('visible');
+}
+document.getElementById('extractModal').addEventListener('click', (e) => {
+  if (e.target.id === 'extractModal') closeExtractModal();
+});
+
+async function startExtract() {
+  const targetWidth = document.getElementById('extractWidth').value;
+  const intervalSec = document.getElementById('extractInterval').value;
+  const range = document.querySelector('input[name="extractRange"]:checked').value;
+  const includeNormal = range === 'all';
+  const targets = allVideos.filter(v => selectedIds.has(v.video_db_id));
+  closeExtractModal();
+
+  // 一次性提交所有选中视频为一个批量任务
+  try {
+    const r = await fetch('/extract/api/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        wm_ids: targets.map(v => v.id),
+        target_width: targetWidth ? parseInt(targetWidth) : null,
+        interval_sec: parseFloat(intervalSec),
+        include_normal: includeNormal,
+      }),
+    });
+    const data = await r.json();
+    if (data.success) {
+      processingTasks.set(`extract_${data.task_id}`, {
+        type: 'extract',
+        title: `视频抽帧：${data.video_count} 个视频`,
+        progress: 0,
+        status: 'processing',
+        extractTaskId: data.task_id,
+        videoCount: data.video_count,
+        frameCount: 0,
+      });
+      renderProcessingList();
+      pollExtractProgress(data.task_id);
+    } else {
+      alert('视频抽帧启动失败：' + (data.error || ''));
+    }
+  } catch (e) {
+    alert('请求失败：' + e);
+  }
+}
+
+// 抽帧进度轮询（done/total = 已完成视频数/总视频数）
+async function pollExtractProgress(taskId) {
+  const key = `extract_${taskId}`;
+  const check = async () => {
+    try {
+      const r = await fetch(`/extract/api/${taskId}/status`);
+      const d = await r.json();
+      if (!d.success) return;
+      const pct = d.total > 0 ? Math.round(d.done / d.total * 100) : 0;
+      if (processingTasks.has(key)) {
+        const t = processingTasks.get(key);
+        t.progress = pct;
+        t.frameCount = d.frame_count || 0;
+        t.status = d.status === 'done' ? 'done' : (d.status === 'error' ? 'failed' : 'processing');
+        renderProcessingList();
+      }
+      if (d.status === 'running') {
+        setTimeout(check, 1500);
+      } else {
+        setTimeout(() => {
+          processingTasks.delete(key);
+          renderProcessingList();
+          loadExtractedFrames();
+        }, 800);
+      }
+    } catch (e) {}
+  };
+  check();
+}
+
+// 加载生成的图片集列表
+async function loadExtractedFrames() {
+  try {
+    const res = await fetch('/extract/api/tasks');
+    const tasks = await res.json();
+    const container = document.getElementById('extractedList');
+    const done = tasks.filter(t => t.status === 'done');
+    if (!done.length) {
+      container.innerHTML = '<div style="color:#888;font-size:0.9rem;">暂无生成的图片集</div>';
+      return;
+    }
+    container.innerHTML = done.map(t => {
+      const vids = (t.video_id || '').split(',');
+      const vidShow = vids.length > 2 ? `${vids.slice(0,2).join('、')} 等${vids.length}个视频` : vids.join('、');
+      const countInfo = (t.video_count || vids.length) > 1 ? `${t.video_count || vids.length}个视频 · ` : '';
+      return `
+      <div class="generated-item" style="display:flex;align-items:center;gap:1rem;padding:0.8rem;background:#f8f9fa;border-radius:6px;margin-bottom:0.5rem;">
+        <span class="badge" style="padding:0.2rem 0.5rem;border-radius:4px;font-size:0.8rem;background:#f3e5f5;color:#6a1b9a;">视频抽帧</span>
+        <span style="flex:1;font-size:0.9rem;">${escHtml(vidShow)}（${countInfo}${t.frame_count} 张${t.target_width ? ' · 宽' + t.target_width : ''} · 间隔${t.interval_sec}s）</span>
+        <span style="font-size:0.85rem;color:#888;">${new Date(t.created_at).toLocaleString()}</span>
+        <a href="/extract/api/${t.id}/download" class="btn btn-sm" download>下载</a>
+        <button class="btn btn-sm btn-danger" onclick="deleteExtractedFrames(${t.id})">删除</button>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('extractedList').innerHTML = '<div style="color:#888;font-size:0.9rem;">加载失败</div>';
+  }
+}
+
+// 删除生成的图片集
+async function deleteExtractedFrames(taskId) {
+  if (!confirm('确定要删除这个图片集吗？将一并删除抽出的帧文件。')) return;
+  try {
+    const res = await fetch(`/extract/api/${taskId}`, {method: 'DELETE'});
+    if (res.ok) loadExtractedFrames();
+    else { const d = await res.json(); alert('删除失败：' + (d.error || '')); }
+  } catch (e) { alert('删除失败：' + e); }
+}
+</script>
 
 <script>
 let allVideos = [];
@@ -401,10 +592,10 @@ function updateActionButtons() {
   const count = selectedIds.size;
   const concatBtn = document.getElementById('concatBtn');
   const packageBtn = document.getElementById('packageBtn');
-  const batchDownloadBtn = document.getElementById('batchDownloadBtn');
+  const extractBtn = document.getElementById('extractBtn');
   concatBtn.disabled = count < 2 || count > 10;
   packageBtn.disabled = count < 1 || count > 10;
-  batchDownloadBtn.disabled = count < 1;
+  extractBtn.disabled = count < 1 || count > 10;
 }
 
 function toggleSelectAll() {
@@ -595,28 +786,47 @@ function formatFileSize(bytes) {
   return bytes.toFixed(1) + ' ' + units[i];
 }
 
-// 修改评测集名称
-async function editEvalSetName() {
-  const setId = document.getElementById('evalSetFilter').value;
+// 编辑评测集（重命名 + 修改说明）
+function openEditEvalSetModal() {
+  const setId = document.getElementById('evalSetSelect').value;
   if (!setId) {
-    alert('请先选择要修改的评测集');
+    alert('请先选择要编辑的评测集');
     return;
   }
   const set = evalSets.find(s => s.id == setId);
-  const newName = prompt('请输入新的评测集名称:', set ? set.name : '');
-  if (!newName || newName.trim() === '') return;
+  if (!set) { alert('评测集不存在'); return; }
+  document.getElementById('editEvalSetName').value = set.name || '';
+  document.getElementById('editEvalSetNotes').value = set.notes || '';
+  const videoCount = (set.video_ids || []).length;
+  const created = set.created_at ? new Date(set.created_at).toLocaleString() : '-';
+  document.getElementById('editEvalSetMeta').innerHTML =
+    `创建时间：${created} · 包含视频：${videoCount} 个`;
+  document.getElementById('editEvalSetModal').classList.add('visible');
+}
+function closeEditEvalSetModal() {
+  document.getElementById('editEvalSetModal').classList.remove('visible');
+}
+document.getElementById('editEvalSetModal').addEventListener('click', (e) => {
+  if (e.target.id === 'editEvalSetModal') closeEditEvalSetModal();
+});
 
+async function saveEvalSet() {
+  const setId = document.getElementById('evalSetSelect').value;
+  if (!setId) return;
+  const name = document.getElementById('editEvalSetName').value.trim();
+  if (!name) { alert('名称不能为空'); return; }
+  const notes = document.getElementById('editEvalSetNotes').value.trim();
   const res = await fetch(`/videos/api/eval-sets/${setId}`, {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: newName.trim()})
+    body: JSON.stringify({name, notes})
   });
   if (res.ok) {
-    alert('修改成功');
+    closeEditEvalSetModal();
     loadEvalSets();
   } else {
     const data = await res.json();
-    alert(data.error || '修改失败');
+    alert(data.error || '保存失败');
   }
 }
 
@@ -757,8 +967,8 @@ function renderProcessingList() {
   container.innerHTML = Array.from(processingTasks.entries()).map(([taskId, task]) => `
     <div style="display:flex;align-items:center;gap:1rem;padding:0.8rem;background:#f8f9fa;border-radius:6px;margin-bottom:0.5rem;"
     >
-      <span class="badge" style="padding:0.2rem 0.5rem;border-radius:4px;font-size:0.8rem;${task.type === 'concat' ? 'background:#d4edda;color:#155724;' : 'background:#cce5ff;color:#004085;'}"
-      >${task.type === 'concat' ? '拼接' : '打包'}</span>
+      <span class="badge" style="padding:0.2rem 0.5rem;border-radius:4px;font-size:0.8rem;${task.type === 'concat' ? 'background:#d4edda;color:#155724;' : task.type === 'extract' ? 'background:#f3e5f5;color:#6a1b9a;' : 'background:#cce5ff;color:#004085;'}"
+      >${task.type === 'concat' ? '拼接' : task.type === 'extract' ? '视频抽帧' : '打包'}</span>
       <span style="flex:1;font-size:0.9rem;"
       >${escHtml(task.title)}</span>
       <div style="width:150px;"
@@ -930,5 +1140,6 @@ async function runPreAnalysis() {
 loadVideos();
 loadEvalSets();
 loadGeneratedVideos();
+loadExtractedFrames();
 </script>
 {% endblock %}

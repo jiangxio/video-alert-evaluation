@@ -23,6 +23,11 @@
         if (isOpen) {
             inputEl.focus();
             loadTasks();
+        } else {
+            if (tasksPollInterval) {
+                clearInterval(tasksPollInterval);
+                tasksPollInterval = null;
+            }
         }
     }
 

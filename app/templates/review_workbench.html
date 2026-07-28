@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block title %}告警复核工作台 - {{ task.name }}{% endblock %}
+
+{% block content %}
+<style>
+.review-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; }
+.review-header h3 { margin:0; }
+.review-subtitle { color:#666; font-size:0.88rem; }
+.review-actions { display:flex; gap:0.5rem; }
+.btn-sm { padding:0.4rem 0.8rem; font-size:0.88rem; }
+.btn-secondary { background:#7f8c8d; }
+.btn-secondary:hover { background:#6c7a7a; }
+.btn-danger { background:#e74c3c; }
+.btn-danger:hover { background:#c0392b; }
+
+.review-layout { display:grid; grid-template-columns: 320px 1fr 340px; gap:1rem; height: calc(100vh - 220px); min-height: 500px; }
+.review-left, .review-center, .review-right { background:white; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.1); display:flex; flex-direction:column; overflow:hidden; }
+
+.filter-bar { display:flex; gap:0.5rem; padding:0.5rem; flex-wrap:wrap; align-items:flex-end; }
+.filter-field { display:flex; flex-direction:column; gap:0.15rem; }
+.filter-field label { font-size:0.72rem; color:#888; font-weight:600; }
+.filter-field select { padding:0.3rem; border:1px solid #ddd; border-radius:4px; font-size:0.82rem; min-width:90px; }
+.filter-bar input[type="text"] { flex:1; min-width:100px; padding:0.35rem; border:1px solid #ddd; border-radius:4px; font-size:0.82rem; }
+.filter-check { font-size:0.78rem; color:#555; display:flex; align-items:center; gap:0.25rem; cursor:pointer; padding-bottom:0.3rem; }
+.list-summary { padding:0.3rem 0.6rem; font-size:0.78rem; color:#888; border-bottom:1px solid #eee; }
+
+.alert-list { flex:1; overflow-y:auto; }
+.select-all-row { padding:0.4rem 0.6rem; background:#f0f4f8; font-size:0.8rem; border-bottom:1px solid #e0e0e0; display:flex; justify-content:space-between; align-items:center; }
+.select-all-row label { cursor:pointer; display:flex; align-items:center; gap:0.3rem; }
+.selected-count { color:#3498db; font-weight:600; }
+.alert-item { display:flex; gap:0.5rem; padding:0.5rem; border-bottom:1px solid #f0f0f0; cursor:pointer; align-items:flex-start; }
+.alert-item.selected { background:#fff8e1; }
+.alert-item .item-check { margin-top:0.2rem; flex-shrink:0; cursor:pointer; }
+.alert-item:hover { background:#f8f9fa; }
+.alert-item.active { background:#e3f2fd; border-left:3px solid #3498db; }
+.alert-item.has-suggestion { border-left:3px solid #9b59b6; }
+.alert-thumb { width:50px; height:38px; object-fit:cover; border-radius:3px; background:#eee; flex-shrink:0; }
+.alert-info { flex:1; min-width:0; font-size:0.8rem; }
+.alert-info .ai { color:#9b59b6; font-size:0.74rem; margin-top:0.15rem; }
+.rv-badge { display:inline-block; padding:0.05rem 0.35rem; border-radius:8px; font-size:0.68rem; font-weight:600; }
+.rv-ok { background:#d4edda; color:#155724; }
+.rv-fp { background:#f8d7da; color:#721c24; }
+.rv-err { background:#fff3cd; color:#856404; }
+.rv-tag { display:inline-block; padding:0.05rem 0.3rem; border-radius:8px; font-size:0.66rem; font-weight:600; margin:0 0.2rem; }
+.rv-agree { background:#e3f2fd; color:#1565c0; }
+.rv-disagree { background:#ffe0b2; color:#e65100; }
+.rv-reason { color:#888; }
+.alert-info .ts { color:#888; font-size:0.74rem; }
+.group-header { padding:0.4rem 0.6rem; background:#f8f9fa; font-weight:600; font-size:0.82rem; color:#2c3e50; position:sticky; top:0; z-index:1; }
+
+.badge { display:inline-block; padding:0.1rem 0.4rem; border-radius:8px; font-size:0.7rem; font-weight:600; }
+.badge-correct { background:#d4edda; color:#155724; }
+.badge-fp { background:#f8d7da; color:#721c24; }
+.badge-ignored { background:#e2e3e5; color:#6c757d; }
+
+.center-empty { display:flex; align-items:center; justify-content:center; height:100%; color:#999; font-size:0.9rem; }
+.review-center { padding:0; }
+#center-content { padding:1rem; overflow-y:auto; flex:1; }
+.big-image-wrap { position:relative; text-align:center; margin-bottom:0.5rem; }
+.big-image { max-width:100%; max-height:42vh; border-radius:4px; cursor:zoom-in; background:#eee; }
+.image-nav-hint { font-size:0.74rem; color:#aaa; }
+.thumb-strip { display:flex; gap:0.3rem; overflow-x:auto; padding:0.3rem 0; }
+.thumb-strip img { width:60px; height:45px; object-fit:cover; border-radius:3px; cursor:pointer; opacity:0.6; border:2px solid transparent; }
+.thumb-strip img.active { opacity:1; border-color:#3498db; }
+.detail-meta { background:#f8f9fa; border-radius:4px; padding:0.6rem; font-size:0.84rem; margin:0.5rem 0; }
+.detail-meta .row { display:flex; justify-content:space-between; padding:0.15rem 0; }
+.detail-meta .row .k { color:#666; }
+.action-buttons { display:flex; gap:0.4rem; flex-wrap:wrap; margin:0.5rem 0; }
+.ai-suggestion-box { margin-top:0.5rem; padding:0.6rem; border-radius:4px; font-size:0.84rem; }
+.ai-suggestion-box.ai-correct { background:#e8f5e9; border-left:3px solid #27ae60; }
+.ai-suggestion-box.ai-fp { background:#fdecea; border-left:3px solid #e74c3c; }
+.ai-suggestion-box.ai-error { background:#fff3cd; border-left:3px solid #f39c12; }
+.ai-suggestion-box .label { font-weight:600; margin-bottom:0.2rem; }
+
+.review-right { padding:1rem; }
+.review-right h4 { margin:0 0 0.5rem 0; }
+.timeline-video-label { font-size:0.82rem; color:#666; margin-bottom:0.4rem; }
+.timeline { position:relative; height:60px; background:#f8f9fa; border-radius:4px; margin-bottom:0.5rem; border:1px solid #eee; }
+.timeline .gt-bar { position:absolute; top:8px; height:18px; background:#27ae60; opacity:0.5; border-radius:3px; }
+.timeline .alert-pt { position:absolute; top:32px; width:8px; height:8px; border-radius:50%; transform:translateX(-50%); cursor:pointer; }
+.timeline .pt-correct { background:#27ae60; }
+.timeline .pt-fp { background:#e74c3c; }
+.timeline .pt-ignored { background:#95a5a6; }
+.timeline .pt-cur { background:#3498db; width:12px; height:12px; border:2px solid #fff; box-shadow:0 0 0 2px #3498db; top:30px; z-index:2; }
+.timeline-legend { display:flex; flex-wrap:wrap; gap:0.5rem; font-size:0.74rem; color:#666; margin-top:0.5rem; }
+.timeline-legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:0.2rem; vertical-align:middle; }
+.dot-gt { background:#27ae60; opacity:0.5; } .dot-correct { background:#27ae60; } .dot-fp { background:#e74c3c; } .dot-cur { background:#3498db; }
+
+.lightbox { position:fixed; inset:0; background:rgba(0,0,0,0.9); display:flex; align-items:center; justify-content:center; z-index:9999; cursor:zoom-out; }
+.lightbox img { max-width:92vw; max-height:92vh; }
+
+/* 智能审查进度浮层 */
+.ai-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:9998; }
+.ai-progress-modal { background:white; border-radius:10px; padding:1.8rem 2.2rem; width:360px; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.25); }
+.ai-progress-icon { display:flex; justify-content:center; margin-bottom:1rem; }
+.ai-spinner { width:40px; height:40px; border:4px solid #e3f2fd; border-top-color:#3498db; border-radius:50%; animation:spin 0.9s linear infinite; }
+.ai-progress-title { font-size:1.05rem; font-weight:600; color:#2c3e50; margin-bottom:1rem; }
+.ai-progress-bar { width:100%; height:8px; background:#ecf0f1; border-radius:4px; overflow:hidden; margin-bottom:0.7rem; }
+.ai-progress-fill { height:100%; width:0%; background:linear-gradient(90deg,#3498db,#2ecc71); border-radius:4px; transition:width 0.3s ease; }
+.ai-progress-info { display:flex; flex-direction:column; gap:0.2rem; font-size:0.82rem; }
+#ai-progress-elapsed { color:#3498db; font-weight:600; }
+.ai-progress-hint { color:#95a5a6; }
+.ai-overlay.ai-done .ai-spinner { border-top-color:#27ae60; animation:none; border-color:#d4edda; border-top-color:#27ae60; }
+.ai-overlay.ai-fail .ai-spinner { border-top-color:#e74c3c; animation:none; border-color:#f8d7da; border-top-color:#e74c3c; }
+.hidden { display:none !important; }
+</style>
+
+<div class="review-header">
+    <div>
+        <h3>告警复核工作台</h3>
+        <div class="review-subtitle">任务：{{ task.name }}（ID: {{ task.id }}）</div>
+    </div>
+    <div class="review-actions">
+        <button class="btn btn-sm" id="btn-ai-check" onclick="aiCheckCurrent()">审查当前 (Space)</button>
+        <button class="btn btn-sm btn-success" id="btn-ai-batch" onclick="aiCheckBatch()">批量审查选中</button>
+        <button class="btn btn-sm btn-warning" id="btn-ai-batch-all" onclick="aiCheckFiltered()">审查全部筛选结果</button>
+        <button class="btn btn-sm btn-danger" id="btn-apply-ai" onclick="applyAiToSelected()" title="把选中告警的人工状态改为AI审查建议的结果">按AI建议改判选中</button>
+        <a class="btn btn-sm btn-secondary" href="/evaluation/{{ task.id }}/">返回任务</a>
+    </div>
+</div>
+
+<div class="review-layout">
+    <!-- 左栏：筛选 + 列表 -->
+    <div class="review-left">
+        <div class="filter-bar">
+            <div class="filter-field">
+                <label>状态</label>
+                <select id="filter-status" onchange="onFilterChange()">
+                    <option value="all" selected>全部</option>
+                    <option value="false_positive">误检</option>
+                    <option value="correct">正确</option>
+                    <option value="ignored">忽略</option>
+                </select>
+            </div>
+            <div class="filter-field">
+                <label>审查</label>
+                <select id="filter-review" onchange="onFilterChange()">
+                    <option value="all" selected>全部</option>
+                    <option value="reviewed">已审查</option>
+                    <option value="unreviewed">未审查</option>
+                    <option value="agree">审查一致</option>
+                    <option value="disagree">审查不一致</option>
+                </select>
+            </div>
+            <div class="filter-field">
+                <label>视频</label>
+                <select id="filter-video" onchange="onFilterChange()"></select>
+            </div>
+            <div class="filter-field">
+                <label>事件类型</label>
+                <select id="filter-type" onchange="onFilterChange()"></select>
+            </div>
+            <label class="filter-check" title="只显示由多张告警图合并成的记录"><input type="checkbox" id="filter-multi" onchange="onFilterChange()"> 仅多图合并</label>
+        </div>
+        <div class="filter-bar">
+            <input type="text" id="filter-search" placeholder="搜索 video_id..." oninput="onFilterChange()">
+        </div>
+        <div class="list-summary" id="list-summary"></div>
+        <div class="alert-list" id="alert-list"></div>
+        <div id="list-pagination"></div>
+    </div>
+
+    <!-- 中栏：大图 + 详情 -->
+    <div class="review-center">
+        <div id="center-empty" class="center-empty">← 从左侧选择一条告警开始复核</div>
+        <div id="center-content" class="hidden">
+            <div class="big-image-wrap">
+                <img id="big-image" class="big-image" onclick="openLightbox()" alt="告警图">
+                <div class="image-nav-hint">点击图片放大</div>
+            </div>
+            <div class="thumb-strip" id="thumb-strip"></div>
+            <div class="detail-meta" id="detail-meta"></div>
+            <div class="action-buttons">
+                <button class="btn btn-success" onclick="setStatus('correct')">标正确 (C)</button>
+                <button class="btn btn-danger" onclick="setStatus('false_positive')">标误检 (F)</button>
+                <button class="btn btn-secondary" onclick="setStatus('ignored')">忽略 (I)</button>
+                <button class="btn btn-secondary" onclick="setStatus('auto')">恢复自动 (A)</button>
+            </div>
+            <div id="ai-suggestion-box" class="ai-suggestion-box hidden"></div>
+        </div>
+    </div>
+
+    <!-- 右栏：时间轴 -->
+    <div class="review-right">
+        <h4>时间轴上下文</h4>
+        <div id="timeline-empty" class="center-empty">选择告警后显示</div>
+        <div id="timeline-content" class="hidden">
+            <div class="timeline-video-label" id="timeline-video-label"></div>
+            <div class="timeline" id="timeline"></div>
+            <div class="timeline-legend">
+                <span><i class="dot dot-gt"></i>GT事件</span>
+                <span><i class="dot dot-correct"></i>正确告警</span>
+                <span><i class="dot dot-fp"></i>误检告警</span>
+                <span><i class="dot dot-cur"></i>当前</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 大图 lightbox -->
+<div id="lightbox" class="lightbox hidden" onclick="closeLightbox()">
+    <img id="lightbox-img" src="" alt="">
+</div>
+
+<!-- 智能审查进度浮层 -->
+<div id="ai-progress-overlay" class="ai-overlay hidden">
+    <div class="ai-progress-modal">
+        <div class="ai-progress-icon">
+            <div class="ai-spinner"></div>
+        </div>
+        <div class="ai-progress-title" id="ai-progress-title">正在调用多模态模型审查…</div>
+        <div class="ai-progress-bar">
+            <div class="ai-progress-fill" id="ai-progress-fill"></div>
+        </div>
+        <div class="ai-progress-info">
+            <span id="ai-progress-elapsed">已等待 0s</span>
+            <span class="ai-progress-hint">通常需 5~60 秒，请勿离开页面</span>
+        </div>
+    </div>
+</div>
+
+<script>
+window.TASK_ID = {{ task.id }};
+window.TYPE_NAMES = {{ TYPE_NAMES|tojson }};
+</script>
+<script src="/static/js/review_workbench.js"></script>
+{% endblock %}

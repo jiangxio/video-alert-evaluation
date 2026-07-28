@@ -1634,9 +1634,12 @@ def remove_video_from_eval_set(set_id):
 
 @bp.route('/api/eval-sets/<int:set_id>', methods=['PUT'])
 def rename_eval_set(set_id):
-    """重命名评测集"""
+    """编辑评测集：重命名 + 修改说明"""
     data = request.get_json() or {}
     new_name = data.get('name', '').strip()
+    new_notes = data.get('notes')
+    if new_notes is not None:
+        new_notes = new_notes.strip()
 
     if not new_name:
         return jsonify({'error': '名称不能为空'}), 400
@@ -1647,7 +1650,10 @@ def rename_eval_set(set_id):
     if not cursor.fetchone():
         return jsonify({'error': '评测集不存在'}), 404
 
-    cursor.execute('UPDATE eval_video_sets SET name = ? WHERE id = ?', (new_name, set_id))
+    if new_notes is not None:
+        cursor.execute('UPDATE eval_video_sets SET name = ?, notes = ? WHERE id = ?', (new_name, new_notes, set_id))
+    else:
+        cursor.execute('UPDATE eval_video_sets SET name = ? WHERE id = ?', (new_name, set_id))
     db.commit()
     return jsonify({'success': True})
 

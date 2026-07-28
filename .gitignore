@@ -5,6 +5,13 @@ output/
 uploads/
 report/
 ground_truth/
+generated_videos/
+extracted_frames/
+ground_truth_frames/
+thumbnails/
+tmp/
+logs/
+yanshou/
 
 # 数据库
 *.db
@@ -26,6 +33,16 @@ __pycache__/
 # 临时文件
 *.tmp
 *.temp
+
+# Node（playwright 测试用）
+node_modules/
+package-lock.json
+
+# Claude Code / 测试产物
+.codegraph/
+.playwright-mcp/
+_shot.js
+streaming_page.png
 
 # 环境变量配置（包含敏感信息）
 .env

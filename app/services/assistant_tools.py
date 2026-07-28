@@ -5,6 +5,7 @@
 - 写入工具：只进行参数校验和影响分析，返回确认请求；真正执行在确认后由 executor 完成
 """
 import json
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -267,6 +268,81 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "concat_videos",
+            "description": "将多个水印视频拼接成一个视频（2-10个）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要拼接的视频 ID 列表（2-10个）",
+                    },
+                },
+                "required": ["video_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "package_videos",
+            "description": "将多个水印视频打包成 zip 下载（1-10个）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要打包的视频 ID 列表",
+                    },
+                },
+                "required": ["video_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_frames",
+            "description": "对视频抽帧生成图片（命名含视频id/时间/事件），用于图片测试模型",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要抽帧的视频 ID 列表",
+                    },
+                    "target_width": {"type": "integer", "description": "目标宽度（等比例缩放），留空=原尺寸"},
+                    "interval_sec": {"type": "number", "description": "抽帧间隔（秒），默认1.0"},
+                    "include_normal": {"type": "boolean", "description": "是否包含无事件的normal帧（全程抽帧），false=仅GT事件时段"},
+                },
+                "required": ["video_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_eval_set",
+            "description": "管理评测视频集：创建/重命名/编辑说明/添加视频/移出视频/删除",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "rename", "edit", "add", "remove", "delete"], "description": "操作类型"},
+                    "name": {"type": "string", "description": "评测集名称（create/rename 时必填）"},
+                    "notes": {"type": "string", "description": "说明（create/edit 时可填）"},
+                    "set_id": {"type": "integer", "description": "评测集 ID（rename/edit/add/remove/delete 时必填）"},
+                    "video_ids": {"type": "array", "items": {"type": "string"}, "description": "视频 ID 列表（create/add/remove 时必填）"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 
@@ -520,6 +596,10 @@ WRITE_TOOLS = {
     'update_alert_status',
     'export_report',
     'add_watermark',
+    'concat_videos',
+    'package_videos',
+    'extract_frames',
+    'manage_eval_set',
 }
 
 
@@ -961,6 +1041,266 @@ def execute_export_report(params: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 视频管理批量操作工具
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _resolve_video_db_ids(video_ids: list) -> tuple:
+    """把 video_id 字符串列表转成 db_id 列表。返回 (db_ids, not_found)。"""
+    db = get_db()
+    cursor = db.cursor()
+    db_ids = []
+    not_found = []
+    for vid in video_ids:
+        cursor.execute('SELECT id FROM videos WHERE video_id = ? ORDER BY id DESC LIMIT 1', (vid,))
+        row = cursor.fetchone()
+        if row:
+            db_ids.append(row['id'])
+        else:
+            not_found.append(vid)
+    return db_ids, not_found
+
+
+def analyze_concat_videos(video_ids: list) -> dict:
+    if not video_ids or len(video_ids) < 2:
+        return {'error': '拼接至少需要2个视频'}
+    if len(video_ids) > 10:
+        return {'error': '拼接最多10个视频'}
+    db_ids, not_found = _resolve_video_db_ids(video_ids)
+    if not_found:
+        return {'error': f'视频不存在: {", ".join(not_found)}'}
+    db = get_db()
+    cursor = db.cursor()
+    names = []
+    for did in db_ids:
+        cursor.execute('SELECT video_id FROM videos WHERE id=?', (did,))
+        names.append(cursor.fetchone()['video_id'])
+    return {
+        'video_db_ids': db_ids,
+        'summary': f'将拼接 {len(db_ids)} 个视频：{", ".join(names)}',
+    }
+
+
+def analyze_package_videos(video_ids: list) -> dict:
+    if not video_ids:
+        return {'error': '请至少选择1个视频'}
+    if len(video_ids) > 10:
+        return {'error': '打包最多10个视频'}
+    db_ids, not_found = _resolve_video_db_ids(video_ids)
+    if not_found:
+        return {'error': f'视频不存在: {", ".join(not_found)}'}
+    return {
+        'video_db_ids': db_ids,
+        'summary': f'将打包 {len(db_ids)} 个视频为 zip',
+    }
+
+
+def analyze_extract_frames(video_ids: list, target_width=None, interval_sec=1.0, include_normal=False) -> dict:
+    if not video_ids:
+        return {'error': '请至少选择1个视频'}
+    db_ids, not_found = _resolve_video_db_ids(video_ids)
+    if not_found:
+        return {'error': f'视频不存在: {", ".join(not_found)}'}
+    range_desc = '全程含normal帧' if include_normal else '仅GT事件时段'
+    return {
+        'video_db_ids': db_ids,
+        'target_width': target_width,
+        'interval_sec': interval_sec,
+        'include_normal': include_normal,
+        'summary': f'将对 {len(db_ids)} 个视频抽帧，间隔{interval_sec}s，{range_desc}'
+                   + (f'，宽度{target_width}' if target_width else ''),
+    }
+
+
+def analyze_manage_eval_set(action: str, name=None, notes=None, set_id=None, video_ids=None) -> dict:
+    db = get_db()
+    cursor = db.cursor()
+    if action in ('rename', 'edit', 'add', 'remove', 'delete'):
+        if not set_id:
+            return {'error': f'{action} 操作需要 set_id'}
+        cursor.execute('SELECT id, name, notes, video_ids FROM eval_video_sets WHERE id=?', (set_id,))
+        s = cursor.fetchone()
+        if not s:
+            return {'error': f'评测集 {set_id} 不存在'}
+    if action == 'create':
+        if not name:
+            return {'error': '创建评测集需要 name'}
+        summary = f'创建评测集"{name}"'
+        if video_ids:
+            db_ids, not_found = _resolve_video_db_ids(video_ids)
+            if not_found:
+                return {'error': f'视频不存在: {", ".join(not_found)}'}
+            summary += f'，包含 {len(db_ids)} 个视频'
+    elif action == 'rename':
+        if not name:
+            return {'error': '重命名需要 name'}
+        summary = f'将评测集"{s["name"]}"重命名为"{name}"'
+    elif action == 'edit':
+        summary = f'编辑评测集"{s["name"]}"的说明'
+    elif action == 'add':
+        if not video_ids:
+            return {'error': '添加视频需要 video_ids'}
+        db_ids, not_found = _resolve_video_db_ids(video_ids)
+        if not_found:
+            return {'error': f'视频不存在: {", ".join(not_found)}'}
+        summary = f'向评测集"{s["name"]}"添加 {len(db_ids)} 个视频'
+    elif action == 'remove':
+        if not video_ids:
+            return {'error': '移出视频需要 video_ids'}
+        summary = f'从评测集"{s["name"]}"移出 {len(video_ids)} 个视频'
+    elif action == 'delete':
+        summary = f'删除评测集"{s["name"]}"'
+    else:
+        return {'error': f'未知操作: {action}'}
+    return {'summary': summary}
+
+
+def execute_concat_videos(params: dict) -> dict:
+    analysis = analyze_concat_videos(params['video_ids'])
+    if 'error' in analysis:
+        raise ValueError(analysis['error'])
+    from app.routes.videos import _do_concat_task, video_process_tasks
+    import random
+    task_id = f"concat_{int(__import__('time').time())}_{random.randint(1000,9999)}"
+    video_process_tasks[task_id] = {'type': 'concat', 'status': 'processing', 'progress': 10,
+                                    'output_path': None, 'error': None, 'generated_id': None, 'name': None}
+    from flask import current_app
+    threading.Thread(
+        target=_do_concat_task,
+        args=(task_id, analysis['video_db_ids'], current_app.config['PROJECT_ROOT'], current_app.config['GENERATED_VIDEOS_DIR']),
+        daemon=True,
+    ).start()
+    return {'success': True, 'message': '拼接任务已提交，可在视频管理页"处理中的任务"查看进度，完成后在"生成的视频"区查看'}
+
+
+def execute_package_videos(params: dict) -> dict:
+    analysis = analyze_package_videos(params['video_ids'])
+    if 'error' in analysis:
+        raise ValueError(analysis['error'])
+    from app.routes.videos import _do_package_task, video_process_tasks
+    import random
+    task_id = f"package_{int(__import__('time').time())}_{random.randint(1000,9999)}"
+    video_process_tasks[task_id] = {'type': 'package', 'status': 'processing', 'progress': 10,
+                                    'output_path': None, 'error': None, 'generated_id': None, 'name': None}
+    from flask import current_app
+    threading.Thread(
+        target=_do_package_task,
+        args=(task_id, analysis['video_db_ids'], current_app.config['PROJECT_ROOT'], current_app.config['GENERATED_VIDEOS_DIR']),
+        daemon=True,
+    ).start()
+    return {'success': True, 'message': '打包任务已提交，可在视频管理页查看进度，完成后在"生成的视频"区下载'}
+
+
+def execute_extract_frames(params: dict) -> dict:
+    analysis = analyze_extract_frames(
+        params['video_ids'],
+        params.get('target_width'),
+        float(params.get('interval_sec') or 1.0),
+        bool(params.get('include_normal', False)),
+    )
+    if 'error' in analysis:
+        raise ValueError(analysis['error'])
+    # 复用 extract 的批量抽帧逻辑：取 wm_id 列表，调 _do_extract_batch
+    from app.routes.extract import _do_extract_batch, _extract_tasks, _extract_lock
+    from pathlib import Path
+    from flask import current_app
+    db = get_db()
+    cur = db.cursor()
+    db_ids = analysis['video_db_ids']
+    placeholders = ','.join('?' for _ in db_ids)
+    cur.execute(f'''
+        SELECT w.id, w.output_path, w.original_video_id, v.video_id
+        FROM watermarked_videos w JOIN videos v ON v.id = w.original_video_id
+        WHERE w.original_video_id IN ({placeholders})
+        GROUP BY w.original_video_id
+    ''', db_ids)
+    wms = [dict(w) for w in cur.fetchall()]
+    for w in wms:
+        cur.execute('SELECT event_type, start_seconds, end_seconds FROM events WHERE video_db_id=?', (w['original_video_id'],))
+        w['events'] = [dict(e) for e in cur.fetchall()]
+    if not wms:
+        raise ValueError('选中的视频均无可抽帧的水印视频')
+
+    output_dir = Path(current_app.config['EXTRACTED_FRAMES_DIR']) / f'batch_{int(__import__("time").time())}'
+    import sqlite3
+    from app.database import DATABASE_PATH
+    conn = sqlite3.connect(str(DATABASE_PATH))
+    try:
+        c = conn.cursor()
+        c.execute('''INSERT INTO extracted_frames_tasks
+            (wm_ids, video_id, video_count, target_width, interval_sec, include_normal, status, output_dir)
+            VALUES (?, ?, ?, ?, ?, ?, 'running', ?)''',
+            (json.dumps([w['id'] for w in wms]), ','.join(w['video_id'] for w in wms), len(wms),
+             analysis.get('target_width'), analysis['interval_sec'], 1 if analysis['include_normal'] else 0, str(output_dir)))
+        conn.commit()
+        task_id = c.lastrowid
+    finally:
+        conn.close()
+
+    with _extract_lock:
+        _extract_tasks[task_id] = {'video_id': ','.join(w['video_id'] for w in wms), 'video_count': len(wms),
+                                   'total': len(wms), 'done': 0, 'frame_count': 0, 'status': 'running',
+                                   'output_dir': str(output_dir), 'error': None}
+    threading.Thread(
+        target=_do_extract_batch,
+        args=(task_id, wms, analysis.get('target_width'), analysis['interval_sec'], analysis['include_normal'], str(output_dir)),
+        daemon=True,
+    ).start()
+    return {'success': True, 'message': f'抽帧任务已提交（{len(wms)}个视频），可在视频管理页"处理中的任务"查看进度，完成后在"生成的图片集"区下载'}
+
+
+def execute_manage_eval_set(params: dict) -> dict:
+    action = params['action']
+    name = (params.get('name') or '').strip() or None
+    notes = (params.get('notes') or '').strip() if params.get('notes') is not None else None
+    set_id = params.get('set_id')
+    video_ids = params.get('video_ids') or []
+    analysis = analyze_manage_eval_set(action, name, notes, set_id, video_ids)
+    if 'error' in analysis:
+        raise ValueError(analysis['error'])
+
+    db = get_db()
+    cur = db.cursor()
+    if action == 'create':
+        db_ids, _ = _resolve_video_db_ids(video_ids) if video_ids else ([], [])
+        cur.execute('INSERT INTO eval_video_sets (name, notes, video_ids) VALUES (?, ?, ?)',
+                    (name, notes or '', json.dumps(db_ids)))
+        db.commit()
+        return {'success': True, 'message': f'已创建评测集"{name}"，包含{len(db_ids)}个视频'}
+    if action == 'rename':
+        cur.execute('UPDATE eval_video_sets SET name=? WHERE id=?', (name, set_id))
+        db.commit()
+        return {'success': True, 'message': f'已重命名为"{name}"'}
+    if action == 'edit':
+        if notes is not None:
+            cur.execute('UPDATE eval_video_sets SET notes=? WHERE id=?', (notes, set_id))
+            db.commit()
+        return {'success': True, 'message': '已更新说明'}
+    if action == 'add':
+        db_ids, _ = _resolve_video_db_ids(video_ids)
+        cur.execute('SELECT video_ids FROM eval_video_sets WHERE id=?', (set_id,))
+        existing = json.loads(cur.fetchone()['video_ids'] or '[]')
+        for did in db_ids:
+            if did not in existing:
+                existing.append(did)
+        cur.execute('UPDATE eval_video_sets SET video_ids=? WHERE id=?', (json.dumps(existing), set_id))
+        db.commit()
+        return {'success': True, 'message': f'已添加{len(db_ids)}个视频'}
+    if action == 'remove':
+        db_ids, _ = _resolve_video_db_ids(video_ids)
+        cur.execute('SELECT video_ids FROM eval_video_sets WHERE id=?', (set_id,))
+        existing = json.loads(cur.fetchone()['video_ids'] or '[]')
+        existing = [x for x in existing if x not in db_ids]
+        cur.execute('UPDATE eval_video_sets SET video_ids=? WHERE id=?', (json.dumps(existing), set_id))
+        db.commit()
+        return {'success': True, 'message': f'已移出{len(db_ids)}个视频'}
+    if action == 'delete':
+        cur.execute('DELETE FROM eval_video_sets WHERE id=?', (set_id,))
+        db.commit()
+        return {'success': True, 'message': '已删除评测集'}
+    raise ValueError(f'未知操作: {action}')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 工具分发
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -993,6 +1333,16 @@ def analyze_write_tool(tool_name: str, params: dict) -> dict:
         return analyze_export_report(params['task_id'], params['format'])
     if tool_name == 'add_watermark':
         return analyze_add_watermark(params['video_id'])
+    if tool_name == 'concat_videos':
+        return analyze_concat_videos(params['video_ids'])
+    if tool_name == 'package_videos':
+        return analyze_package_videos(params['video_ids'])
+    if tool_name == 'extract_frames':
+        return analyze_extract_frames(params['video_ids'], params.get('target_width'),
+                                      float(params.get('interval_sec') or 1.0), bool(params.get('include_normal', False)))
+    if tool_name == 'manage_eval_set':
+        return analyze_manage_eval_set(params['action'], params.get('name'), params.get('notes'),
+                                       params.get('set_id'), params.get('video_ids'))
     return {'error': f'未知工具: {tool_name}'}
 
 
@@ -1012,4 +1362,12 @@ def execute_write_tool(tool_name: str, params: dict) -> dict:
         return execute_export_report(params)
     if tool_name == 'add_watermark':
         return execute_add_watermark(params)
+    if tool_name == 'concat_videos':
+        return execute_concat_videos(params)
+    if tool_name == 'package_videos':
+        return execute_package_videos(params)
+    if tool_name == 'extract_frames':
+        return execute_extract_frames(params)
+    if tool_name == 'manage_eval_set':
+        return execute_manage_eval_set(params)
     raise ValueError(f'未知工具: {tool_name}')

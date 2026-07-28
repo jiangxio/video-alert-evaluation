@@ -15,7 +15,7 @@ def create_app(config_class=Config):
     database.init_app(app)
 
     # 注册蓝图
-    from app.routes import videos, alerts, verification, evaluation, auto_annotation, streaming, algorithms, assistant
+    from app.routes import videos, alerts, verification, evaluation, auto_annotation, streaming, algorithms, assistant, api_config, review, extract
     app.register_blueprint(videos.bp)
     app.register_blueprint(alerts.bp)
     app.register_blueprint(verification.bp)
@@ -25,6 +25,9 @@ def create_app(config_class=Config):
     streaming.init_streaming_cleanup()
     app.register_blueprint(algorithms.bp)
     app.register_blueprint(assistant.bp)
+    app.register_blueprint(api_config.bp)
+    app.register_blueprint(review.bp)
+    app.register_blueprint(extract.bp)
 
     # 向所有模板注入事件类型注册表
     from app.event_types import (

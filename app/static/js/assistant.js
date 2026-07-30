@@ -137,6 +137,31 @@
             .replace(/'/g, '&#039;');
     }
 
+    async function loadHistory() {
+        try {
+            const resp = await fetch('/assistant/api/history');
+            const data = await resp.json();
+            const messages = data.messages || [];
+            if (messages.length === 0) return;
+            messagesEl.innerHTML = '';
+            messages.forEach(msg => {
+                if (msg.role === 'user') {
+                    appendMessage('user', msg.content);
+                } else if (msg.role === 'assistant') {
+                    if (msg.content && msg.content.trim()) {
+                        appendMessage('assistant', msg.content);
+                    }
+                    if (msg.tool_calls) {
+                        appendToolResult('assistant', msg.tool_calls);
+                    }
+                }
+            });
+            scrollToBottom();
+        } catch (err) {
+            // 历史加载失败时静默，保留欢迎语
+        }
+    }
+
     function setLoading(loading) {
         isLoading = loading;
         sendBtn.disabled = loading;
@@ -294,7 +319,7 @@
             await fetch('/assistant/api/clear', { method: 'POST' });
             messagesEl.innerHTML = `
                 <div class="assistant-message assistant">
-                    <div class="assistant-bubble">对话已清除。我是平台的 AI 助手，可以帮你查询视频/告警、打标签、跑评测等。</div>
+                    <div class="assistant-bubble">对话已清除。这里是 AI 助手，支持查询视频/告警/事件类型/评测结果、视频打标签/删除/水印、批量 OCR、修改复核状态、启动评测、导出报告等操作，请直接描述您的需求。</div>
                 </div>
             `;
         } catch (err) {
@@ -316,4 +341,6 @@
             }
         });
     }
+
+    loadHistory();
 })();

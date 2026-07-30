@@ -86,7 +86,7 @@ def _get_history() -> list:
     db = get_db()
     cursor = db.cursor()
     cursor.execute('''
-        SELECT role, content, tool_calls FROM assistant_conversations
+        SELECT role, content, tool_calls, tool_call_id FROM assistant_conversations
         WHERE session_id = ? ORDER BY id ASC LIMIT 100
     ''', (sid,))
     messages = []
@@ -97,11 +97,17 @@ def _get_history() -> list:
                 msg['tool_calls'] = json.loads(row['tool_calls'])
             except Exception:
                 pass
+        # tool 消息必须带 tool_call_id，否则 API 报 tool id not found
+        if row['tool_call_id']:
+            msg['tool_call_id'] = row['tool_call_id']
         messages.append(msg)
 
     # 如果没有数据库记录，回退到 session（兼容旧会话）
     if not messages:
         messages = session.get('assistant_messages', [])
+
+    # 防御性清理：丢弃无法配对的孤立 tool 消息（兼容旧库缺 tool_call_id 的脏数据）
+    messages = _drop_orphan_tool_messages(messages)
     return messages
 
 
@@ -117,6 +123,67 @@ def clear_history():
     session.modified = True
 
 
+def _drop_orphan_tool_messages(messages: list) -> list:
+    """丢弃无法配对的孤立 tool 消息。
+
+    OpenAI 要求每条 role=tool 消息的 tool_call_id 必须能在前文某条
+    assistant 消息的 tool_calls 中找到对应项。这里剔除：
+    1. 没有 tool_call_id 的 tool 消息
+    2. tool_call_id 在前文 assistant tool_calls 中找不到的 tool 消息
+    这样可兼容旧库（迁移前未持久化 tool_call_id）的脏数据，避免 API 400。
+    """
+    seen_tool_call_ids = set()
+    cleaned = []
+    for msg in messages:
+        role = msg.get('role')
+        if role == 'assistant' and msg.get('tool_calls'):
+            for tc in msg['tool_calls']:
+                tc_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                if tc_id:
+                    seen_tool_call_ids.add(tc_id)
+        elif role == 'tool':
+            tc_id = msg.get('tool_call_id')
+            if not tc_id or tc_id not in seen_tool_call_ids:
+                continue  # 孤立 tool 消息，丢弃
+        cleaned.append(msg)
+    return cleaned
+
+
+def _trim_messages(messages: list, max_recent: int) -> list:
+    """截断消息历史，保留首条 system + 最近 max_recent 条，且保证
+    tool_call / tool_result 配对完整，避免出现孤立的 tool 消息导致 API 400。
+
+    OpenAI 要求每条 role=tool 消息的 tool_call_id 必须能在前文某条
+    assistant 消息的 tool_calls 中找到对应项，否则报
+    'tool result's tool id not found'。简单的尾部切片可能把
+    assistant(tool_calls) 切掉而留下其后的 tool 结果，必须丢弃这些孤儿。
+    """
+    if len(messages) <= max_recent + 1:
+        return list(messages)
+
+    head = messages[:1]  # system
+    recent = messages[-max_recent:]
+
+    # 收集 recent 段中所有 assistant tool_call 的 id
+    tool_call_ids = set()
+    for msg in recent:
+        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+            for tc in msg['tool_calls']:
+                tc_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                if tc_id:
+                    tool_call_ids.add(tc_id)
+
+    # 从 recent 段开头丢弃找不到配对 assistant 的孤立 tool 消息
+    while recent:
+        first = recent[0]
+        if first.get('role') == 'tool' and first.get('tool_call_id') not in tool_call_ids:
+            recent = recent[1:]
+        else:
+            break
+
+    return head + recent
+
+
 def _save_history(messages: list):
     """保存消息历史到数据库。"""
     sid = _get_session_id()
@@ -126,21 +193,23 @@ def _save_history(messages: list):
     # 为了简单，每次全量删除后重新写入
     cursor.execute('DELETE FROM assistant_conversations WHERE session_id = ?', (sid,))
 
-    # 保留 system + 最近 MAX_HISTORY_ROUNDS * 2 条消息
-    trimmed = messages[:1] + messages[-MAX_HISTORY_ROUNDS * 2:]
+    # 保留 system + 最近若干条消息，但必须保证 tool_call / tool_result 配对完整
+    trimmed = _trim_messages(messages, MAX_HISTORY_ROUNDS * 2)
 
     for msg in trimmed:
         tool_calls = None
         if msg.get('tool_calls'):
             tool_calls = json.dumps(msg['tool_calls'], ensure_ascii=False)
+        tool_call_id = msg.get('tool_call_id')
         cursor.execute('''
-            INSERT INTO assistant_conversations (session_id, role, content, tool_calls)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO assistant_conversations (session_id, role, content, tool_calls, tool_call_id)
+            VALUES (?, ?, ?, ?, ?)
         ''', (
             sid,
             msg['role'],
             msg.get('content', ''),
             tool_calls,
+            tool_call_id,
         ))
     db.commit()
 

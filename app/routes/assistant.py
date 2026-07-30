@@ -2,7 +2,7 @@
 from flask import Blueprint, request, jsonify, render_template, session
 
 from app.database import get_db
-from app.services.assistant_service import chat, confirm, cancel, clear_history, _get_session_id
+from app.services.assistant_service import chat, confirm, cancel, clear_history, _get_session_id, _get_history
 from app.services.assistant_settings import (
     get_settings_for_display,
     update_assistant_settings,
@@ -89,6 +89,26 @@ def api_clear():
     """清除当前会话的对话历史。"""
     clear_history()
     return jsonify({'success': True, 'message': '对话历史已清除'})
+
+
+@bp.route('/api/history', methods=['GET'])
+def api_history():
+    """获取当前会话的对话历史（仅返回 user/assistant 可见消息）。"""
+    messages = []
+    for msg in _get_history():
+        role = msg.get('role')
+        if role not in ('user', 'assistant'):
+            continue
+        content = msg.get('content') or ''
+        tool_calls = msg.get('tool_calls')
+        # assistant 可能只有 tool_calls 而无文本内容，也要保留
+        if not content.strip() and not tool_calls:
+            continue
+        item = {'role': role, 'content': content}
+        if tool_calls:
+            item['tool_calls'] = tool_calls
+        messages.append(item)
+    return jsonify({'messages': messages})
 
 
 @bp.route('/api/tasks', methods=['GET'])

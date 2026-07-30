@@ -725,10 +725,16 @@ def init_db():
             role TEXT NOT NULL,
             content TEXT,
             tool_calls TEXT,
+            tool_call_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_conversations_session ON assistant_conversations(session_id)')
+    # 为旧库追加 tool_call_id 列（tool 消息的配对 ID，缺失会导致 API 400）
+    try:
+        cursor.execute('ALTER TABLE assistant_conversations ADD COLUMN tool_call_id TEXT')
+    except Exception:
+        pass  # 列已存在
 
     # 常用查询索引
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_alert_images_dataset ON alert_images(dataset_id)')

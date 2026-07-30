@@ -19,7 +19,7 @@ if __name__ == '__main__':
     serve(
         app,
         host='0.0.0.0',
-        port=6060,
+        port=8080,
         threads=16,
         max_request_body_size=app.config['MAX_CONTENT_LENGTH'],
     )

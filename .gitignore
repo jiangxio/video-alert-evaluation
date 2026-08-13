@@ -8,6 +8,7 @@ ground_truth/
 generated_videos/
 extracted_frames/
 ground_truth_frames/
+auto_annotation_frames/
 thumbnails/
 tmp/
 logs/

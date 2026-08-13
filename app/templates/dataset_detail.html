@@ -47,8 +47,6 @@
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
   .img-label.no-label { background:#aaa; }
-  .img-cell.ocr-ok .img-label { background:#27ae60; }
-  .img-cell.ocr-fail .img-label { background:#e74c3c; }
   .img-cell.selected { border-color:#3498db; box-shadow:0 0 0 2px #3498db; }
 
   /* 实时模式标识 */
@@ -164,7 +162,6 @@
     <select id="labelFilter" class="action-select" onchange="filterImages()">
       <option value="all">全部图片</option>
       <option value="unlabeled">未标注</option>
-      <option value="failed">标注失败</option>
       <option value="labeled">已标注</option>
     </select>
     <span style="margin-left:1rem;color:#555;">视频ID：</span>
@@ -384,9 +381,9 @@ function getFilteredImages() {
   {% endif %}
 
   return allImages.filter(img => {
-    if (labelFilterValue === 'unlabeled') return !img.ocr;
-    if (labelFilterValue === 'failed') return img.ocr && !img.ocr.success;
-    if (labelFilterValue === 'labeled') return img.ocr && img.ocr.success;
+    const labeled = !!(img.event_label || img.alert_type);
+    if (labelFilterValue === 'unlabeled') return !labeled;
+    if (labelFilterValue === 'labeled') return labeled;
     return true;
   }).filter(img => {
     if (videoIdFilterValue) {
@@ -427,9 +424,6 @@ function renderGrid(images) {
     const cell = document.createElement('div');
     const isSelected = selectedImages.has(img.id);
     cell.className = 'img-cell' + (isSelected ? ' selected' : '');
-    {% if dataset.mode != 'realtime' %}
-    cell.className += (img.ocr ? (img.ocr.success ? ' ocr-ok' : ' ocr-fail') : '');
-    {% endif %}
     cell.dataset.id = img.id;
 
     if (IS_REALTIME && selectMode) {
@@ -442,19 +436,8 @@ function renderGrid(images) {
       cell.onclick = () => openDetail(img.id);
     }
 
-    let labelText;
-    {% if dataset.mode == 'realtime' %}
-    labelText = img.event_label || img.alert_type || '未标注';
-    {% else %}
-    if (!img.ocr) {
-      labelText = '未标注';
-    } else if (!img.ocr.success) {
-      labelText = '标注失败';
-    } else {
-      labelText = img.ocr.video_id || '已标注';
-    }
-    {% endif %}
-    const noLabelCls = (IS_REALTIME || (img.ocr && img.ocr.success)) ? '' : ' no-label';
+    const labelText = img.event_label || img.alert_type || '未标注';
+    const noLabelCls = labelText === '未标注' ? ' no-label' : '';
     cell.innerHTML = `
       <img src="/alerts/api/images/${img.id}/file" loading="lazy" alt="${escHtml(img.filename)}">
       <div class="img-label${noLabelCls}">${escHtml(labelText)}</div>

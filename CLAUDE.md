@@ -214,11 +214,14 @@ recall = average(event_recall for all types with gt_count > 0)
 **平均误检数/小时**
 
 ```
-avg_fp_per_hour = fp_count / total_duration_hours
+avg_fp_per_hour = average(各事件类型的 avg_fp_per_hour)   # 算术平均（宏平均）
+各事件类型 avg_fp_per_hour = 该类型误检数 / total_duration_hours
 ```
 
-- `fp_count`：有效状态 = `false_positive` 的告警总数（所有事件类型合计）
+- `fp_count`：有效状态 = `false_positive` 的告警总数（所有事件类型合计，仅用于整体精确率分母）
 - `total_duration_hours`：评测涉及的视频总时长（小时）
+- **口径与召回率一致**：各事件类型分别算误检/小时，再算术平均（不是合计/总时长）。这与 realtime 模式、验收报告口径统一。
+- 代码实现见 `eval_service.py` 的 `compute_overall_avg_fp()`，普通模式与 realtime 模式均走此逻辑。
 
 ### 3. 前端重算（eval_task.html）
 

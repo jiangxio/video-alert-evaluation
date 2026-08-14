@@ -359,7 +359,7 @@ def import_zip(dataset_id):
         # 定位图片搜索根目录（处理压缩包内套单层文件夹的情况）
         search_root = _find_image_root(tmp_dir)
 
-        imported, skipped = [], []
+        imported, skipped, invalid_type_ids = [], [], set()
 
         for src in sorted(search_root.rglob('*')):
             if not src.is_file():
@@ -390,6 +390,9 @@ def import_zip(dataset_id):
             width, height = _get_image_size(str(dest))
             alert_type_id = extract_alert_type_id(filename)
             alert_type = config.get(alert_type_id) if alert_type_id else None
+            # 提取到 ID 但未在 alert_types.json 登记 → 记录为无效类型（不阻断导入）
+            if alert_type_id and alert_type is None:
+                invalid_type_ids.add(alert_type_id)
             file_size = dest.stat().st_size
 
             cursor.execute('''
@@ -413,6 +416,7 @@ def import_zip(dataset_id):
         'imported': len(imported),
         'skipped': len(skipped),
         'skipped_files': skipped,
+        'invalid_type_ids': sorted(invalid_type_ids),
     })
 
 

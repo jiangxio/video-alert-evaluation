@@ -296,14 +296,9 @@
         <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
           <select id="eventFilter" onchange="renderEvents()" style="padding:0.3rem 0.5rem;border:1px solid #ddd;border-radius:4px;font-size:0.85rem;">
             <option value="">全部类型</option>
-            <option value="rat">rat</option>
-            <option value="smoke">smoke</option>
-            <option value="use_phone">use_phone</option>
-            <option value="call_phone">call_phone</option>
-            <option value="chef">chef</option>
-            <option value="trash">trash</option>
-            <option value="mask">mask</option>
-            <option value="flame">flame</option>
+            {% for etype in EVENT_TYPES %}
+            <option value="{{ etype }}">{{ TYPE_NAMES.get(etype, etype) }}</option>
+            {% endfor %}
           </select>
           <button class="btn btn-sm" onclick="openImportModal()">导入事件</button>
           <button class="btn btn-sm btn-danger" onclick="deleteAllEvents()">一键清除</button>

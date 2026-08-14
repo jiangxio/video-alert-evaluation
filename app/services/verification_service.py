@@ -76,14 +76,26 @@ def parse_alert_config(config_path):
 
 
 def extract_alert_type_id(filename):
-    """从文件名提取告警类型ID（支持所有图片后缀，横线或下划线分隔均可）"""
+    """从文件名提取告警类型ID。
+
+    标准格式优先严格匹配，兜底兼容历史命名：
+    - 标准：{video_id}_{unix时间戳}_{alert_type_id}.ext  → 取第三段
+    - 兜底1：{任意}_{id}.ext / {任意}-{id}.ext          → 取末尾数字段
+    - 兜底2：{id}.ext                                    → 取扩展名前数字
+    返回 ID 字符串或 None。注意：返回的 ID 未必在 alert_types.json 中登记，
+    调用方应自行校验有效性（见 config.get(alert_type_id)）。
+    """
     import re
-    # 支持格式：xxx-105.png 或 xxx_105.png，取最后一串数字作为类型ID
-    match = re.search(r'[_\-](\d+)\.[^.]+$', filename)
-    if match:
-        return match.group(1)
-    # 兜底：直接取后缀前的数字（如 "105.png"）
-    match2 = re.search(r'(\d+)\.[^.]+$', filename)
-    if match2:
-        return match2.group(1)
+    # 标准三段式：数字_数字_数字.ext
+    m = re.search(r'^\d+_\d+_(\d+)\.[^.]+$', filename)
+    if m:
+        return m.group(1)
+    # 兜底1：分隔符（横线/下划线）+ 数字 + 扩展名
+    m = re.search(r'[_\-](\d+)\.[^.]+$', filename)
+    if m:
+        return m.group(1)
+    # 兜底2：裸数字 + 扩展名
+    m = re.search(r'(\d+)\.[^.]+$', filename)
+    if m:
+        return m.group(1)
     return None

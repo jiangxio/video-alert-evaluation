@@ -1,0 +1,46 @@
+services:
+  web:
+    build: .
+    image: video-alert-eval:latest
+    container_name: video-alert-eval
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # 数据库落到持久化卷（database.py 通过 DATABASE_PATH 读取）
+      - DATABASE_PATH=/app/data/benchmark.db
+    volumes:
+      # 数据库 + 各数据目录独立命名卷，重建容器数据不丢
+      - db_data:/app/data
+      - uploads_data:/app/uploads
+      - ground_truth_data:/app/ground_truth
+      - output_data:/app/output
+      - thumbnails_data:/app/thumbnails
+      - generated_videos_data:/app/generated_videos
+      - extracted_frames_data:/app/extracted_frames
+      - auto_annotation_frames_data:/app/auto_annotation_frames
+      - logs_data:/app/logs
+      - report_data:/app/report
+      # config 可选挂载：覆盖镜像内默认告警类型配置
+      # 取消注释后用宿主 ./config 覆盖
+      # - ./config:/app/config:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  db_data:
+  uploads_data:
+  ground_truth_data:
+  output_data:
+  thumbnails_data:
+  generated_videos_data:
+  extracted_frames_data:
+  auto_annotation_frames_data:
+  logs_data:
+  report_data:

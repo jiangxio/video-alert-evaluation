@@ -1,10 +1,12 @@
 """数据库初始化和连接管理"""
+import os
 import json
 import sqlite3
 from pathlib import Path
 from flask import g, current_app
 
-DATABASE_PATH = Path(__file__).parent.parent / 'benchmark.db'
+# 支持通过环境变量指定数据库路径（Docker 持久化卷挂载到该路径）
+DATABASE_PATH = Path(os.environ.get('DATABASE_PATH', Path(__file__).parent.parent / 'benchmark.db'))
 
 
 def get_db():

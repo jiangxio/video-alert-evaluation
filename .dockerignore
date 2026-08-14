@@ -1,0 +1,52 @@
+# 版本控制与工具元数据
+.git/
+.gitignore
+.codegraph/
+.claude/
+.codex/
+.agents/
+.pytest_cache/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境与 node
+.venv/
+node_modules/
+package.json
+package-lock.json
+
+# 运行时数据目录（由 volume 持久化，不打入镜像）
+uploads/
+output/
+ground_truth/
+ground_truth_frames/
+generated_videos/
+extracted_frames/
+auto_annotation_frames/
+thumbnails/
+logs/
+tmp/
+report/
+benchmark.db
+*.db
+*.sqlite
+*.sqlite3
+
+# 敏感配置（运行时通过 env_file 挂载）
+.env
+
+# 文档与截图（不进镜像）
+yanshou/
+streaming_page.png
+平台功能优化建议.md
+参赛优化分析.md
+WEB_PLATFORM_README.md
+
+# 系统/编辑器
+.DS_Store
+.vscode/
+.idea/

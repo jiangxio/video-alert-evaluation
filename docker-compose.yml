@@ -33,6 +33,21 @@ services:
       retries: 3
       start_period: 40s
 
+  # 目标检测评测服务（独立 Flask app，与 web 完全解耦）
+  od:
+    build: ./od-dataset-manager
+    image: od-dataset-manager:latest
+    container_name: video-alert-od
+    ports:
+      - "5000:5000"
+    environment:
+      # 数据库落到持久化卷（config.py 通过 OD_DB_DIR 读取）
+      - OD_DB_DIR=/app/data
+    volumes:
+      - od_db:/app/data
+      - od_datasets:/app/datasets
+    restart: unless-stopped
+
 volumes:
   db_data:
   uploads_data:
@@ -44,3 +59,5 @@ volumes:
   auto_annotation_frames_data:
   logs_data:
   report_data:
+  od_db:
+  od_datasets:

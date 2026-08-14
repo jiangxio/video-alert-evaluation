@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>目标检测分析平台</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <header>
+        <h1>目标检测分析平台</h1>
+    </header>
+    <div class="home-container">
+        <div class="home-topbar">
+            <h2>项目列表</h2>
+            <button id="btn-create" class="btn-primary">+ 新建项目</button>
+        </div>
+        <div id="project-grid"></div>
+        <div id="home-message"></div>
+    </div>
+
+    <!-- Create / Edit Modal -->
+    <div id="proj-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-box">
+            <div class="modal-header">
+                <strong id="proj-modal-title">新建项目</strong>
+                <button class="modal-close" id="proj-modal-close">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>项目名称 <span class="req">*</span></label>
+                    <input type="text" id="proj-name" placeholder="例：打电话检测" />
+                </div>
+
+                <!-- 仅在新建项目时显示：路径和格式选择 -->
+                <div id="import-section">
+                    <div class="form-row">
+                        <label>图片路径 <span class="req">*</span></label>
+                        <div class="input-row">
+                            <input type="text" id="proj-images-dir" placeholder="datasets/calling/images 或绝对路径" />
+                            <button class="btn-sm" id="proj-browse-images">浏览</button>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <label>标注路径</label>
+                        <div class="input-row">
+                            <input type="text" id="proj-labels-dir" placeholder="留空则自动设为图片同级 labels 目录" />
+                            <button class="btn-sm" id="proj-browse-labels">浏览</button>
+                        </div>
+                        <div class="fmt-tabs fmt-tabs-sm" id="proj-fmt-tabs" style="margin-top:6px;">
+                            <button type="button" class="fmt-tab active" data-fmt="json">JSON 内部</button>
+                            <button type="button" class="fmt-tab" data-fmt="rect">Rect</button>
+                            <button type="button" class="fmt-tab" data-fmt="coco">COCO</button>
+                            <button type="button" class="fmt-tab" data-fmt="yolo">YOLO</button>
+                        </div>
+                        <div id="proj-fmt-tip" class="fmt-tip" style="display:none;">
+                            将从该目录读取并转换为内部格式存储
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 仅在编辑项目时显示：已导入提示 -->
+                <div id="imported-hint" style="display:none;">
+                    <div class="hint-box">
+                        <strong>📦 项目已导入数据库</strong><br/>
+                        图片和标注数据已存储在数据库中，无需再依赖文件路径。
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <label>类别（每行一个）</label>
+                    <textarea id="proj-classes" rows="4" placeholder="call_phone&#10;not_call_phone&#10;other"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="proj-modal-cancel">取消</button>
+                <button id="proj-modal-save" class="btn-primary">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dir Browser Modal -->
+    <div id="dir-browser-modal" class="modal-overlay" style="display:none;">
+        <div id="dir-browser-box">
+            <div id="dir-browser-header">
+                <strong>选择目录</strong>
+                <button id="dir-browser-close">×</button>
+            </div>
+            <div id="dir-browser-path"></div>
+            <ul id="dir-browser-list"></ul>
+            <div id="dir-browser-footer">
+                <button id="dir-browser-select">选择此目录</button>
+                <button id="dir-browser-cancel">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const BASE_DIR = {{ base_dir | tojson | safe }};
+
+    let editingId = null;
+    let _dirCallback = null;
+    let _dirCurrent = '';
+    let selectedFmt = 'json';
+
+    // Format tab clicks inside the project modal
+    document.querySelectorAll('#proj-fmt-tabs .fmt-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('#proj-fmt-tabs .fmt-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            selectedFmt = tab.dataset.fmt;
+            document.getElementById('proj-fmt-tip').style.display = selectedFmt === 'json' ? 'none' : 'block';
+        });
+    });
+
+    function setModalFmt(fmt) {
+        selectedFmt = fmt || 'json';
+        document.querySelectorAll('#proj-fmt-tabs .fmt-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.fmt === selectedFmt);
+        });
+        document.getElementById('proj-fmt-tip').style.display = selectedFmt === 'json' ? 'none' : 'block';
+    }
+
+    function showMsg(text, isError) {
+        const el = document.getElementById('home-message');
+        el.textContent = text;
+        el.style.color = isError ? '#d43f3a' : '#2b7a78';
+        setTimeout(() => { el.textContent = ''; }, 3000);
+    }
+
+    // ── Project list ───────────────────────────────────────
+    function loadProjects() {
+        fetch('/api/projects').then(r => r.json()).then(projects => {
+            const grid = document.getElementById('project-grid');
+            grid.innerHTML = '';
+            if (!projects.length) {
+                grid.innerHTML = '<p class="empty-tip">暂无项目，点击「新建项目」开始</p>';
+                return;
+            }
+            projects.forEach(p => {
+                const card = document.createElement('div');
+                card.className = 'project-card';
+                card.innerHTML = `
+                    <div class="project-card-title">${escHtml(p.name)}</div>
+                    <div class="project-card-info">
+                        <span class="info-label">图片：</span><span class="info-value" title="${escHtml(p.images_dir)}">${escHtml(shortenPath(p.images_dir))}</span>
+                    </div>
+                    <div class="project-card-info">
+                        <span class="info-label">标注：</span><span class="info-value" title="${escHtml(p.labels_dir)}">${escHtml(shortenPath(p.labels_dir))}</span>
+                    </div>
+                    <div class="project-card-classes">${(p.classes||[]).map(c => `<span class="class-tag">${escHtml(c)}</span>`).join('')}</div>
+                    <div class="project-card-actions">
+                        <button class="btn-primary btn-open" data-id="${p.id}">打开</button>
+                        <button class="btn-edit" data-id="${p.id}">编辑</button>
+                        <button class="btn-danger btn-del" data-id="${p.id}">删除</button>
+                    </div>`;
+                grid.appendChild(card);
+            });
+
+            grid.querySelectorAll('.btn-open').forEach(btn => {
+                btn.addEventListener('click', () => { window.location.href = `/project/${btn.dataset.id}`; });
+            });
+            grid.querySelectorAll('.btn-edit').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const proj = projects.find(p => p.id === btn.dataset.id);
+                    if (proj) openEditModal(proj);
+                });
+            });
+            grid.querySelectorAll('.btn-del').forEach(btn => {
+                btn.addEventListener('click', () => deleteProject(btn.dataset.id));
+            });
+        });
+    }
+
+    function deleteProject(id) {
+        if (!confirm('确认删除该项目？（不会删除磁盘上的文件）')) return;
+        fetch(`/api/projects/${id}`, {method: 'DELETE'}).then(r => r.json()).then(d => {
+            if (d.success) { showMsg('删除成功'); loadProjects(); }
+        });
+    }
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function shortenPath(p) {
+        if (p.length <= 45) return p;
+        return '…' + p.slice(-42);
+    }
+
+    // ── Modal ──────────────────────────────────────────────
+    function openCreateModal() {
+        editingId = null;
+        document.getElementById('proj-modal-title').textContent = '新建项目';
+        document.getElementById('proj-name').value = '';
+        document.getElementById('proj-images-dir').value = '';
+        document.getElementById('proj-labels-dir').value = '';
+        document.getElementById('proj-classes').value = 'call_phone\nnot_call_phone\nother';
+        setModalFmt('json');
+        // 显示导入部分，隐藏已导入提示
+        document.getElementById('import-section').style.display = 'block';
+        document.getElementById('imported-hint').style.display = 'none';
+        document.getElementById('proj-modal').style.display = 'flex';
+    }
+
+    function openEditModal(proj) {
+        editingId = proj.id;
+        document.getElementById('proj-modal-title').textContent = '编辑项目';
+        document.getElementById('proj-name').value = proj.name;
+        document.getElementById('proj-classes').value = (proj.classes || []).join('\n');
+        // 隐藏导入部分，显示已导入提示
+        document.getElementById('import-section').style.display = 'none';
+        document.getElementById('imported-hint').style.display = 'block';
+        document.getElementById('proj-modal').style.display = 'flex';
+    }
+
+    function closeModal() {
+        document.getElementById('proj-modal').style.display = 'none';
+    }
+
+    document.getElementById('btn-create').addEventListener('click', openCreateModal);
+    document.getElementById('proj-modal-close').addEventListener('click', closeModal);
+    document.getElementById('proj-modal-cancel').addEventListener('click', closeModal);
+
+    document.getElementById('proj-modal-save').addEventListener('click', () => {
+        const name = document.getElementById('proj-name').value.trim();
+        const classesText = document.getElementById('proj-classes').value.trim();
+        const classes = classesText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+
+        if (!name) { showMsg('请填写项目名称', true); return; }
+
+        let payload, url, method;
+        if (editingId) {
+            // 编辑项目：只更新名称和类别
+            payload = {name, classes};
+            url = `/api/projects/${editingId}`;
+            method = 'PUT';
+        } else {
+            // 新建项目：需要路径和格式
+            const images_dir = document.getElementById('proj-images-dir').value.trim();
+            const labels_dir = document.getElementById('proj-labels-dir').value.trim();
+            if (!images_dir) { showMsg('请填写图片路径', true); return; }
+            payload = {name, images_dir, labels_dir, classes, labels_format: selectedFmt};
+            url = '/api/projects';
+            method = 'POST';
+        }
+
+        fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)})
+            .then(r => r.json()).then(d => {
+                if (d.error) { showMsg(d.error, true); return; }
+                closeModal();
+                let msg = editingId ? '项目已更新' : '项目已创建';
+                if (d.imported_count != null) msg += `，已导入 ${d.imported_count} 张标注`;
+                showMsg(msg);
+                loadProjects();
+            }).catch(() => showMsg('操作失败', true));
+    });
+
+    // ── Dir browser ────────────────────────────────────────
+    function openDirBrowser(callback, startPath) {
+        _dirCallback = callback;
+        loadDirBrowser(startPath || BASE_DIR);
+        document.getElementById('dir-browser-modal').style.display = 'flex';
+    }
+
+    function loadDirBrowser(path) {
+        fetch('/api/browse_dir?path=' + encodeURIComponent(path))
+            .then(r => r.json()).then(data => {
+                if (data.error) { showMsg(data.error, true); return; }
+                _dirCurrent = data.path;
+                document.getElementById('dir-browser-path').textContent = data.path;
+                const list = document.getElementById('dir-browser-list');
+                list.innerHTML = '';
+                if (data.parent !== data.path) {
+                    const li = document.createElement('li');
+                    li.className = 'dir-entry dir-up';
+                    li.textContent = '.. (上级目录)';
+                    li.addEventListener('click', () => loadDirBrowser(data.parent));
+                    list.appendChild(li);
+                }
+                data.entries.forEach(entry => {
+                    const li = document.createElement('li');
+                    li.className = 'dir-entry';
+                    li.textContent = '📁 ' + entry.name;
+                    li.addEventListener('click', () => loadDirBrowser(entry.path));
+                    list.appendChild(li);
+                });
+            });
+    }
+
+    function closeDirBrowser() {
+        document.getElementById('dir-browser-modal').style.display = 'none';
+    }
+
+    document.getElementById('dir-browser-select').addEventListener('click', () => {
+        if (_dirCallback) _dirCallback(_dirCurrent);
+        closeDirBrowser();
+    });
+    document.getElementById('dir-browser-cancel').addEventListener('click', closeDirBrowser);
+    document.getElementById('dir-browser-close').addEventListener('click', closeDirBrowser);
+
+    document.getElementById('proj-browse-images').addEventListener('click', () => {
+        openDirBrowser(path => { document.getElementById('proj-images-dir').value = path; },
+                       document.getElementById('proj-images-dir').value.trim() || BASE_DIR);
+    });
+    document.getElementById('proj-browse-labels').addEventListener('click', () => {
+        openDirBrowser(path => { document.getElementById('proj-labels-dir').value = path; },
+                       document.getElementById('proj-labels-dir').value.trim() || BASE_DIR);
+    });
+
+    loadProjects();
+    </script>
+</body>
+</html>

@@ -134,8 +134,13 @@ cp .env.example .env
 # 2. 一键构建并启动
 docker compose up -d
 
-# 3. 访问 http://localhost:8080
+# 3. 访问 http://localhost:8080（视频评测平台）
+#    目标检测评测服务：http://localhost:5000（或从导航「目标检测」跳转）
 ```
+
+`docker compose up -d` 同时启动两个服务：
+- **web**（8080）：视频水印评测平台
+- **od**（5000）：目标检测评测服务（独立 Flask app，与 web 完全解耦）
 
 常用命令：
 
@@ -143,6 +148,7 @@ docker compose up -d
 docker compose logs -f   # 查看实时日志
 docker compose down      # 停止（数据保留在命名卷中）
 docker compose up -d     # 重新启动（数据不丢失）
+docker compose stop od   # 仅停目标检测服务（不影响视频评测）
 ```
 
 > 镜像已内置 FFmpeg、字体、EasyOCR 模型（离线可用）、Chromium（PDF 报告）。

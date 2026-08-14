@@ -14,6 +14,12 @@ tmp/
 logs/
 yanshou/
 
+# od-dataset-manager（目标检测评测子模块，独立服务）
+od-dataset-manager/datasets/
+od-dataset-manager/result/
+od-dataset-manager/yolo_export/
+od-dataset-manager/eval_configs/
+
 # 数据库
 *.db
 *.sqlite

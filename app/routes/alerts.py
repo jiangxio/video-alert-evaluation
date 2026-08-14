@@ -348,7 +348,13 @@ def import_zip(dataset_id):
     try:
         archive_path = os.path.join(tmp_dir, 'upload')
         f.save(archive_path)
-        _extract_archive(archive_path, tmp_dir, f.filename)
+        try:
+            _extract_archive(archive_path, tmp_dir, f.filename)
+        except (zipfile.BadZipFile, tarfile.TarError, ValueError) as e:
+            # 损坏或不支持的压缩包：明确 400 拒绝，不让异常逃逸成 500
+            return jsonify({'error': f'压缩包解析失败：{type(e).__name__}'}), 400
+        except Exception as e:
+            return jsonify({'error': f'解压失败：{type(e).__name__}'}), 400
 
         # 定位图片搜索根目录（处理压缩包内套单层文件夹的情况）
         search_root = _find_image_root(tmp_dir)

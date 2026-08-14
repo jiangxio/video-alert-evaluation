@@ -1,5 +1,9 @@
 """Pytest fixtures for the benchmark project."""
+import os
 import sqlite3
+import tempfile
+from pathlib import Path
+
 import pytest
 
 
@@ -57,3 +61,39 @@ def db_conn():
     _create_schema(conn)
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def app_client(tmp_path, monkeypatch):
+    """返回 Flask test client，使用临时目录做 DB 与上传路径（完整 schema，隔离无副作用）。
+
+    供 API 级异常测试用：样本导入、报告生成等需真实路由与完整表结构的场景。
+    """
+    db_path = tmp_path / "benchmark.db"
+
+    # app/database.py 的 DATABASE_PATH 是模块级常量，import 时已读取，
+    # 需直接 patch 模块属性（setenv 太晚，已 import 过）
+    import app.database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", db_path)
+
+    from app import create_app
+    app = create_app()
+    app.config["TESTING"] = True
+    app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
+
+    with app.test_client() as client:
+        yield client
+
+
+@pytest.fixture
+def app_ctx(tmp_path, monkeypatch):
+    """提供 app app_context 与一个已建表的真实 DB（临时隔离，每个测试独立）。"""
+    db_path = tmp_path / "test.db"
+    import app.database as _db
+    monkeypatch.setattr(_db, "DATABASE_PATH", db_path)
+
+    from app import create_app
+    app = create_app()
+    with app.app_context():
+        yield app
+

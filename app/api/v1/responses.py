@@ -96,3 +96,15 @@ def _safe_int(value, default):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def pick_fields(data, allowed):
+    """PATCH 字段白名单：返回 (已知字段 dict, 未知字段名列表)。
+
+    用于单字段更新端点拒绝未开放字段——未知字段非空时端点应返
+    err(400, ..., error_code="UNKNOWN_FIELD")。
+    """
+    data = data or {}
+    known = {k: v for k, v in data.items() if k in allowed}
+    unknown = [k for k in data if k not in allowed]
+    return known, unknown

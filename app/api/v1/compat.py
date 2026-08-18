@@ -100,3 +100,43 @@ def _envelope_response(result):
             return err(status, _extract_message(data))
         return _success_envelope(data, status)
     return resp  # 非 JSON（页面 HTML 等）透传
+
+
+def paginate_old_list(old_call, list_key=None):
+    """调用旧列表视图：成功 → v1 内存分页信封；错误 → 错误信封。
+
+    用于裸 list（旧视图 jsonify([...])）或 {list_key: [...]} 形态的列表端点。
+    wrap_old_view 补不回 total/has_next，列表端点必须走本函数重实现分页。
+
+    - old_call: 无参可调用，返回旧视图响应（Response / tuple / dict）
+    - list_key: None=裸 list；否则从 dict 的该键取列表
+    - 旧视图返 4xx/5xx（如数据集不存在的 404）→ 透传为错误信封，不误当空分页
+    """
+    from flask import request
+
+    from app.api.v1.responses import err, ok, paginate, parse_pagination
+
+    body, status, _ = _split_rv(old_call())
+    # 取 JSON：body 可能是 Response（jsonify）或裸 dict/list
+    if isinstance(body, Response):
+        data = body.get_json(silent=True)
+        if status == 200:
+            status = body.status_code
+    else:
+        data = body
+
+    if status >= 400:
+        return err(status, _extract_message(data))
+
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict) and list_key is not None:
+        items = data.get(list_key, []) or []
+    else:
+        items = []
+
+    page, page_size = parse_pagination(request.args)
+    total = len(items)
+    start = (page - 1) * page_size
+    page_items = items[start:start + page_size]
+    return ok(paginate(page_items, total, page, page_size))

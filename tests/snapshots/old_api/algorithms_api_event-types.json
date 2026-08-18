@@ -1,0 +1,187 @@
+{
+  "body": [
+    {
+      "bg_color": "#ffeaa7",
+      "description": "老鼠：画面中出现老鼠",
+      "fg_color": "#6c5ce7",
+      "id": 100,
+      "key": "rat",
+      "name": "老鼠检测",
+      "sort_order": 0,
+      "tags": []
+    },
+    {
+      "bg_color": "#dfe6e9",
+      "description": "抽烟：有人正在抽烟，手持香烟靠近嘴边，可能有烟雾",
+      "fg_color": "#2d3436",
+      "id": 101,
+      "key": "smoke",
+      "name": "抽烟检测",
+      "sort_order": 1,
+      "tags": []
+    },
+    {
+      "bg_color": "#74b9ff",
+      "description": "玩手机：低头看着手中的手机屏幕（发短信、刷视频、玩游戏），手机不在耳边",
+      "fg_color": "#0984e3",
+      "id": 102,
+      "key": "use_phone",
+      "name": "玩手机检测",
+      "sort_order": 2,
+      "tags": []
+    },
+    {
+      "bg_color": "#a29bfe",
+      "description": "打电话：手机贴在耳朵旁，正在语音通话",
+      "fg_color": "#6c5ce7",
+      "id": 103,
+      "key": "call_phone",
+      "name": "打电话检测",
+      "sort_order": 3,
+      "tags": []
+    },
+    {
+      "bg_color": "#fd79a8",
+      "description": "厨师服：穿着白色厨师服或围裙（含未戴厨师帽场景）",
+      "fg_color": "#e84393",
+      "id": 104,
+      "key": "chef",
+      "name": "厨师服/厨师帽检测",
+      "sort_order": 4,
+      "tags": []
+    },
+    {
+      "bg_color": "#55efc4",
+      "description": "垃圾：垃圾桶未关或垃圾/废弃物堆积",
+      "fg_color": "#00b894",
+      "id": 105,
+      "key": "trash",
+      "name": "垃圾桶未关检测",
+      "sort_order": 5,
+      "tags": []
+    },
+    {
+      "bg_color": "#fab1a0",
+      "description": "口罩：人员未佩戴口罩",
+      "fg_color": "#d63031",
+      "id": 106,
+      "key": "mask",
+      "name": "未戴口罩检测",
+      "sort_order": 6,
+      "tags": []
+    },
+    {
+      "bg_color": "#ff7675",
+      "description": "火焰：画面中出现明火或火焰",
+      "fg_color": "#d63031",
+      "id": 107,
+      "key": "flame",
+      "name": "火焰检测",
+      "sort_order": 7,
+      "tags": []
+    },
+    {
+      "bg_color": "#ffe0b2",
+      "description": "消防通道占用：消防通道被车辆、物品或人员堵塞",
+      "fg_color": "#e65100",
+      "id": 108,
+      "key": "fireEscapeOccupy",
+      "name": "消防通道占用识别",
+      "sort_order": 8,
+      "tags": []
+    },
+    {
+      "bg_color": "#c5cae9",
+      "description": "人员离岗：安全岗位人员不在指定位置",
+      "fg_color": "#3f51b5",
+      "id": 109,
+      "key": "safetyOfficerOnDuty",
+      "name": "人员离岗检测",
+      "sort_order": 9,
+      "tags": []
+    },
+    {
+      "bg_color": "#b2dfdb",
+      "description": "睡岗：值班人员在工作岗位上睡觉",
+      "fg_color": "#00796b",
+      "id": 110,
+      "key": "personSleep",
+      "name": "睡岗检测",
+      "sort_order": 10,
+      "tags": []
+    },
+    {
+      "bg_color": "#f8bbd0",
+      "description": "登高检测：人员在梯子或高处作业",
+      "fg_color": "#c2185b",
+      "id": 111,
+      "key": "personLadderHigh",
+      "name": "登高检测",
+      "sort_order": 11,
+      "tags": []
+    },
+    {
+      "bg_color": "#d7ccc8",
+      "description": "不戴安全帽：工地人员未佩戴安全帽",
+      "fg_color": "#5d4037",
+      "id": 112,
+      "key": "withoutHelmetOnSite",
+      "name": "工地人员不戴安全帽检测",
+      "sort_order": 12,
+      "tags": []
+    },
+    {
+      "bg_color": "#fff9c4",
+      "description": "反光衣识别：人员未穿着反光衣",
+      "fg_color": "#f57f17",
+      "id": 113,
+      "key": "withoutRefClothes",
+      "name": "反光衣识别",
+      "sort_order": 13,
+      "tags": []
+    },
+    {
+      "bg_color": "#e1bee7",
+      "description": "人员跌倒：画面中有人摔倒或跌倒",
+      "fg_color": "#7b1fa2",
+      "id": 114,
+      "key": "personFallDown",
+      "name": "人员跌倒检测",
+      "sort_order": 14,
+      "tags": []
+    },
+    {
+      "bg_color": "#bbdefb",
+      "description": "人员动作：检测特定的人员动作行为",
+      "fg_color": "#1565c0",
+      "id": 115,
+      "key": "personAction",
+      "name": "人员动作检测",
+      "sort_order": 15,
+      "tags": []
+    },
+    {
+      "bg_color": "#ffccbc",
+      "description": "手持危险工具：人员手持危险工具或器械",
+      "fg_color": "#bf360c",
+      "id": 116,
+      "key": "inHandDangerTool",
+      "name": "手持危险工具检测",
+      "sort_order": 16,
+      "tags": []
+    },
+    {
+      "bg_color": "#e0e0e0",
+      "description": "",
+      "fg_color": "#333333",
+      "id": 117,
+      "key": "fight",
+      "name": "fight",
+      "sort_order": 117,
+      "tags": []
+    }
+  ],
+  "body_kind": "json",
+  "content_type": "application/json",
+  "status": 200
+}

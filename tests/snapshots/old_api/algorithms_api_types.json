@@ -1,0 +1,25 @@
+{
+  "body": [
+    "rat",
+    "smoke",
+    "use_phone",
+    "call_phone",
+    "chef",
+    "trash",
+    "mask",
+    "flame",
+    "fireEscapeOccupy",
+    "safetyOfficerOnDuty",
+    "personSleep",
+    "personLadderHigh",
+    "withoutHelmetOnSite",
+    "withoutRefClothes",
+    "personFallDown",
+    "personAction",
+    "inHandDangerTool",
+    "fight"
+  ],
+  "body_kind": "json",
+  "content_type": "application/json",
+  "status": 200
+}

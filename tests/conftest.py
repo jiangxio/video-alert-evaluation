@@ -17,7 +17,14 @@ def _create_schema(conn):
             eval_set_id INTEGER,
             dataset_id INTEGER,
             alert_eval_set_id INTEGER,
-            status TEXT
+            status TEXT,
+            duration_hours REAL
+        );
+
+        -- compute_task_metrics LEFT JOIN datasets 取 mode（测试不插行，NULL → 非实时）
+        CREATE TABLE datasets (
+            id INTEGER PRIMARY KEY,
+            mode TEXT
         );
 
         CREATE TABLE eval_video_sets (

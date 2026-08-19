@@ -83,6 +83,12 @@ def app_client(tmp_path, monkeypatch):
     import app.database as _db
     monkeypatch.setattr(_db, "DATABASE_PATH", db_path)
 
+    # 坑：app/routes/alerts.py 顶部 `from app.database import DATABASE_PATH`
+    # 在导入期把 DATABASE_PATH 绑定为模块内独立名字，ocr_batch 的后台线程
+    # _worker 用的是这个绑定（routes.alerts.DATABASE_PATH），与 database.DATABASE_PATH
+    # 是两个名字——只 patch 后者不够，前者仍指向真实库，会污染线上库。
+    monkeypatch.setattr("app.routes.alerts.DATABASE_PATH", str(db_path))
+
     from app import create_app
     app = create_app()
     app.config["TESTING"] = True

@@ -11,6 +11,7 @@ def register_api(app):
     from app.api.v1 import v1_bp
     from app.api.v1 import videos  # noqa: F401  导入即注册 v1 videos 路由
     from app.api.v1 import alerts  # noqa: F401  导入即注册 v1 alerts 路由
+    from app.api.v1 import alerts_ocr  # noqa: F401  导入即注册 v1 alerts OCR 路由
 
     app.register_blueprint(v1_bp)
 

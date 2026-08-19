@@ -110,3 +110,44 @@ def app_ctx(tmp_path, monkeypatch):
     with app.app_context():
         yield app
 
+
+# ── od-dataset-manager（独立子项目）测试 fixture ──────────────────────────────
+# od 的 app.py 模块名 `app` 与主仓库 `app` 包冲突，必须 importlib 按路径加载避开。
+_OD_DIR = Path(__file__).parent.parent / "od-dataset-manager"
+
+
+@pytest.fixture(scope="session")
+def od_module():
+    """importlib 加载 od-dataset-manager/app.py 为独立模块，避开 `app` 包名冲突。
+
+    临时把 od 目录加到 sys.path 让 app.py 顶层 `import config` 生效，加载后移除
+    （config 模块已进 sys.modules，后续 od 函数内 config.X 引用不受影响）。
+    """
+    import importlib.util
+    import sys
+    od_dir = str(_OD_DIR)
+    sys.path.insert(0, od_dir)
+    try:
+        spec = importlib.util.spec_from_file_location("od_under_test", _OD_DIR / "app.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        if od_dir in sys.path:
+            sys.path.remove(od_dir)
+
+
+@pytest.fixture
+def od_client(od_module, tmp_path, monkeypatch):
+    """od app test client + 临时隔离 DB（DB_FILE 是 import 期绑定，patch 模块属性）。"""
+    import config
+    monkeypatch.setattr(od_module, "DB_FILE", str(tmp_path / "annotations.db"))
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    # importlib 加载的模块 __name__ 非真实包名，Flask root_path 解析不到 templates，
+    # 显式设绝对路径让页面渲染可用
+    od_module.app.template_folder = str(_OD_DIR / "templates")
+    od_module.init_db()
+    od_module.app.config["TESTING"] = True
+    with od_module.app.test_client() as client:
+        yield client
+

@@ -1,4 +1,6 @@
 """AI 助手路由"""
+import json
+
 from flask import Blueprint, request, jsonify, render_template, session
 
 from app.database import get_db

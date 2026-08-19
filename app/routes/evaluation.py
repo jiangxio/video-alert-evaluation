@@ -567,9 +567,12 @@ def execute_task(task_id):
             'running': True,
         }
 
+    conn_ref = [None]
+
     def _worker():
         import sqlite3
         conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
+        conn_ref[0] = conn
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -702,10 +705,47 @@ def execute_task(task_id):
             ''', ('done', accuracy, recall, avg_fp_per_hour, event_metrics_json, task_id))
         conn.commit()
         conn.close()
+        conn_ref[0] = None
         with _eval_lock:
             _eval_progress[task_id]['running'] = False
 
-    thread = threading.Thread(target=_worker, daemon=True)
+    def _worker_safe():
+        """_worker 的安全包装：异常时把任务标为 failed，确保连接关闭与进度复位。"""
+        try:
+            _worker()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            # 关闭 _worker 中可能未关闭的连接
+            if conn_ref[0] is not None:
+                try:
+                    conn_ref[0].close()
+                except Exception:
+                    pass
+                conn_ref[0] = None
+            # 标记任务失败（error_message 列不存在时回退到仅置 failed）
+            try:
+                import sqlite3 as _sqlite3
+                _conn = _sqlite3.connect(str(DATABASE_PATH))
+                _c = _conn.cursor()
+                try:
+                    _c.execute(
+                        "UPDATE eval_tasks SET status = 'failed', error_message = ? WHERE id = ?",
+                        (f"评测执行异常: {e}", task_id),
+                    )
+                except Exception:
+                    _c.execute(
+                        "UPDATE eval_tasks SET status = 'failed' WHERE id = ?",
+                        (task_id,),
+                    )
+                _conn.commit()
+                _conn.close()
+            except Exception:
+                pass
+            with _eval_lock:
+                _eval_progress[task_id]['running'] = False
+
+    thread = threading.Thread(target=_worker_safe, daemon=True)
     thread.start()
 
     cursor.execute('UPDATE eval_tasks SET status = ? WHERE id = ?', ('evaluating', task_id))
@@ -1833,6 +1873,9 @@ def delete_chat_session(task_id, session_id):
     if cursor.rowcount == 0:
         return jsonify({'error': '会话不存在'}), 404
     return jsonify({'success': True})
+
+
+@bp.route('/api/tasks/<int:task_id>/detailed-report-pdf', methods=['POST'])
 def detailed_report_pdf(task_id):
     """生成详细报告 PDF（Playwright 渲染）"""
     from app.services.eval_service import generate_detailed_report

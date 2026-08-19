@@ -450,10 +450,55 @@ def list_dataset_images(dataset_id):
     if not cursor.fetchone():
         return jsonify({'error': '数据集不存在'}), 404
 
-    cursor.execute(
-        'SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images WHERE dataset_id = ? ORDER BY uploaded_at ASC',
-        (dataset_id,)
-    )
+    # 分页与筛选参数（每页 10 行 × 每行 8 张 = 80 张）
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 80, type=int)
+    if page < 1:
+        page = 1
+    if per_page < 1:
+        per_page = 80
+    if per_page > 200:
+        per_page = 200
+
+    event_type = request.args.get('event_type', '').strip()
+    video_id = request.args.get('video_id', '').strip()
+    label_status = request.args.get('label_status', 'all').strip()
+
+    conditions = ['dataset_id = ?']
+    params = [dataset_id]
+
+    if event_type:
+        conditions.append('(alert_type = ? OR event_label = ?)')
+        params.extend([event_type, event_type])
+
+    if video_id:
+        conditions.append('id IN (SELECT alert_image_id FROM ocr_results WHERE video_id LIKE ?)')
+        params.append(f'%{video_id}%')
+
+    if label_status == 'unlabeled':
+        conditions.append('event_label IS NULL AND alert_type IS NULL')
+    elif label_status == 'labeled':
+        conditions.append('(event_label IS NOT NULL OR alert_type IS NOT NULL)')
+
+    where_clause = ' AND '.join(conditions)
+
+    # 计算筛选后总数
+    cursor.execute(f'SELECT COUNT(*) FROM alert_images WHERE {where_clause}', params)
+    total = cursor.fetchone()[0]
+
+    # 分页查询（page 超出范围时回到最后一页）
+    max_page = max(1, (total + per_page - 1) // per_page)
+    if page > max_page:
+        page = max_page
+    offset = (page - 1) * per_page
+    cursor.execute(f'''
+        SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label
+        FROM alert_images
+        WHERE {where_clause}
+        ORDER BY uploaded_at ASC
+        LIMIT ? OFFSET ?
+    ''', params + [per_page, offset])
+
     images = []
     for row in cursor.fetchall():
         img = dict(row)
@@ -466,7 +511,13 @@ def list_dataset_images(dataset_id):
         ocr = cursor.fetchone()
         img['ocr'] = dict(ocr) if ocr else None
         images.append(img)
-    return jsonify(images)
+
+    return jsonify({
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'images': images,
+    })
 
 
 # ── 告警评测集管理 ───────────────────────────────────────────────────────────

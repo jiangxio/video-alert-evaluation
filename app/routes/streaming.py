@@ -36,9 +36,22 @@ MEDIAMTX_PORT = 8554
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """检查指定 PID 的进程是否仍在运行"""
+    """检查指定 PID 的进程是否仍在运行（跨平台）"""
     if not pid:
         return False
+    if os.name == 'nt':
+        # Windows 下 os.kill(pid, 0) 会抛 ValueError，改用 OpenProcess 探测
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False
+            kernel32.CloseHandle(handle)
+            return True
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
@@ -889,18 +902,6 @@ def list_tasks():
     rows = [dict(r) for r in cur.fetchall()]
     local_ips = _get_local_ips()
     now_ts = time.time()
-
-    # 校验 running 状态的任务：进程若已消失则自动修正状态
-    for r in rows:
-        if r.get("status") == "running" and r.get("pid"):
-            if not _is_pid_alive(r["pid"]):
-                cur.execute(
-                    "UPDATE stream_tasks SET status = 'done', ended_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (r["id"],),
-                )
-                db.commit()
-                r["status"] = "done"
-                r["ended_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
     for r in rows:
         if r.get("suggested_algorithms"):

@@ -280,6 +280,12 @@ def init_db():
     except Exception:
         pass  # 列已存在
 
+    # 为 eval_tasks 追加 error_message 列（兼容已有数据，用于记录评测执行异常原因）
+    try:
+        cursor.execute('ALTER TABLE eval_tasks ADD COLUMN error_message TEXT')
+    except Exception:
+        pass  # 列已存在
+
     # 合并事件表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS eval_merged_events (

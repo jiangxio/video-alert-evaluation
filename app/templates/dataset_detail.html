@@ -48,6 +48,19 @@
   }
   .img-label.no-label { background:#aaa; }
   .img-cell.selected { border-color:#3498db; box-shadow:0 0 0 2px #3498db; }
+  .img-cell .rt-checkbox {
+    position:absolute; top:4px; left:4px; z-index:2;
+    width:16px; height:16px; cursor:pointer;
+  }
+
+  /* 分页 */
+  .pagination-bar {
+    display:flex; align-items:center; justify-content:center; gap:0.6rem;
+    margin-top:1rem; padding-top:1rem; border-top:1px solid #eee;
+    font-size:0.88rem; color:#555;
+  }
+  .pagination-bar button { padding:0.3rem 0.7rem; }
+  .pagination-bar button:disabled { opacity:0.5; cursor:not-allowed; }
 
   /* 实时模式标识 */
   .mode-badge { display:inline-block; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.75rem; font-weight:600; margin-left:0.5rem; }
@@ -156,6 +169,15 @@
   </div>
   {% endif %}
 
+  {% if dataset.mode == 'realtime' %}
+  <div class="toolbar" style="background:#fff3cd;padding:0.7rem;border-radius:6px;border:1px solid #ffc107;">
+    <span style="color:#856404;font-weight:600;">批量标注：</span>
+    <button class="btn btn-sm btn-secondary" id="btn-select-mode" onclick="toggleSelectMode()">进入选择模式</button>
+    <button class="btn btn-sm" id="btn-select-all" onclick="toggleSelectAllCurrentPage()" style="display:none;">全选当前页</button>
+    <span id="select-mode-hint" style="font-size:0.85rem;color:#856404;display:none;"></span>
+  </div>
+  {% endif %}
+
   <div class="toolbar" style="background:#f8f9fa;padding:0.7rem;border-radius:6px;">
     <span style="color:#555;">筛选：</span>
     {% if dataset.mode != 'realtime' %}
@@ -175,6 +197,13 @@
 
   <div class="img-grid" id="img-grid">
     <div id="empty-grid">暂无图片，请上传</div>
+  </div>
+
+  <div class="pagination-bar" id="pagination-bar" style="display:none;">
+    <button id="btn-prev-page" onclick="changePage(-1)">上一页</button>
+    <span id="page-info">第 1 / 1 页</span>
+    <button id="btn-next-page" onclick="changePage(1)">下一页</button>
+    <span id="total-info" style="margin-left:0.5rem;color:#888;"></span>
   </div>
 
   {% if dataset.mode == 'realtime' %}
@@ -257,7 +286,10 @@ const DATASET_MODE = '{{ dataset.mode }}';
 const IS_REALTIME = DATASET_MODE === 'realtime';
 let EVENT_TYPES = [];  // 从配置文件动态加载
 
-let allImages = [];
+let currentImages = [];   // 当前页数据
+let currentPage = 1;
+let currentPerPage = 80;   // 每页 10 行 × 每行 8 张
+let currentTotal = 0;
 let currentImageId = null;
 let ocrPollTimer = null;
 
@@ -292,25 +324,32 @@ async function switchMode() {
 function toggleSelectMode() {
   selectMode = !selectMode;
   const btn = document.getElementById('btn-select-mode');
+  const selectAllBtn = document.getElementById('btn-select-all');
   const bar = document.getElementById('batch-annotate-bar');
+  const hint = document.getElementById('select-mode-hint');
 
   if (selectMode) {
-    btn.textContent = '退出选择';
+    btn.textContent = '退出选择模式';
     btn.className = 'btn btn-sm btn-warning';
-    bar.style.display = 'flex';
+    if (selectAllBtn) selectAllBtn.style.display = 'inline-block';
+    if (bar) bar.style.display = 'flex';
+    if (hint) { hint.style.display = 'inline'; hint.textContent = '点击图片或勾选复选框选择'; }
+    renderGrid(currentImages, currentTotal, currentPage, currentPerPage);
   } else {
     btn.textContent = '进入选择模式';
     btn.className = 'btn btn-sm btn-secondary';
-    bar.style.display = 'none';
+    if (selectAllBtn) selectAllBtn.style.display = 'none';
+    if (bar) bar.style.display = 'none';
+    if (hint) hint.style.display = 'none';
     clearSelection();
   }
-  renderGrid(getFilteredImages());
 }
 
 function clearSelection() {
   selectedImages.clear();
   updateSelectedCount();
-  document.querySelectorAll('.img-cell.selected').forEach(el => el.classList.remove('selected'));
+  updateSelectAllButtonState();
+  renderGrid(currentImages, currentTotal, currentPage, currentPerPage);
 }
 
 function updateSelectedCount() {
@@ -327,6 +366,29 @@ function toggleImageSelection(imageId) {
     selectedImages.add(imageId);
   }
   updateSelectedCount();
+}
+
+function toggleSelectAllCurrentPage() {
+  if (!currentImages.length) return;
+  const allSelected = currentImages.every(img => selectedImages.has(img.id));
+  if (allSelected) {
+    for (const img of currentImages) selectedImages.delete(img.id);
+  } else {
+    for (const img of currentImages) selectedImages.add(img.id);
+  }
+  updateSelectedCount();
+  renderGrid(currentImages, currentTotal, currentPage, currentPerPage);
+}
+
+function updateSelectAllButtonState() {
+  const btn = document.getElementById('btn-select-all');
+  if (!btn) return;
+  if (!currentImages.length) {
+    btn.textContent = '全选当前页';
+    return;
+  }
+  const allSelected = currentImages.every(img => selectedImages.has(img.id));
+  btn.textContent = allSelected ? '取消全选' : '全选当前页';
 }
 
 async function batchSetLabel() {
@@ -357,92 +419,125 @@ async function batchSetLabel() {
     await Promise.all(promises);
     alert(`成功为 ${selectedImages.size} 张图片设置了事件类型`);
     clearSelection();
-    await loadImages();
+    loadImages(currentPage);
   } catch (e) {
     alert('批量设置失败: ' + e.message);
   }
 }
 
 // ── 加载图片 ──────────────────────────────────────────────────────────────────
-async function loadImages() {
-  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/images`);
-  allImages = await res.json();
-  filterImages();
-}
+async function loadImages(page = 1) {
+  currentPage = page;
+  const params = new URLSearchParams();
+  params.set('page', page);
+  params.set('per_page', currentPerPage);
 
-function getFilteredImages() {
   const eventTypeFilter = document.getElementById('eventTypeFilter').value;
-  let labelFilterValue = 'all';
-  let videoIdFilterValue = '';
+  if (eventTypeFilter) params.set('event_type', eventTypeFilter);
 
   {% if dataset.mode != 'realtime' %}
-  labelFilterValue = document.getElementById('labelFilter').value;
-  videoIdFilterValue = document.getElementById('videoIdFilter').value.trim();
+  const labelFilterValue = document.getElementById('labelFilter').value;
+  const videoIdFilterValue = document.getElementById('videoIdFilter').value.trim();
+  if (labelFilterValue && labelFilterValue !== 'all') params.set('label_status', labelFilterValue);
+  if (videoIdFilterValue) params.set('video_id', videoIdFilterValue);
   {% endif %}
 
-  return allImages.filter(img => {
-    const labeled = !!(img.event_label || img.alert_type);
-    if (labelFilterValue === 'unlabeled') return !labeled;
-    if (labelFilterValue === 'labeled') return labeled;
-    return true;
-  }).filter(img => {
-    if (videoIdFilterValue) {
-      const vid = img.ocr?.video_id || '';
-      if (!vid.includes(videoIdFilterValue)) return false;
-    }
-    if (eventTypeFilter) {
-      const et = img.alert_type || img.event_label || '';
-      if (et !== eventTypeFilter) return false;
-    }
-    return true;
-  });
+  const res = await fetch(`/alerts/api/datasets/${DATASET_ID}/images?${params.toString()}`);
+  const data = await res.json();
+  currentImages = data.images || [];
+  currentTotal = data.total || 0;
+  renderGrid(currentImages, currentTotal, data.page || page, data.per_page || currentPerPage);
 }
 
 function filterImages() {
-  const filtered = getFilteredImages();
-  renderGrid(filtered);
+  loadImages(1);
 }
 
-function renderGrid(images) {
+function changePage(delta) {
+  const newPage = currentPage + delta;
+  if (newPage < 1) return;
+  const maxPage = Math.ceil(currentTotal / currentPerPage) || 1;
+  if (newPage > maxPage) return;
+  loadImages(newPage);
+}
+
+function renderGrid(images, total, page, perPage) {
   const grid = document.getElementById('img-grid');
   const empty = document.getElementById('empty-grid');
-  document.getElementById('img-count-badge').textContent = `共 ${images.length} 张`;
+  const paginationBar = document.getElementById('pagination-bar');
+  const totalPages = Math.ceil(total / perPage) || 1;
+
+  document.getElementById('img-count-badge').textContent = `共 ${total} 张`;
+  {% if dataset.mode != 'realtime' %}
+  const ocrOk = images.filter(i => i.ocr && i.ocr.success).length;
+  document.getElementById('ocr-summary').textContent =
+    total ? `当前页 OCR 成功 ${ocrOk} / ${images.length} 张` : '';
+  {% endif %}
 
   // 移除旧的图片格子（保留 empty-grid）
   grid.querySelectorAll('.img-cell').forEach(el => el.remove());
 
-  if (!images.length) { empty.style.display = 'block'; return; }
+  if (!images.length) {
+    empty.style.display = 'block';
+    paginationBar.style.display = 'none';
+    return;
+  }
   empty.style.display = 'none';
-
-  {% if dataset.mode != 'realtime' %}
-  const ocrOk = images.filter(i => i.ocr && i.ocr.success).length;
-  document.getElementById('ocr-summary').textContent =
-    ocrOk ? `已完成 OCR ${ocrOk} / ${images.length} 张` : '';
-  {% endif %}
 
   for (const img of images) {
     const cell = document.createElement('div');
     const isSelected = selectedImages.has(img.id);
     cell.className = 'img-cell' + (isSelected ? ' selected' : '');
-    cell.dataset.id = img.id;
-
-    if (IS_REALTIME && selectMode) {
-      cell.onclick = (e) => {
-        e.stopPropagation();
-        toggleImageSelection(img.id);
-        cell.classList.toggle('selected');
-      };
-    } else {
-      cell.onclick = () => openDetail(img.id);
-    }
 
     const labelText = img.event_label || img.alert_type || '未标注';
     const noLabelCls = labelText === '未标注' ? ' no-label' : '';
-    cell.innerHTML = `
-      <img src="/alerts/api/images/${img.id}/file" loading="lazy" alt="${escHtml(img.filename)}">
+
+    let html = '';
+    {% if dataset.mode == 'realtime' %}
+    const checked = selectedImages.has(img.id) ? 'checked' : '';
+    const checkboxStyle = selectMode ? '' : 'display:none;';
+    html += `<input type="checkbox" class="rt-checkbox" ${checked}
+             onclick="event.stopPropagation(); toggleImageSelection(${img.id}); updateSelectAllButtonState();"
+             style="${checkboxStyle}">`;
+    {% endif %}
+    html += `
+      <img src="/alerts/api/images/${img.id}/file?w=200" loading="lazy" alt="${escHtml(img.filename)}">
       <div class="img-label${noLabelCls}">${escHtml(labelText)}</div>
     `;
+    cell.innerHTML = html;
+
+    cell.onclick = () => {
+      {% if dataset.mode == 'realtime' %}
+      if (selectMode) {
+        toggleImageSelection(img.id);
+        updateSelectAllButtonState();
+      } else {
+        openDetail(img.id);
+      }
+      {% else %}
+      openDetail(img.id);
+      {% endif %}
+    };
+
     grid.appendChild(cell);
+  }
+
+  updateSelectAllButtonState();
+
+  document.getElementById('page-info').textContent = `第 ${page} / ${totalPages} 页`;
+  document.getElementById('total-info').textContent = `(共 ${total} 条)`;
+  document.getElementById('btn-prev-page').disabled = page <= 1;
+  document.getElementById('btn-next-page').disabled = page >= totalPages;
+  paginationBar.style.display = totalPages > 1 ? 'flex' : 'none';
+}
+
+async function deleteImageById(imageId) {
+  if (!confirm('确认删除该图片？')) return;
+  const res = await fetch(`/alerts/api/images/${imageId}`, {method:'DELETE'});
+  if (res.ok) {
+    loadImages(currentPage);
+  } else {
+    alert('删除失败');
   }
 }
 
@@ -456,9 +551,11 @@ async function openDetail(imageId) {
   document.getElementById('detail-img').src = `/alerts/api/images/${imageId}/file?t=${Date.now()}`;
   document.getElementById('detail-label').value = img.event_label || '';
 
-  // 填充OCR字段
-  document.getElementById('detail-video-id').textContent = img.ocr?.video_id || '-';
-  document.getElementById('detail-video-id-input').value = img.ocr?.video_id || '';
+  // 填充OCR字段（仅在非实时模式下存在对应 DOM）
+  const videoIdEl = document.getElementById('detail-video-id');
+  const videoIdInput = document.getElementById('detail-video-id-input');
+  if (videoIdEl) videoIdEl.textContent = img.ocr?.video_id || '-';
+  if (videoIdInput) videoIdInput.value = img.ocr?.video_id || '';
 
   let tsText = '-';
   if (img.ocr?.timestamp) {
@@ -468,10 +565,13 @@ async function openDetail(imageId) {
     if (img.ocr?.error) tsText += img.ocr.error;
     if (img.ocr?.raw_ocr_text) tsText += ` | 识别到: "${img.ocr.raw_ocr_text}"`;
   }
-  document.getElementById('detail-timestamp').textContent = tsText;
-  document.getElementById('detail-timestamp-input').value = img.ocr?.timestamp || '';
+  const timestampEl = document.getElementById('detail-timestamp');
+  const timestampInput = document.getElementById('detail-timestamp-input');
+  if (timestampEl) timestampEl.textContent = tsText;
+  if (timestampInput) timestampInput.value = img.ocr?.timestamp || '';
 
-  document.getElementById('detail-raw-ocr').textContent = img.ocr?.raw_ocr_text || '-';
+  const rawOcrEl = document.getElementById('detail-raw-ocr');
+  if (rawOcrEl) rawOcrEl.textContent = img.ocr?.raw_ocr_text || '-';
 
   document.getElementById('detail-size').textContent =
     img.image_width ? `${img.image_width} × ${img.image_height} px` : '-';
@@ -495,15 +595,8 @@ async function saveLabel() {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({event_label: label})
   });
-  // 刷新网格中该格子的标签
-  const img = allImages.find(i => i.id === currentImageId);
-  if (img) { img.event_label = label; }
-  const cell = document.querySelector(`.img-cell[data-id="${currentImageId}"]`);
-  if (cell) {
-    const labelEl = cell.querySelector('.img-label');
-    labelEl.textContent = label;
-    labelEl.classList.remove('no-label');
-  }
+  // 刷新当前页
+  loadImages(currentPage);
 }
 
 async function deleteCurrentImage() {
@@ -511,7 +604,12 @@ async function deleteCurrentImage() {
   const res = await fetch(`/alerts/api/images/${currentImageId}`, {method:'DELETE'});
   if (res.ok) {
     closeDetailModal();
-    loadImages();
+    // 若当前页仅剩一条且不是第一页，删除后回到上一页
+    if (currentImages.length === 1 && currentPage > 1) {
+      loadImages(currentPage - 1);
+    } else {
+      loadImages(currentPage);
+    }
   } else {
     alert('删除失败');
   }
@@ -550,7 +648,7 @@ async function batchDeleteImages() {
 
     if (res.ok && data.success) {
       msgEl.innerHTML = `<span style="color:#27ae60;">✔ 已删除 ${data.deleted_count} 张图片</span>`;
-      loadImages();
+      loadImages(1);
       loadImageLogs();
     } else {
       msgEl.innerHTML = `<span style="color:#e74c3c;">✘ ${data.error || '删除失败'}</span>`;
@@ -607,8 +705,10 @@ async function runSingleOcr() {
   btn.textContent = '执行 OCR';
 
   if (data.ocr) {
-    document.getElementById('detail-video-id').textContent = data.ocr.video_id || '-';
-    document.getElementById('detail-video-id-input').value = data.ocr.video_id || '';
+    const videoIdEl = document.getElementById('detail-video-id');
+    const videoIdInput = document.getElementById('detail-video-id-input');
+    if (videoIdEl) videoIdEl.textContent = data.ocr.video_id || '-';
+    if (videoIdInput) videoIdInput.value = data.ocr.video_id || '';
 
     let tsText = '-';
     if (data.ocr.timestamp) {
@@ -618,14 +718,20 @@ async function runSingleOcr() {
       if (data.ocr.error) tsText += data.ocr.error;
       if (data.ocr.raw_ocr_text) tsText += ` | 识别到: "${data.ocr.raw_ocr_text}"`;
     }
-    document.getElementById('detail-timestamp').textContent = tsText;
-    document.getElementById('detail-timestamp-input').value = data.ocr.timestamp || '';
-    document.getElementById('detail-raw-ocr').textContent = data.ocr.raw_ocr_text || '-';
+    const timestampEl = document.getElementById('detail-timestamp');
+    const timestampInput = document.getElementById('detail-timestamp-input');
+    if (timestampEl) timestampEl.textContent = tsText;
+    if (timestampInput) timestampInput.value = data.ocr.timestamp || '';
+
+    const rawOcrEl = document.getElementById('detail-raw-ocr');
+    if (rawOcrEl) rawOcrEl.textContent = data.ocr.raw_ocr_text || '-';
 
     // 同步本地数据
-    const img = allImages.find(i => i.id === currentImageId);
-    if (img) img.ocr = data.ocr;
-    filterImages();
+    const img = currentImages.find(i => i.id === currentImageId);
+    if (img) {
+      img.ocr = data.ocr;
+    }
+    loadImages(currentPage);
   }
 }
 
@@ -688,7 +794,7 @@ async function saveManualOcr() {
       document.getElementById('detail-timestamp').textContent = tsText;
 
       // 同步本地数据
-      const img = allImages.find(i => i.id === currentImageId);
+      const img = currentImages.find(i => i.id === currentImageId);
       if (img) {
         img.ocr = {
           video_id: videoId || null,
@@ -697,7 +803,7 @@ async function saveManualOcr() {
           success: success
         };
       }
-      filterImages();
+      loadImages(currentPage);
       alert('保存成功！');
     } else {
       alert('保存失败: ' + (data.error || '未知错误'));
@@ -745,7 +851,7 @@ async function openOcrModal() {
     // 追加新结果到日志
     const newResults = status.results.slice(seenCount);
     for (const r of newResults) {
-      const img = allImages.find(i => i.id === r.image_id);
+      const img = currentImages.find(i => i.id === r.image_id);
       const name = img ? img.filename : `#${r.image_id}`;
       if (r.skipped) {
         appendLog(`⏭ ${name}  跳过`, 'fail');
@@ -776,7 +882,7 @@ async function openOcrModal() {
       if (status.cancelled) statusText += ' (已停止)';
       document.getElementById('ocr-progress-text').textContent = statusText;
       document.getElementById('ocr-close-btn').textContent = '关闭';
-      renderGrid(allImages);
+      loadImages(currentPage);
     }
   }, 1500);
 }
@@ -786,7 +892,7 @@ function closeOcrModal() {
   // 通知后端中断（不等待完成）
   fetch(`/alerts/api/datasets/${DATASET_ID}/ocr/cancel`, {method: 'POST'}).catch(() => {});
   document.getElementById('ocr-modal').classList.remove('open');
-  filterImages();
+  loadImages(currentPage);
 }
 
 function appendLog(text, type) {
@@ -828,7 +934,7 @@ async function uploadFiles(files) {
   msg.innerHTML = html;
   setTimeout(() => { msg.innerHTML = ''; }, 5000);
   fileInput.value = '';
-  loadImages();
+  loadImages(1);
   loadImageLogs();
 }
 

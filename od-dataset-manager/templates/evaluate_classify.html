@@ -2,13 +2,13 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8" />
-    <title>{{ project_name }} - 检测结果评估 - 图像标注与评测平台</title>
+    <title>{{ project_name }} - 分类结果评估</title>
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
     <header>
         <a href="/version/{{ version_id }}" class="header-back">← 返回标注</a>
-        <h1>{{ project_name }} — 检测结果评估</h1>
+        <h1>{{ project_name }} — 分类结果评估</h1>
     </header>
     <div class="container">
         <!-- Left: control panel -->
@@ -16,38 +16,25 @@
             <h2>评估配置</h2>
 
             <div class="eval-ctrl-group">
-                <div class="eval-hint" style="background:#eaf4fb; border:1px solid #3098d8; border-radius:4px; padding:6px 8px; color:#3098d8;">
-                    GT 数据：使用项目标注数据
+                <div class="eval-hint" style="background:#e8f4f4; border:1px solid #2b7a78; border-radius:4px; padding:6px 8px; color:#2b7a78;">
+                    GT 数据：使用项目标注的整图类别
                 </div>
             </div>
 
             <div class="eval-ctrl-group">
-                <label>检测结果目录 <span style="font-weight:400;color:#999;">（YOLO 格式，含置信度）</span></label>
+                <label>预测结果 CSV <span style="font-weight:400;color:#999;">（image_name, class, conf）</span></label>
                 <div class="export-row">
-                    <input type="text" id="eval-pred-dir" class="export-path" readonly placeholder="选择预测结果目录…" />
+                    <input type="text" id="eval-pred-dir" class="export-path" readonly placeholder="选择预测 CSV 文件…" />
                     <button class="btn-sm" id="btn-browse-pred">浏览</button>
                 </div>
-                <div class="eval-hint">格式：class_id cx cy w h confidence</div>
-            </div>
-
-            <div class="eval-ctrl-group">
-                <label>选择类别</label>
-                <select id="eval-class-select"></select>
+                <div class="eval-hint">格式：image_name, predicted_class, confidence</div>
             </div>
 
             <div class="eval-ctrl-group">
                 <label>置信度阈值</label>
                 <div class="threshold-row">
-                    <input type="number" id="conf-val" min="0" max="1" step="0.05" value="0.25" />
-                    <input type="range" id="conf-slider" min="0" max="1" step="0.05" value="0.25" />
-                </div>
-            </div>
-
-            <div class="eval-ctrl-group">
-                <label>IOU 阈值</label>
-                <div class="threshold-row">
-                    <input type="number" id="iou-val" min="0" max="1" step="0.05" value="0.5" />
-                    <input type="range" id="iou-slider" min="0" max="1" step="0.05" value="0.5" />
+                    <input type="number" id="conf-val" min="0" max="1" step="0.05" value="0" />
+                    <input type="range" id="conf-slider" min="0" max="1" step="0.05" value="0" />
                 </div>
             </div>
 
@@ -73,36 +60,31 @@
                     <button id="btn-delete-eval-result" class="btn-danger" style="padding:3px 10px;font-size:12px;">删除</button>
                 </div>
             </div>
-
-            <!-- Legend -->
-            <div class="eval-legend" id="eval-legend" style="display:none;">
-                <div class="legend-title">图例</div>
-                <div class="legend-row"><span class="legend-box" style="border-color:#00c853;border-style:solid;"></span> GT 命中（TP）</div>
-                <div class="legend-row"><span class="legend-box legend-dashed" style="border-color:#00b7ff;"></span> GT 漏检（FN）</div>
-                <div class="legend-row"><span class="legend-box" style="border-color:#ff6d00;border-style:solid;"></span> 预测命中（TP）</div>
-                <div class="legend-row"><span class="legend-box" style="border-color:#e04838;border-style:solid;"></span> 误检（FP）</div>
-            </div>
         </aside>
 
         <!-- Right: results -->
         <main style="flex:1; min-width:0; display:flex; flex-direction:column; gap:12px;">
 
-            <!-- Metrics table -->
+            <!-- Accuracy + per-class + confusion -->
             <div id="eval-metrics-wrap" style="display:none; background:white; border:1px solid #ddd; border-radius:8px; padding:12px;">
-                <h3 style="margin:0 0 10px; font-size:15px; color:#3098d8;">评估指标</h3>
-                <table class="eval-metrics-table">
+                <h3 style="margin:0 0 10px; font-size:15px; color:#2b7a78;">评估指标</h3>
+                <div id="eval-accuracy" class="accuracy-big"></div>
+                <table class="eval-metrics-table" style="margin-top:10px;">
                     <thead>
                         <tr>
                             <th>类别</th>
                             <th>精确率</th>
                             <th>召回率</th>
+                            <th>F1</th>
                             <th>TP</th>
-                            <th>FP（误检）</th>
-                            <th>FN（漏检）</th>
+                            <th>FP（误判）</th>
+                            <th>FN（漏判）</th>
                         </tr>
                     </thead>
                     <tbody id="eval-metrics-body"></tbody>
                 </table>
+                <h4 style="margin:14px 0 6px; font-size:14px; color:#2b7a78;">混淆矩阵（行=真值，列=预测）</h4>
+                <div id="eval-confusion-wrap" class="confusion-wrap"></div>
             </div>
 
             <!-- Filter tabs + image grid -->
@@ -110,10 +92,8 @@
                 <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
                     <div class="filter-tabs">
                         <button class="filter-tab active" data-filter="all">全部 <span id="cnt-all">0</span></button>
-                        <button class="filter-tab" data-filter="ok">检测OK <span id="cnt-ok">0</span></button>
-                        <button class="filter-tab" data-filter="fp">误检 <span id="cnt-fp">0</span></button>
-                        <button class="filter-tab" data-filter="fn">漏检 <span id="cnt-fn">0</span></button>
-                        <button class="filter-tab" data-filter="fp_fn">误检+漏检 <span id="cnt-fp-fn">0</span></button>
+                        <button class="filter-tab" data-filter="correct">正确 <span id="cnt-correct">0</span></button>
+                        <button class="filter-tab" data-filter="wrong">错误 <span id="cnt-wrong">0</span></button>
                     </div>
                 </div>
                 <div id="eval-image-grid" class="eval-image-grid"></div>
@@ -134,25 +114,24 @@
                 </div>
                 <div id="eval-image-holder" style="position:relative; display:inline-block; max-width:100%;">
                     <img id="eval-current-image" src="" alt="" style="max-width:100%; max-height:70vh; display:block; object-fit:contain;" crossorigin="anonymous" />
-                    <svg id="eval-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;"></svg>
                 </div>
-                <div id="eval-box-legend" style="margin-top:8px; font-size:12px; color:#666;"></div>
+                <div id="eval-box-legend" style="margin-top:8px; font-size:13px; color:#666;"></div>
             </div>
 
         </main>
     </div>
 
-    <!-- Dir Browser Modal -->
+    <!-- Dir Browser Modal (shows files for CSV selection) -->
     <div id="dir-browser-modal" class="modal-overlay" style="display:none;">
         <div id="dir-browser-box">
             <div id="dir-browser-header">
-                <strong>选择目录</strong>
+                <strong>选择预测 CSV</strong>
                 <button id="dir-browser-close">×</button>
             </div>
             <div id="dir-browser-path"></div>
             <ul id="dir-browser-list"></ul>
             <div id="dir-browser-footer">
-                <button id="dir-browser-select">选择此目录</button>
+                <button id="dir-browser-select">选择</button>
                 <button id="dir-browser-cancel">取消</button>
             </div>
         </div>
@@ -164,6 +143,6 @@
       const PROJECT_ID = {{ project_id | tojson | safe }};
       const VERSION_ID = {{ version_id | tojson | safe }};
     </script>
-    <script src="/static/evaluate.js"></script>
+    <script src="/static/evaluate_classify.js"></script>
 </body>
 </html>

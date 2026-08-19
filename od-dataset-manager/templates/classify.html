@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>{{ project_name }} - 图像分类标注</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <header>
+        <a href="/project/{{ project_id }}" class="header-back">← 返回项目</a>
+        <h1>{{ project_name }}</h1>
+        <a href="/version/{{ version_id }}/evaluate-classify" class="header-eval-btn">分类结果评估</a>
+    </header>
+    <div class="container">
+        <aside id="side-panel">
+            <h2>图片列表</h2>
+            <div>
+                <input type="file" id="upload-images" multiple accept="image/*" style="display:none" />
+                <button id="btn-select-upload">选择上传图像</button>
+                <button id="btn-upload">上传</button>
+            </div>
+            <button id="btn-refresh">刷新列表</button>
+            <button id="btn-unlabeled">未标注</button>
+            <button id="btn-annotate-all">开始标注</button>
+            <ul id="image-list"></ul>
+            <div class="info" id="stats"></div>
+        </aside>
+        <main>
+            <div id="grid-view">
+                <div id="grid-controls">
+                    <button id="btn-prev-page">上一页</button>
+                    <span id="page-info">第 1 页 / 共 1 页</span>
+                    <button id="btn-next-page">下一页</button>
+                    <button id="btn-annotate">标注选中图像</button>
+                    <button id="btn-delete-selected">删除选中图像</button>
+                </div>
+                <div id="image-grid"></div>
+            </div>
+            <section id="viewer" style="display:none;">
+                <div id="image-holder">
+                    <img id="current-image" src="" alt="请选择图片" crossorigin="anonymous" />
+                </div>
+                <div id="controls">
+                    <button id="btn-back-to-grid">返回网格</button>
+                    <button id="btn-prev-image">上一张</button>
+                    <button id="btn-next-image">下一张</button>
+                    <label for="class-select">整图类别：</label>
+                    <select id="class-select"></select>
+                    <button id="btn-save" class="btn-primary">保存标签</button>
+                    <button id="btn-clear-label">清除标签</button>
+                    <span id="current-status"></span>
+                </div>
+            </section>
+            <div id="message"></div>
+        </main>
+    </div>
+
+    <!-- Dir Browser Modal (used by upload path selection - not needed here but kept for parity) -->
+
+    <script>
+      const CLASSES = {{ classes | tojson | safe }};
+      const BASE_DIR = {{ base_dir | tojson | safe }};
+      const PROJECT_ID = {{ project_id | tojson | safe }};
+      const VERSION_ID = {{ version_id | tojson | safe }};
+    </script>
+    <script src="/static/classify.js"></script>
+</body>
+</html>

@@ -1,4 +1,3 @@
-const imageListEl = document.getElementById('image-list');
 const statsEl = document.getElementById('stats');
 const gridView = document.getElementById('grid-view');
 const imageGrid = document.getElementById('image-grid');
@@ -10,6 +9,8 @@ const currentStatus = document.getElementById('current-status');
 const messageEl = document.getElementById('message');
 
 let allImages = [];
+let currentFilter = 'all';
+let currentClassFilter = 'all';
 let currentPage = 1;
 let imagesPerPage = 40;
 let selectedImageName = null;
@@ -31,11 +32,13 @@ function classColor(label) {
     return idx >= 0 ? CLASS_COLORS[idx % CLASS_COLORS.length] : '#00b7ff';
 }
 
-// Append project_id query param to any API path
+// Append version_id query param to any API path
 function qp(path) {
-    if (!PROJECT_ID) return path;
+    const id = VERSION_ID || PROJECT_ID;
+    if (!id) return path;
+    const key = VERSION_ID ? 'version_id' : 'project_id';
     const sep = path.includes('?') ? '&' : '?';
-    return path + sep + 'project_id=' + encodeURIComponent(PROJECT_ID);
+    return path + sep + key + '=' + encodeURIComponent(id);
 }
 
 function resetOverlay() {
@@ -78,7 +81,7 @@ function setStatus(text) {
 
 function showMessage(text, isError = false) {
     messageEl.textContent = text;
-    messageEl.style.color = isError ? '#d43f3a' : '#2b7a78';
+    messageEl.style.color = isError ? '#e04838' : '#3098d8';
     setTimeout(() => { messageEl.textContent = ''; }, 3000);
 }
 
@@ -123,44 +126,33 @@ function reloadImageList() {
     fetch(qp('/api/images')).then(r => r.json()).then(items => {
         allImages = items;
         renderGrid();
-        renderList();
         updateStats();
-    });
-}
-
-function renderList() {
-    imageListEl.innerHTML = '';
-    allImages.forEach(i => {
-        const li = document.createElement('li');
-        li.textContent = i.filename;
-        if (!i.has_label) li.classList.add('unlabeled');
-        li.addEventListener('click', (e) => {
-            if (e.ctrlKey || e.metaKey) {
-                if (selectedImageNames.has(i.name)) selectedImageNames.delete(i.name);
-                else selectedImageNames.add(i.name);
-            } else {
-                selectedImageNames.clear();
-                selectedImageNames.add(i.name);
-            }
-            selectedImageName = i.name;
-            renderGrid();
-            renderList();
-        });
-        if (selectedImageNames.has(i.name)) li.classList.add('selected');
-        imageListEl.appendChild(li);
     });
 }
 
 function updateStats() {
     let total = allImages.length;
     let labeled = allImages.filter(i => i.has_label).length;
-    statsEl.textContent = `总图片: ${total}，已标注: ${labeled}，未标注: ${total - labeled}`;
+    let unlabeled = total - labeled;
+    statsEl.innerHTML = `总图片: <strong>${total}</strong>，已标注: <strong>${labeled}</strong>，未标注: <strong>${unlabeled}</strong>`;
+}
+
+function getFilteredImages() {
+    let filtered = allImages;
+    if (currentFilter === 'labeled') filtered = filtered.filter(i => i.has_label);
+    else if (currentFilter === 'unlabeled') filtered = filtered.filter(i => !i.has_label);
+    if (currentClassFilter !== 'all') {
+        const idx = CLASSES.indexOf(currentClassFilter);
+        if (idx >= 0) filtered = filtered.filter(i => i.classes && i.classes.includes(idx));
+    }
+    return filtered;
 }
 
 function renderGrid() {
     imageGrid.innerHTML = '';
+    const filtered = getFilteredImages();
     const start = (currentPage - 1) * imagesPerPage;
-    const pageImages = allImages.slice(start, start + imagesPerPage);
+    const pageImages = filtered.slice(start, start + imagesPerPage);
 
     pageImages.forEach(item => {
         const div = document.createElement('div');
@@ -193,7 +185,6 @@ function renderGrid() {
             else selectedImageNames.delete(item.name);
             selectedImageName = item.name;
             renderGrid();
-            renderList();
         });
         div.appendChild(checkbox);
 
@@ -256,13 +247,12 @@ function renderGrid() {
             if (e.ctrlKey || e.metaKey) {
                 if (selectedImageNames.has(item.name)) selectedImageNames.delete(item.name);
                 else selectedImageNames.add(item.name);
+                selectedImageName = item.name;
+                renderGrid();
             } else {
-                selectedImageNames.clear();
-                selectedImageNames.add(item.name);
+                selectedImageName = item.name;
+                openLightbox(item.name);
             }
-            selectedImageName = item.name;
-            renderGrid();
-            renderList();
         });
         imageGrid.appendChild(div);
     });
@@ -271,7 +261,8 @@ function renderGrid() {
 }
 
 function updatePageInfo() {
-    const totalPages = Math.ceil(allImages.length / imagesPerPage);
+    const filtered = getFilteredImages();
+    const totalPages = Math.ceil(filtered.length / imagesPerPage);
     document.getElementById('page-info').textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页`;
     document.getElementById('btn-prev-page').disabled = currentPage === 1;
     document.getElementById('btn-next-page').disabled = currentPage === totalPages;
@@ -309,8 +300,15 @@ function loadImage(name) {
             const imgW = imageEl.naturalWidth;
             const imgH = imageEl.naturalHeight;
             overlay.setAttribute('viewBox', `0 0 ${imgW} ${imgH}`);
-            overlay.style.width = imageEl.clientWidth + 'px';
-            overlay.style.height = imageEl.clientHeight + 'px';
+            const displayW = imageEl.clientWidth;
+            const displayH = imageEl.clientHeight;
+            overlay.style.width = displayW + 'px';
+            overlay.style.height = displayH + 'px';
+            // Position overlay relative to image-holder
+            const holderRect = imageHolder.getBoundingClientRect();
+            const imgRect = imageEl.getBoundingClientRect();
+            overlay.style.left = (imgRect.left - holderRect.left) + 'px';
+            overlay.style.top = (imgRect.top - holderRect.top) + 'px';
 
             boxes = (json.shapes || []).map(shape => {
                 const p1 = shape.points[0];
@@ -321,7 +319,9 @@ function loadImage(name) {
                 const h = Math.abs(p2[1] - p1[1]);
                 return {x, y, w, h, label: shape.label};
             });
+            selectedIndex = -1;
             updateOverlay();
+            updateFilterIndicator();
         };
 
         imageEl.onerror = () => {
@@ -425,62 +425,107 @@ document.getElementById('btn-prev-page').addEventListener('click', () => {
 });
 
 document.getElementById('btn-next-page').addEventListener('click', () => {
-    if (currentPage < Math.ceil(allImages.length / imagesPerPage)) { currentPage++; renderGrid(); }
+    const filtered = getFilteredImages();
+    if (currentPage < Math.ceil(filtered.length / imagesPerPage)) { currentPage++; renderGrid(); }
 });
 
 document.getElementById('btn-annotate').addEventListener('click', () => {
     if (!selectedImageName) { showMessage('请先选择图片', true); return; }
     gridView.style.display = 'none';
     viewer.style.display = 'block';
+    // Hide toolbar when entering annotation mode
+    document.querySelector('.toolbar').style.display = 'none';
     loadImage(selectedImageName);
 });
 
 document.getElementById('btn-back-to-grid').addEventListener('click', () => {
     viewer.style.display = 'none';
     gridView.style.display = 'block';
+    // Show toolbar when returning to grid
+    document.querySelector('.toolbar').style.display = 'flex';
     renderGrid();
 });
 
 document.getElementById('btn-prev-image').addEventListener('click', () => {
-    if (currentImageIndex > 0) {
+    const filtered = getFilteredImages();
+    const idx = filtered.findIndex(i => i.name === selectedImageName);
+    if (idx > 0) {
         autoSave(() => {
-            selectedImageName = allImages[currentImageIndex - 1].name;
+            selectedImageName = filtered[idx - 1].name;
             loadImage(selectedImageName);
         });
+    } else {
+        showMessage('已是第一张', true);
     }
 });
 
 document.getElementById('btn-next-image').addEventListener('click', () => {
-    if (currentImageIndex < allImages.length - 1) {
+    const filtered = getFilteredImages();
+    const idx = filtered.findIndex(i => i.name === selectedImageName);
+    if (idx >= 0 && idx < filtered.length - 1) {
         autoSave(() => {
-            selectedImageName = allImages[currentImageIndex + 1].name;
+            selectedImageName = filtered[idx + 1].name;
             loadImage(selectedImageName);
         });
+    } else {
+        showMessage('已是最后一张', true);
     }
 });
 
-document.getElementById('btn-unlabeled').addEventListener('click', () => {
-    fetch(qp('/api/images')).then(r => r.json()).then(items => {
-        allImages = items.filter(i => !i.has_label);
+// 过滤按钮事件
+function updateFilterIndicator() {
+    const indicator = document.getElementById('filter-indicator');
+    if (!indicator) return;
+    const parts = [];
+    if (currentFilter !== 'all') {
+        const label = currentFilter === 'labeled' ? '已标注' : '未标注';
+        parts.push(label);
+    }
+    if (currentClassFilter !== 'all') {
+        parts.push(`类别: ${currentClassFilter}`);
+    }
+    if (parts.length === 0) {
+        indicator.style.display = 'none';
+    } else {
+        indicator.style.display = 'inline-block';
+        const filtered = getFilteredImages();
+        indicator.textContent = `${parts.join(' | ')} (${filtered.length})`;
+    }
+}
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentFilter = btn.dataset.filter;
         currentPage = 1;
         selectedImageNames.clear();
         selectedImageName = null;
         renderGrid();
-        renderList();
-        updateStats();
+        updateFilterIndicator();
     });
 });
 
-document.getElementById('btn-annotate-all').addEventListener('click', () => {
-    if (!allImages.length) { showMessage('没有图片', true); return; }
-    const startIndex = selectedImageName
-        ? Math.max(0, allImages.findIndex(i => i.name === selectedImageName))
-        : 0;
-    selectedImageName = allImages[startIndex].name;
-    gridView.style.display = 'none';
-    viewer.style.display = 'block';
-    loadImage(selectedImageName);
-});
+// 类别过滤
+function initClassFilter() {
+    const select = document.getElementById('class-filter-select');
+    if (!select) return;
+    CLASSES.forEach(cls => {
+        const opt = document.createElement('option');
+        opt.value = cls;
+        opt.textContent = cls;
+        select.appendChild(opt);
+    });
+    select.addEventListener('change', () => {
+        currentClassFilter = select.value;
+        currentPage = 1;
+        selectedImageNames.clear();
+        selectedImageName = null;
+        renderGrid();
+        updateFilterIndicator();
+    });
+}
+
 
 document.getElementById('btn-delete-selected').addEventListener('click', () => {
     if (!selectedImageNames.size) { showMessage('请先选择要删除的图像', true); return; }
@@ -495,22 +540,86 @@ document.getElementById('btn-delete-selected').addEventListener('click', () => {
     }).catch(err => { showMessage('批量删除失败', true); console.error(err); });
 });
 
-document.getElementById('btn-refresh').addEventListener('click', reloadImageList);
-
-document.getElementById('btn-select-upload').addEventListener('click', () => {
-    document.getElementById('upload-images').click();
+document.getElementById('btn-refresh').addEventListener('click', () => {
+    reloadImageList();
+    showMessage('已刷新');
 });
 
+// 上传弹窗逻辑
+const uploadModal = document.getElementById('upload-modal');
+const uploadFileInput = document.getElementById('upload-file-input');
+const uploadFilePreview = document.getElementById('upload-file-preview');
+const uploadResult = document.getElementById('upload-result');
+
 document.getElementById('btn-upload').addEventListener('click', () => {
-    const files = document.getElementById('upload-images').files;
-    if (!files.length) { showMessage('请先选择图像文件', true); return; }
+    uploadFileInput.value = '';
+    uploadFilePreview.innerHTML = '';
+    uploadResult.style.display = 'none';
+    uploadResult.innerHTML = '';
+    uploadModal.style.display = 'flex';
+});
+
+uploadFileInput.addEventListener('change', () => {
+    const files = Array.from(uploadFileInput.files);
+    if (files.length === 0) {
+        uploadFilePreview.innerHTML = '<span style="color:#999;">未选择文件</span>';
+    } else {
+        uploadFilePreview.innerHTML = `<strong>已选择 ${files.length} 个文件：</strong><br>` +
+            files.map(f => f.name).join(', ');
+    }
+});
+
+document.getElementById('upload-confirm').addEventListener('click', () => {
+    const files = uploadFileInput.files;
+    if (!files.length) {
+        uploadResult.style.display = 'block';
+        uploadResult.innerHTML = '<span style="color:#d32f2f;">请先选择要上传的图片文件</span>';
+        return;
+    }
+
+    // 显示上传进度
+    uploadResult.style.display = 'block';
+    uploadResult.innerHTML = '<span style="color:#3098d8;">正在上传，请稍候...</span>';
+
     const formData = new FormData();
     for (let f of files) formData.append('images', f);
-    fetch(qp('/api/upload_images'), {method: 'POST', body: formData})
-        .then(r => r.json()).then(data => {
-            if (data.success) { showMessage('上传成功'); reloadImageList(); }
-            else showMessage('上传失败', true);
-        }).catch(err => { showMessage('上传接口出错', true); console.error(err); });
+
+    fetch(qp('/api/upload_images'), {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            uploadResult.innerHTML = `<span style="color:#388e3c;">✓ 上传成功！共上传 ${data.count || files.length} 张图片</span>`;
+            // 延迟刷新列表并关闭弹窗
+            setTimeout(() => {
+                reloadImageList();
+                uploadModal.style.display = 'none';
+            }, 1500);
+        } else {
+            uploadResult.innerHTML = `<span style="color:#d32f2f;">✗ 上传失败：${data.error || '未知错误'}</span>`;
+        }
+    })
+    .catch(err => {
+        uploadResult.innerHTML = `<span style="color:#d32f2f;">✗ 上传失败：${err.message}</span>`;
+        console.error(err);
+    });
+});
+
+document.getElementById('upload-cancel').addEventListener('click', () => {
+    uploadModal.style.display = 'none';
+});
+
+document.getElementById('upload-close').addEventListener('click', () => {
+    uploadModal.style.display = 'none';
+});
+
+// 点击遮罩层关闭弹窗
+uploadModal.addEventListener('click', (e) => {
+    if (e.target === uploadModal) {
+        uploadModal.style.display = 'none';
+    }
 });
 
 // ── Class color legend ──────────────────────────────────────
@@ -621,8 +730,309 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Resize functionality
+let originalBoxes = null;
+let originalDimensions = null;
+
+document.querySelectorAll('.resize-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('resize-ratio').value = btn.dataset.ratio;
+        document.querySelectorAll('.resize-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    });
+});
+
+document.getElementById('btn-resize-preview').addEventListener('click', () => {
+    if (!selectedImageName) {
+        showMessage('请先选择图片', true);
+        return;
+    }
+
+    const ratio = parseFloat(document.getElementById('resize-ratio').value);
+    if (!ratio || ratio <= 0 || ratio > 5) {
+        showMessage('比例必须在 0.1 到 5.0 之间', true);
+        return;
+    }
+
+    // Save original state if not already saved
+    if (!originalBoxes) {
+        originalBoxes = JSON.parse(JSON.stringify(boxes));
+        originalDimensions = {
+            width: imageEl.naturalWidth,
+            height: imageEl.naturalHeight
+        };
+        document.getElementById('btn-resize-reset').style.display = 'inline-block';
+    }
+
+    // Apply CSS transform for visual preview
+    imageEl.style.transform = `scaleY(${ratio})`;
+    imageEl.style.transformOrigin = 'top left';
+
+    // Update overlay viewBox to match stretched dimensions
+    const newH = originalDimensions.height * ratio;
+    overlay.setAttribute('viewBox', `0 0 ${originalDimensions.width} ${newH}`);
+
+    // Scale boxes Y coordinates for preview
+    boxes = originalBoxes.map(b => ({
+        ...b,
+        y: b.y * ratio,
+        h: b.h * ratio
+    }));
+    updateOverlay();
+
+    const newHeight = Math.round(originalDimensions.height * ratio);
+    setStatus(`预览: ${originalDimensions.width}×${newHeight} (比例 ${ratio})`);
+    showMessage(`预览: ${originalDimensions.width}×${newHeight}`);
+});
+
+document.getElementById('btn-resize-apply').addEventListener('click', () => {
+    if (!selectedImageName) {
+        showMessage('请先选择图片', true);
+        return;
+    }
+
+    const ratio = parseFloat(document.getElementById('resize-ratio').value);
+    if (!ratio || ratio <= 0 || ratio > 5) {
+        showMessage('比例必须在 0.1 到 5.0 之间', true);
+        return;
+    }
+
+    if (!confirm(`确认将图像高度调整为 ${ratio} 倍？此操作将修改图像文件和标注数据。`)) {
+        return;
+    }
+
+    fetch(qp(`/api/resize_image/${selectedImageName}`), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ratio: ratio, preview: false})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            showMessage(`已应用: ${data.new_width}×${data.new_height}`);
+            // Reset preview state
+            originalBoxes = null;
+            originalDimensions = null;
+            document.getElementById('btn-resize-reset').style.display = 'none';
+            // Reload image
+            loadImage(selectedImageName);
+            reloadImageList();
+        } else {
+            showMessage(data.error || '应用失败', true);
+        }
+    }).catch(err => {
+        showMessage('应用接口出错', true);
+        console.error(err);
+    });
+});
+
+document.getElementById('btn-resize-reset').addEventListener('click', () => {
+    if (originalBoxes && originalDimensions) {
+        boxes = originalBoxes;
+        originalBoxes = null;
+        originalDimensions = null;
+        document.getElementById('btn-resize-reset').style.display = 'none';
+        // Clear CSS transform
+        imageEl.style.transform = '';
+        imageEl.style.transformOrigin = '';
+        // Restore original viewBox and overlay
+        const imgW = imageEl.naturalWidth;
+        const imgH = imageEl.naturalHeight;
+        overlay.setAttribute('viewBox', `0 0 ${imgW} ${imgH}`);
+        overlay.style.width = imageEl.clientWidth + 'px';
+        overlay.style.height = imageEl.clientHeight + 'px';
+        updateOverlay();
+        setStatus(`已重置: ${imgW}×${imgH}`);
+        showMessage('已重置预览');
+    }
+});
+
+// Scale functionality (black padding)
+let scaleOriginalBoxes = null;
+let scaleOriginalSrc = null;
+
+document.querySelectorAll('.scale-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('scale-ratio').value = btn.dataset.ratio;
+        document.querySelectorAll('.scale-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    });
+});
+
+document.getElementById('btn-scale-preview').addEventListener('click', () => {
+    if (!selectedImageName) {
+        showMessage('请先选择图片', true);
+        return;
+    }
+
+    const ratio = parseFloat(document.getElementById('scale-ratio').value);
+    if (!ratio || ratio <= 0 || ratio > 5) {
+        showMessage('比例必须在 0.1 到 5.0 之间', true);
+        return;
+    }
+
+    const imgW = imageEl.naturalWidth;
+    const imgH = imageEl.naturalHeight;
+
+    // Save original state
+    if (!scaleOriginalBoxes) {
+        scaleOriginalBoxes = JSON.parse(JSON.stringify(boxes));
+        scaleOriginalSrc = imageEl.src;
+        document.getElementById('btn-scale-reset').style.display = 'inline-block';
+    }
+
+    // Create canvas for preview
+    const canvas = document.createElement('canvas');
+    canvas.width = imgW;
+    canvas.height = imgH;
+    const ctx = canvas.getContext('2d');
+
+    // Fill with black
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, imgW, imgH);
+
+    // Calculate scaled dimensions and offset
+    const newW = Math.round(imgW * ratio);
+    const newH = Math.round(imgH * ratio);
+    const offsetX = Math.round((imgW - newW) / 2);
+    const offsetY = Math.round((imgH - newH) / 2);
+
+    // Draw scaled image centered
+    ctx.drawImage(imageEl, offsetX, offsetY, newW, newH);
+
+    // Update image src to canvas data
+    imageEl.src = canvas.toDataURL();
+
+    // Update boxes with scaled coordinates
+    boxes = scaleOriginalBoxes.map(b => ({
+        ...b,
+        x: b.x * ratio + offsetX,
+        y: b.y * ratio + offsetY,
+        w: b.w * ratio,
+        h: b.h * ratio
+    }));
+    updateOverlay();
+
+    const action = ratio < 1 ? '缩小' : '放大';
+    setStatus(`预览: ${action} ${ratio}倍 (黑边填充)`);
+    showMessage(`预览: ${action} ${ratio}倍`);
+});
+
+document.getElementById('btn-scale-apply').addEventListener('click', () => {
+    if (!selectedImageName) {
+        showMessage('请先选择图片', true);
+        return;
+    }
+
+    const ratio = parseFloat(document.getElementById('scale-ratio').value);
+    if (!ratio || ratio <= 0 || ratio > 5) {
+        showMessage('比例必须在 0.1 到 5.0 之间', true);
+        return;
+    }
+
+    if (!confirm(`确认将图像${ratio < 1 ? '缩小' : '放大'} ${ratio} 倍？画布尺寸保持不变。`)) {
+        return;
+    }
+
+    fetch(qp(`/api/scale_image/${selectedImageName}`), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ratio: ratio, preview: false})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            const action = ratio < 1 ? '缩小' : '放大';
+            showMessage(`已${action}: ${data.canvas_width}×${data.canvas_height}`);
+            // Reset preview state
+            scaleOriginalBoxes = null;
+            scaleOriginalSrc = null;
+            document.getElementById('btn-scale-reset').style.display = 'none';
+            // Reload image
+            loadImage(selectedImageName);
+            reloadImageList();
+        } else {
+            showMessage(data.error || '应用失败', true);
+        }
+    }).catch(err => {
+        showMessage('应用接口出错', true);
+        console.error(err);
+    });
+});
+
+document.getElementById('btn-scale-reset').addEventListener('click', () => {
+    if (scaleOriginalBoxes && scaleOriginalSrc) {
+        boxes = scaleOriginalBoxes;
+        scaleOriginalBoxes = null;
+        document.getElementById('btn-scale-reset').style.display = 'none';
+        // Restore original image
+        imageEl.src = scaleOriginalSrc;
+        scaleOriginalSrc = null;
+        // Restore overlay
+        const imgW = imageEl.naturalWidth;
+        const imgH = imageEl.naturalHeight;
+        overlay.setAttribute('viewBox', `0 0 ${imgW} ${imgH}`);
+        overlay.style.width = imageEl.clientWidth + 'px';
+        overlay.style.height = imageEl.clientHeight + 'px';
+        updateOverlay();
+        setStatus(`已重置: ${imgW}×${imgH}`);
+        showMessage('已重置预览');
+    }
+});
+
+// ── Lightbox (large image preview) ─────────────────────────
+const lightboxModal = document.getElementById('lightbox-modal');
+const lightboxImage = document.getElementById('lightbox-image');
+const lightboxTitle = document.getElementById('lightbox-title');
+const lightboxCounter = document.getElementById('lightbox-counter');
+let lightboxName = null;
+
+function openLightbox(name) {
+    lightboxName = name;
+    const filtered = getFilteredImages();
+    const idx = filtered.findIndex(i => i.name === name);
+    lightboxImage.src = qp(`/image/${name}`);
+    lightboxTitle.textContent = filtered[idx]?.filename || name;
+    lightboxCounter.textContent = `${idx + 1} / ${filtered.length}`;
+    lightboxModal.style.display = 'flex';
+}
+
+function closeLightbox() {
+    lightboxModal.style.display = 'none';
+    lightboxName = null;
+}
+
+function lightboxNavigate(delta) {
+    if (!lightboxName) return;
+    const filtered = getFilteredImages();
+    let idx = filtered.findIndex(i => i.name === lightboxName);
+    if (idx < 0) return;
+    idx = idx + delta;
+    if (idx < 0) idx = filtered.length - 1;
+    if (idx >= filtered.length) idx = 0;
+    const item = filtered[idx];
+    lightboxName = item.name;
+    lightboxImage.src = qp(`/image/${item.name}`);
+    lightboxTitle.textContent = item.filename;
+    lightboxCounter.textContent = `${idx + 1} / ${filtered.length}`;
+}
+
+document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+document.getElementById('lightbox-prev').addEventListener('click', () => lightboxNavigate(-1));
+document.getElementById('lightbox-next').addEventListener('click', () => lightboxNavigate(1));
+document.getElementById('lightbox-annotate').addEventListener('click', () => {
+    if (!lightboxName) return;
+    const name = lightboxName;
+    closeLightbox();
+    gridView.style.display = 'none';
+    viewer.style.display = 'block';
+    // Hide toolbar when entering annotation mode
+    document.querySelector('.toolbar').style.display = 'none';
+    loadImage(name);
+});
+lightboxModal.addEventListener('click', (e) => {
+    if (e.target === lightboxModal) closeLightbox();
+});
+
 // init
 loadClassOptions();
+initClassFilter();
 buildColorLegend();
 reloadImageList();
 setStatus('请在网格中选择图片，然后点击标注');

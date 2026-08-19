@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>{{ project_name }} - 训练/测试集相似度</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <header>
+        <a href="/project/{{ project_id }}" class="header-back">← 返回项目</a>
+        <h1>{{ project_name }} - 训练/测试集相似度</h1>
+    </header>
+    <div class="container">
+        <main>
+            <div class="chart-card cq-toolbar">
+                <div class="cq-toolbar-row">
+                    <label class="cq-label">训练集版本</label>
+                    <select id="sel-train" class="cq-select">
+                        {% for v in versions %}
+                        <option value="{{ v.id }}">{{ v.name }} ({{ v.image_count }}张)</option>
+                        {% endfor %}
+                    </select>
+                    <label class="cq-label">测试集版本</label>
+                    <select id="sel-test" class="cq-select">
+                        {% for v in versions %}
+                        <option value="{{ v.id }}">{{ v.name }} ({{ v.image_count }}张)</option>
+                        {% endfor %}
+                    </select>
+                    <button id="btn-run" class="btn-primary">开始分析</button>
+                </div>
+                <div class="cq-toolbar-row">
+                    <label class="cq-threshold-label">
+                        相似度阈值：<strong id="threshold-val">10</strong>
+                        <span class="qc-threshold-tip">（Hamming 距离 ≤ 阈值判为相似，越小越严格）</span>
+                    </label>
+                    <input type="range" id="threshold-slider" min="1" max="20" step="1" value="10" class="qc-slider" />
+                </div>
+            </div>
+
+            <div id="cq-status" class="cq-status">选择两个版本后点击「开始分析」</div>
+
+            <!-- 统计卡片 -->
+            <div class="overview-cards" id="stat-cards" style="display:none;">
+                <div class="ov-card">
+                    <div class="ov-card-label">训练集图片</div>
+                    <div class="ov-card-value" id="stat-train">-</div>
+                </div>
+                <div class="ov-card">
+                    <div class="ov-card-label">测试集图片</div>
+                    <div class="ov-card-value" id="stat-test">-</div>
+                </div>
+                <div class="ov-card">
+                    <div class="ov-card-label">相似对数</div>
+                    <div class="ov-card-value" id="stat-pairs">-</div>
+                </div>
+            </div>
+
+            <!-- 相似对列表 -->
+            <div class="chart-card" id="pairs-card" style="display:none; margin-top:12px;">
+                <div class="chart-title">相似图片对</div>
+                <div id="pairs-list" class="cq-pairs-list"></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Lightbox -->
+    <div id="lightbox" class="modal-overlay" style="display:none;">
+        <div id="lightbox-box">
+            <div id="lightbox-header">
+                <span id="lightbox-title"></span>
+                <button class="modal-close" id="lightbox-close">×</button>
+            </div>
+            <div id="lightbox-body">
+                <img id="lightbox-image" src="" alt="" />
+            </div>
+            <div id="lightbox-footer">
+                <button id="lightbox-close2">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const PROJECT_ID = {{ project_id | tojson | safe }};
+    const VERSIONS = {{ versions | tojson | safe }};
+
+    const selTrain = document.getElementById('sel-train');
+    const selTest = document.getElementById('sel-test');
+    const btnRun = document.getElementById('btn-run');
+    const slider = document.getElementById('threshold-slider');
+    const sliderVal = document.getElementById('threshold-val');
+    let data = null;
+
+    // Default: pick first two different versions if possible
+    if (VERSIONS.length >= 2) {
+        selTrain.value = VERSIONS[0].id;
+        selTest.value = VERSIONS[1].id;
+    }
+
+    slider.addEventListener('input', () => {
+        sliderVal.textContent = slider.value;
+    });
+
+    btnRun.addEventListener('click', () => {
+        const trainId = selTrain.value;
+        const testId = selTest.value;
+        const threshold = parseInt(slider.value, 10);
+        if (!trainId || !testId) { alert('请选择训练集和测试集版本'); return; }
+        btnRun.disabled = true;
+        document.getElementById('cq-status').textContent = '正在分析，请稍候...';
+        document.getElementById('stat-cards').style.display = 'none';
+        document.getElementById('pairs-card').style.display = 'none';
+
+        const url = `/api/cross-qc/${PROJECT_ID}?train_version_id=${encodeURIComponent(trainId)}&test_version_id=${encodeURIComponent(testId)}&threshold=${threshold}`;
+        fetch(url)
+            .then(r => r.json())
+            .then(result => {
+                if (result.error) { alert(result.error); return; }
+                data = result;
+                render(result);
+            })
+            .catch(err => { console.error(err); alert('分析失败'); })
+            .finally(() => { btnRun.disabled = false; });
+    });
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function versionImageSrc(versionId, name) {
+        return `/image/${encodeURIComponent(name)}?version_id=${encodeURIComponent(versionId)}`;
+    }
+
+    function render(result) {
+        document.getElementById('cq-status').textContent =
+            `分析完成：训练集 ${result.train_image_count} 张，测试集 ${result.test_image_count} 张，发现 ${result.similar_pairs.length} 对相似图片`;
+        document.getElementById('stat-train').textContent = result.train_image_count;
+        document.getElementById('stat-test').textContent = result.test_image_count;
+        document.getElementById('stat-pairs').textContent = result.similar_pairs.length;
+        document.getElementById('stat-cards').style.display = '';
+
+        const list = document.getElementById('pairs-list');
+        list.innerHTML = '';
+        if (result.similar_pairs.length === 0) {
+            list.innerHTML = '<div class="qc-empty">未发现跨版本相似图片对 ✓</div>';
+            document.getElementById('pairs-card').style.display = '';
+            return;
+        }
+        result.similar_pairs.forEach((pair, i) => {
+            const div = document.createElement('div');
+            div.className = 'cq-pair';
+            const distColor = pair.distance <= 3 ? '#d43f3a' : pair.distance <= 6 ? '#ff9800' : '#4caf50';
+            div.innerHTML = `
+                <div class="cq-pair-header">
+                    <span class="cq-pair-idx">#${i+1}</span>
+                    <span class="cq-distance" style="background:${distColor}">Hamming: ${pair.distance}</span>
+                </div>
+                <div class="cq-pair-images">
+                    <div class="cq-img-card">
+                        <img src="${versionImageSrc(result.train_version_id, pair.train_name)}" loading="lazy" />
+                        <div class="cq-img-name" title="${escHtml(pair.train_filename)}">${escHtml(pair.train_filename)}</div>
+                        <div class="cq-img-tag tag-train">训练集 · ${escHtml(result.train_version_name)}</div>
+                        <button class="qc-btn-view" data-vid="${result.train_version_id}" data-name="${escHtml(pair.train_name)}">大图</button>
+                    </div>
+                    <div class="cq-img-card">
+                        <img src="${versionImageSrc(result.test_version_id, pair.test_name)}" loading="lazy" />
+                        <div class="cq-img-name" title="${escHtml(pair.test_filename)}">${escHtml(pair.test_filename)}</div>
+                        <div class="cq-img-tag tag-test">测试集 · ${escHtml(result.test_version_name)}</div>
+                        <div class="cq-img-actions">
+                            <button class="qc-btn-view" data-vid="${result.test_version_id}" data-name="${escHtml(pair.test_name)}">大图</button>
+                            <button class="qc-btn-del" data-vid="${result.test_version_id}" data-name="${escHtml(pair.test_name)}" data-idx="${i}">删除测试集图片</button>
+                        </div>
+                    </div>
+                </div>`;
+            list.appendChild(div);
+        });
+        // Bind events
+        list.querySelectorAll('.qc-btn-view').forEach(btn => {
+            btn.addEventListener('click', () => openLightbox(btn.dataset.vid, btn.dataset.name));
+        });
+        list.querySelectorAll('.qc-btn-del').forEach(btn => {
+            btn.addEventListener('click', () => delTestImage(btn));
+        });
+        document.getElementById('pairs-card').style.display = '';
+    }
+
+    function openLightbox(vid, name) {
+        document.getElementById('lightbox-image').src = versionImageSrc(vid, name);
+        document.getElementById('lightbox-title').textContent = name;
+        document.getElementById('lightbox').style.display = 'flex';
+    }
+    function closeLightbox() { document.getElementById('lightbox').style.display = 'none'; }
+    document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+    document.getElementById('lightbox-close2').addEventListener('click', closeLightbox);
+    document.getElementById('lightbox').addEventListener('click', e => {
+        if (e.target.id === 'lightbox') closeLightbox();
+    });
+
+    function delTestImage(btn) {
+        const vid = btn.dataset.vid;
+        const name = btn.dataset.name;
+        if (!confirm(`确认从测试集版本中删除图片 ${name}？图片文件和标注将被删除。`)) return;
+        btn.disabled = true;
+        fetch(`/api/delete_image/${encodeURIComponent(name)}?version_id=${encodeURIComponent(vid)}`, {method:'DELETE'})
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    const pair = btn.closest('.cq-pair');
+                    pair.style.opacity = '0.4';
+                    pair.style.pointerEvents = 'none';
+                    pair.insertAdjacentHTML('afterbegin', '<div class="qc-deleted-tag">已删除</div>');
+                } else {
+                    alert('删除失败');
+                    btn.disabled = false;
+                }
+            })
+            .catch(err => { console.error(err); alert('删除出错'); btn.disabled = false; });
+    }
+    </script>
+</body>
+</html>

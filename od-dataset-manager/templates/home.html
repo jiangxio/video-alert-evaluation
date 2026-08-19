@@ -2,12 +2,12 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8" />
-    <title>目标检测分析平台</title>
+    <title>图像标注与评测平台</title>
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
     <header>
-        <h1>目标检测分析平台</h1>
+        <h1>图像标注与评测平台</h1>
     </header>
     <div class="home-container">
         <div class="home-topbar">
@@ -31,38 +31,22 @@
                     <input type="text" id="proj-name" placeholder="例：打电话检测" />
                 </div>
 
-                <!-- 仅在新建项目时显示：路径和格式选择 -->
-                <div id="import-section">
-                    <div class="form-row">
-                        <label>图片路径 <span class="req">*</span></label>
-                        <div class="input-row">
-                            <input type="text" id="proj-images-dir" placeholder="datasets/calling/images 或绝对路径" />
-                            <button class="btn-sm" id="proj-browse-images">浏览</button>
-                        </div>
+                <div class="form-row">
+                    <label>评测模式</label>
+                    <div class="fmt-tabs fmt-tabs-sm" id="proj-mode-tabs">
+                        <button type="button" class="fmt-tab active" data-mode="detection">目标检测</button>
+                        <button type="button" class="fmt-tab" data-mode="classification">图像分类</button>
                     </div>
-                    <div class="form-row">
-                        <label>标注路径</label>
-                        <div class="input-row">
-                            <input type="text" id="proj-labels-dir" placeholder="留空则自动设为图片同级 labels 目录" />
-                            <button class="btn-sm" id="proj-browse-labels">浏览</button>
-                        </div>
-                        <div class="fmt-tabs fmt-tabs-sm" id="proj-fmt-tabs" style="margin-top:6px;">
-                            <button type="button" class="fmt-tab active" data-fmt="json">JSON 内部</button>
-                            <button type="button" class="fmt-tab" data-fmt="rect">Rect</button>
-                            <button type="button" class="fmt-tab" data-fmt="coco">COCO</button>
-                            <button type="button" class="fmt-tab" data-fmt="yolo">YOLO</button>
-                        </div>
-                        <div id="proj-fmt-tip" class="fmt-tip" style="display:none;">
-                            将从该目录读取并转换为内部格式存储
-                        </div>
+                    <div class="hint-text" style="color:#888;font-size:12px;margin-top:4px;">
+                        项目创建后，进入项目再通过「创建新版本」上传数据压缩包导入数据。
                     </div>
                 </div>
 
                 <!-- 仅在编辑项目时显示：已导入提示 -->
                 <div id="imported-hint" style="display:none;">
                     <div class="hint-box">
-                        <strong>📦 项目已导入数据库</strong><br/>
-                        图片和标注数据已存储在数据库中，无需再依赖文件路径。
+                        <strong>📦 项目数据见各版本</strong><br/>
+                        图片和标注数据通过版本管理上传，无需在项目级指定路径。
                     </div>
                 </div>
 
@@ -100,24 +84,22 @@
     let editingId = null;
     let _dirCallback = null;
     let _dirCurrent = '';
-    let selectedFmt = 'json';
+    let selectedMode = 'detection';
 
-    // Format tab clicks inside the project modal
-    document.querySelectorAll('#proj-fmt-tabs .fmt-tab').forEach(tab => {
+    // Mode tab clicks inside the project modal
+    document.querySelectorAll('#proj-mode-tabs .fmt-tab').forEach(tab => {
         tab.addEventListener('click', () => {
-            document.querySelectorAll('#proj-fmt-tabs .fmt-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('#proj-mode-tabs .fmt-tab').forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
-            selectedFmt = tab.dataset.fmt;
-            document.getElementById('proj-fmt-tip').style.display = selectedFmt === 'json' ? 'none' : 'block';
+            selectedMode = tab.dataset.mode;
         });
     });
 
-    function setModalFmt(fmt) {
-        selectedFmt = fmt || 'json';
-        document.querySelectorAll('#proj-fmt-tabs .fmt-tab').forEach(t => {
-            t.classList.toggle('active', t.dataset.fmt === selectedFmt);
+    function setModalMode(mode) {
+        selectedMode = mode || 'detection';
+        document.querySelectorAll('#proj-mode-tabs .fmt-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.mode === selectedMode);
         });
-        document.getElementById('proj-fmt-tip').style.display = selectedFmt === 'json' ? 'none' : 'block';
     }
 
     function showMsg(text, isError) {
@@ -140,13 +122,16 @@
                 const card = document.createElement('div');
                 card.className = 'project-card';
                 card.innerHTML = `
-                    <div class="project-card-title">${escHtml(p.name)}</div>
-                    <div class="project-card-info">
+                    <div class="project-card-title">
+                        ${escHtml(p.name)}
+                        <span class="mode-tag ${p.mode === 'classification' ? 'mode-cls' : 'mode-det'}">${p.mode === 'classification' ? '图像分类' : '目标检测'}</span>
+                    </div>
+                    ${p.images_dir ? `<div class="project-card-info">
                         <span class="info-label">图片：</span><span class="info-value" title="${escHtml(p.images_dir)}">${escHtml(shortenPath(p.images_dir))}</span>
-                    </div>
-                    <div class="project-card-info">
+                    </div>` : ''}
+                    ${p.labels_dir ? `<div class="project-card-info">
                         <span class="info-label">标注：</span><span class="info-value" title="${escHtml(p.labels_dir)}">${escHtml(shortenPath(p.labels_dir))}</span>
-                    </div>
+                    </div>` : ''}
                     <div class="project-card-classes">${(p.classes||[]).map(c => `<span class="class-tag">${escHtml(c)}</span>`).join('')}</div>
                     <div class="project-card-actions">
                         <button class="btn-primary btn-open" data-id="${p.id}">打开</button>
@@ -191,12 +176,10 @@
         editingId = null;
         document.getElementById('proj-modal-title').textContent = '新建项目';
         document.getElementById('proj-name').value = '';
-        document.getElementById('proj-images-dir').value = '';
-        document.getElementById('proj-labels-dir').value = '';
         document.getElementById('proj-classes').value = 'call_phone\nnot_call_phone\nother';
-        setModalFmt('json');
-        // 显示导入部分，隐藏已导入提示
-        document.getElementById('import-section').style.display = 'block';
+        setModalMode('detection');
+        // 新建：模式可选
+        document.querySelectorAll('#proj-mode-tabs .fmt-tab').forEach(t => t.disabled = false);
         document.getElementById('imported-hint').style.display = 'none';
         document.getElementById('proj-modal').style.display = 'flex';
     }
@@ -206,8 +189,9 @@
         document.getElementById('proj-modal-title').textContent = '编辑项目';
         document.getElementById('proj-name').value = proj.name;
         document.getElementById('proj-classes').value = (proj.classes || []).join('\n');
-        // 隐藏导入部分，显示已导入提示
-        document.getElementById('import-section').style.display = 'none';
+        setModalMode(proj.mode || 'detection');
+        // 编辑：模式创建后不可改，禁用 tab
+        document.querySelectorAll('#proj-mode-tabs .fmt-tab').forEach(t => t.disabled = true);
         document.getElementById('imported-hint').style.display = 'block';
         document.getElementById('proj-modal').style.display = 'flex';
     }
@@ -229,16 +213,13 @@
 
         let payload, url, method;
         if (editingId) {
-            // 编辑项目：只更新名称和类别
+            // 编辑项目：更新名称、类别（模式创建后不可改，仅显示）
             payload = {name, classes};
             url = `/api/projects/${editingId}`;
             method = 'PUT';
         } else {
-            // 新建项目：需要路径和格式
-            const images_dir = document.getElementById('proj-images-dir').value.trim();
-            const labels_dir = document.getElementById('proj-labels-dir').value.trim();
-            if (!images_dir) { showMsg('请填写图片路径', true); return; }
-            payload = {name, images_dir, labels_dir, classes, labels_format: selectedFmt};
+            // 新建项目：只选名称、模式、类别；数据通过版本导入
+            payload = {name, classes, mode: selectedMode};
             url = '/api/projects';
             method = 'POST';
         }
@@ -296,15 +277,6 @@
     });
     document.getElementById('dir-browser-cancel').addEventListener('click', closeDirBrowser);
     document.getElementById('dir-browser-close').addEventListener('click', closeDirBrowser);
-
-    document.getElementById('proj-browse-images').addEventListener('click', () => {
-        openDirBrowser(path => { document.getElementById('proj-images-dir').value = path; },
-                       document.getElementById('proj-images-dir').value.trim() || BASE_DIR);
-    });
-    document.getElementById('proj-browse-labels').addEventListener('click', () => {
-        openDirBrowser(path => { document.getElementById('proj-labels-dir').value = path; },
-                       document.getElementById('proj-labels-dir').value.trim() || BASE_DIR);
-    });
 
     loadProjects();
     </script>

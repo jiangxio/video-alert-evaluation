@@ -1,28 +1,32 @@
-// evaluate.js — Detection result evaluation page logic
+// evaluate_classify.js — Image classification evaluation page logic
 
 let _dirCallback = null;
 let _dirCurrent = '';
+let _selectedFile = '';   // selected CSV file path within browser
 let allResults = [];      // full image list from last evaluate call
 let lastMetrics = {};     // metrics from last evaluate call
-let filteredResults = []; // currently filtered list
+let lastClasses = [];    // classes for confusion rendering
+let filteredResults = [];
 let currentFilter = 'all';
 let currentPage = 0;
-const PAGE_SIZE = 40;     // 5 rows × 8 columns
-let viewerIndex = -1;     // index in filteredResults currently shown
+const PAGE_SIZE = 40;
+let viewerIndex = -1;
 
-// ── Dir browser ─────────────────────────────────────────────
+// ── Dir browser (shows .csv files) ─────────────────────────────
 
 function openDirBrowser(callback, startPath) {
     _dirCallback = callback;
+    _selectedFile = '';
     loadDirBrowser(startPath || BASE_DIR);
     document.getElementById('dir-browser-modal').style.display = 'flex';
 }
 
 function loadDirBrowser(path) {
-    fetch('/api/browse_dir?path=' + encodeURIComponent(path))
+    fetch('/api/browse_dir?path=' + encodeURIComponent(path) + '&show_files=1&ext=.csv')
         .then(r => r.json()).then(data => {
             if (data.error) { setStatus(data.error, true); return; }
             _dirCurrent = data.path;
+            _selectedFile = '';
             document.getElementById('dir-browser-path').textContent = data.path;
             const list = document.getElementById('dir-browser-list');
             list.innerHTML = '';
@@ -35,9 +39,17 @@ function loadDirBrowser(path) {
             }
             data.entries.forEach(entry => {
                 const li = document.createElement('li');
-                li.className = 'dir-entry';
-                li.textContent = '📁 ' + entry.name;
-                li.addEventListener('click', () => loadDirBrowser(entry.path));
+                li.className = entry.is_file ? 'dir-entry dir-file' : 'dir-entry';
+                li.textContent = (entry.is_file ? '📄 ' : '📁 ') + entry.name;
+                if (entry.is_file) {
+                    li.addEventListener('click', () => {
+                        _selectedFile = entry.path;
+                        list.querySelectorAll('.dir-entry').forEach(e => e.style.background = '');
+                        li.style.background = '#d4eded';
+                    });
+                } else {
+                    li.addEventListener('click', () => loadDirBrowser(entry.path));
+                }
                 list.appendChild(li);
             });
         });
@@ -48,7 +60,7 @@ function closeDirBrowser() {
 }
 
 document.getElementById('dir-browser-select').addEventListener('click', () => {
-    if (_dirCallback) _dirCallback(_dirCurrent);
+    if (_dirCallback) _dirCallback(_selectedFile || _dirCurrent);
     closeDirBrowser();
 });
 document.getElementById('dir-browser-cancel').addEventListener('click', closeDirBrowser);
@@ -59,7 +71,7 @@ document.getElementById('btn-browse-pred').addEventListener('click', () => {
     openDirBrowser(path => { document.getElementById('eval-pred-dir').value = path; }, cur);
 });
 
-// ── Save evaluation result ────────────────────────────────────
+// ── Save evaluation result (reuse detection endpoints) ────────
 
 document.getElementById('btn-save-eval-result').addEventListener('click', () => {
     const name = document.getElementById('eval-result-name').value.trim();
@@ -74,7 +86,7 @@ document.getElementById('btn-save-eval-result').addEventListener('click', () => 
             name,
             pred_dir: document.getElementById('eval-pred-dir').value.trim(),
             conf_threshold: parseFloat(document.getElementById('conf-val').value),
-            iou_threshold: parseFloat(document.getElementById('iou-val').value),
+            iou_threshold: 0.0,
             metrics: lastMetrics,
             images: allResults
         })
@@ -85,8 +97,6 @@ document.getElementById('btn-save-eval-result').addEventListener('click', () => 
         loadResultList();
     }).catch(() => setStatus('保存失败', true));
 });
-
-// ── Load saved result list ────────────────────────────────────
 
 function loadResultList() {
     fetch('/api/eval/list_results?version_id=' + encodeURIComponent(VERSION_ID))
@@ -110,16 +120,16 @@ document.getElementById('btn-load-eval-result').addEventListener('click', () => 
             if (d.error) { setStatus(d.error, true); return; }
             allResults = d.images;
             lastMetrics = d.metrics;
-            renderMetrics(d.metrics, CLASSES);
+            // classes from metrics.confusion_matrix size, fall back to CLASSES
+            const cm = d.metrics.confusion_matrix;
+            lastClasses = (cm && cm.length === CLASSES.length) ? CLASSES : CLASSES;
+            renderMetrics(d.metrics, lastClasses);
             showGridWrap();
             currentPage = 0;
             applyFilter('all');
             document.getElementById('conf-val').value = d.conf_threshold;
             document.getElementById('conf-slider').value = d.conf_threshold;
-            document.getElementById('iou-val').value = d.iou_threshold;
-            document.getElementById('iou-slider').value = d.iou_threshold;
             if (d.pred_dir) document.getElementById('eval-pred-dir').value = d.pred_dir;
-            document.getElementById('eval-legend').style.display = 'block';
             setStatus('已加载历史结果：' + d.name);
         }).catch(() => setStatus('加载失败', true));
 });
@@ -138,31 +148,7 @@ document.getElementById('btn-delete-eval-result').addEventListener('click', () =
         }).catch(() => setStatus('删除失败', true));
 });
 
-// ── Class select dropdown ─────────────────────────────────────
-
-function buildClassSelect() {
-    const sel = document.getElementById('eval-class-select');
-    sel.innerHTML = '';
-    CLASSES.forEach(cls => {
-        const opt = document.createElement('option');
-        opt.value = cls;
-        opt.textContent = cls;
-        sel.appendChild(opt);
-    });
-}
-
-function getSelectedClass() {
-    return document.getElementById('eval-class-select').value;
-}
-
-// Re-render grid when class changes (after evaluation)
-document.getElementById('eval-class-select').addEventListener('change', () => {
-    if (!allResults.length) return;
-    currentPage = 0;
-    applyFilter(currentFilter);
-});
-
-// ── Threshold sliders ─────────────────────────────────────────
+// ── Threshold slider ───────────────────────────────────────────
 
 function bindSlider(sliderId, inputId) {
     const slider = document.getElementById(sliderId);
@@ -176,29 +162,14 @@ function bindSlider(sliderId, inputId) {
         input.value = v;
     });
 }
-
 bindSlider('conf-slider', 'conf-val');
-bindSlider('iou-slider', 'iou-val');
 
-// ── Status / message ──────────────────────────────────────────
+// ── Status ─────────────────────────────────────────────────────
 
 function setStatus(msg, isError) {
     const el = document.getElementById('eval-status');
     el.textContent = msg;
-    el.style.color = isError ? '#e04838' : '#3098d8';
-}
-
-// ── Per-class status for a single image ──────────────────────
-
-function getImageClassStatus(imgData, cls) {
-    const gtForClass = imgData.gt_boxes.filter(b => b.label === cls);
-    const predForClass = imgData.pred_boxes.filter(b => b.label === cls);
-    const hasFP = predForClass.some(p => !p.matched);
-    const hasFN = gtForClass.some(g => !g.matched);
-    if (!hasFP && !hasFN) return 'ok';
-    if (hasFP && !hasFN) return 'fp';
-    if (!hasFP && hasFN) return 'fn';
-    return 'fp_fn';
+    el.style.color = isError ? '#d43f3a' : '#2b7a78';
 }
 
 // ── Run evaluation ────────────────────────────────────────────
@@ -206,23 +177,20 @@ function getImageClassStatus(imgData, cls) {
 document.getElementById('btn-run-eval').addEventListener('click', runEvaluate);
 
 function runEvaluate() {
-    const predDir = document.getElementById('eval-pred-dir').value.trim();
-    if (!predDir) { setStatus('请先选择检测结果目录', true); return; }
+    const predPath = document.getElementById('eval-pred-dir').value.trim();
+    if (!predPath) { setStatus('请先选择预测 CSV', true); return; }
     const conf = parseFloat(document.getElementById('conf-val').value);
-    const iou = parseFloat(document.getElementById('iou-val').value);
 
     setStatus('评估中…');
     document.getElementById('btn-run-eval').disabled = true;
 
-    fetch('/api/evaluate', {
+    fetch('/api/evaluate_classify', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             version_id: VERSION_ID,
-            pred_dir: predDir,
-            conf_threshold: conf,
-            iou_threshold: iou,
-            classes: CLASSES
+            pred_dir: predPath,
+            conf_threshold: conf
         })
     }).then(r => r.json()).then(data => {
         document.getElementById('btn-run-eval').disabled = false;
@@ -230,52 +198,86 @@ function runEvaluate() {
         setStatus(`评估完成，共 ${data.images.length} 张图片`);
         allResults = data.images;
         lastMetrics = data.metrics;
-        renderMetrics(data.metrics, CLASSES);
+        lastClasses = data.classes || CLASSES;
+        renderMetrics(data.metrics, lastClasses);
         showGridWrap();
         currentPage = 0;
         applyFilter('all');
-        document.getElementById('eval-legend').style.display = 'block';
     }).catch(e => {
         document.getElementById('btn-run-eval').disabled = false;
         setStatus('请求失败: ' + e, true);
     });
 }
 
-// ── Metrics table ─────────────────────────────────────────────
+// ── Metrics: accuracy + per-class table + confusion matrix ─────
 
 function renderMetrics(metrics, classes) {
     const wrap = document.getElementById('eval-metrics-wrap');
     wrap.style.display = 'block';
+
+    const accPct = (metrics.accuracy * 100).toFixed(1);
+    document.getElementById('eval-accuracy').innerHTML =
+        `<span class="acc-num">${accPct}%</span>` +
+        `<span class="acc-sub">准确率（${metrics.correct}/${metrics.total}）` +
+        `${metrics.unpredicted ? '，未预测 ' + metrics.unpredicted + ' 张' : ''}</span>`;
+
     const tbody = document.getElementById('eval-metrics-body');
     tbody.innerHTML = '';
-
     classes.forEach(cls => {
-        const m = metrics[cls];
+        const m = (metrics.per_class || {})[cls];
         if (!m) return;
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>${escHtml(cls)}</td>
             <td class="metric-val">${(m.precision * 100).toFixed(1)}%</td>
             <td class="metric-val">${(m.recall * 100).toFixed(1)}%</td>
+            <td class="metric-val">${(m.f1 * 100).toFixed(1)}%</td>
             <td>${m.tp}</td>
             <td class="metric-fp">${m.fp}</td>
             <td class="metric-fn">${m.fn}</td>`;
         tbody.appendChild(tr);
     });
 
-    const ov = metrics['_overall'];
-    if (ov) {
-        const tr = document.createElement('tr');
-        tr.className = 'metric-overall';
-        tr.innerHTML = `
-            <td><strong>总计</strong></td>
-            <td class="metric-val"><strong>${(ov.precision * 100).toFixed(1)}%</strong></td>
-            <td class="metric-val"><strong>${(ov.recall * 100).toFixed(1)}%</strong></td>
-            <td><strong>${ov.tp}</strong></td>
-            <td class="metric-fp"><strong>${ov.fp}</strong></td>
-            <td class="metric-fn"><strong>${ov.fn}</strong></td>`;
-        tbody.appendChild(tr);
+    renderConfusion(metrics.confusion_matrix, classes);
+}
+
+function renderConfusion(matrix, classes) {
+    const wrap = document.getElementById('eval-confusion-wrap');
+    wrap.innerHTML = '';
+    if (!matrix || !matrix.length) return;
+    const N = classes.length;
+
+    const table = document.createElement('table');
+    table.className = 'confusion-table';
+    const thead = document.createElement('thead');
+    let headRow = '<tr><th>真值＼预测</th>';
+    classes.forEach(c => headRow += `<th>${escHtml(c)}</th>`);
+    headRow += '<th>合计</th></tr>';
+    thead.innerHTML = headRow;
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    const colTotals = new Array(N).fill(0);
+    for (let i = 0; i < N; i++) {
+        let rowTotal = 0;
+        let rowHtml = `<tr><th>${escHtml(classes[i])}</th>`;
+        for (let j = 0; j < N; j++) {
+            const v = matrix[i][j] || 0;
+            rowTotal += v;
+            colTotals[j] += v;
+            const diag = (i === j);
+            rowHtml += `<td class="${diag ? 'cm-diag' : (v ? 'cm-cell' : 'cm-zero')}">${v}</td>`;
+        }
+        rowHtml += `<td class="cm-total">${rowTotal}</td></tr>`;
+        tbody.innerHTML += rowHtml;
     }
+    let totalRow = '<tr><th>合计</th>';
+    let grand = 0;
+    for (let j = 0; j < N; j++) { totalRow += `<td class="cm-total">${colTotals[j]}</td>`; grand += colTotals[j]; }
+    totalRow += `<td class="cm-total"><strong>${grand}</strong></td></tr>`;
+    tbody.innerHTML += totalRow;
+    table.appendChild(tbody);
+    wrap.appendChild(table);
 }
 
 // ── Filter tabs ───────────────────────────────────────────────
@@ -296,32 +298,28 @@ document.querySelectorAll('.filter-tab').forEach(tab => {
 
 function applyFilter(filter) {
     currentFilter = filter;
-    const cls = getSelectedClass();
-
-    const counts = { all: 0, ok: 0, fp: 0, fn: 0, fp_fn: 0 };
+    const counts = { all: 0, correct: 0, wrong: 0 };
     allResults.forEach(img => {
-        const s = getImageClassStatus(img, cls);
         counts.all++;
-        counts[s]++;
+        if (img.correct) counts.correct++; else counts.wrong++;
     });
     document.getElementById('cnt-all').textContent = counts.all;
-    document.getElementById('cnt-ok').textContent = counts.ok;
-    document.getElementById('cnt-fp').textContent = counts.fp;
-    document.getElementById('cnt-fn').textContent = counts.fn;
-    document.getElementById('cnt-fp-fn').textContent = counts.fp_fn;
+    document.getElementById('cnt-correct').textContent = counts.correct;
+    document.getElementById('cnt-wrong').textContent = counts.wrong;
 
     if (filter === 'all') {
         filteredResults = allResults.slice();
+    } else if (filter === 'correct') {
+        filteredResults = allResults.filter(img => img.correct);
     } else {
-        filteredResults = allResults.filter(img => getImageClassStatus(img, cls) === filter);
+        filteredResults = allResults.filter(img => !img.correct);
     }
     renderGrid();
 }
 
-// ── Image grid ────────────────────────────────────────────────
+// ── Image grid ─────────────────────────────────────────────────
 
 function renderGrid() {
-    const cls = getSelectedClass();
     const grid = document.getElementById('eval-image-grid');
     grid.innerHTML = '';
 
@@ -344,8 +342,6 @@ function renderGrid() {
 
     pageItems.forEach((img, pageIdx) => {
         const globalIdx = start + pageIdx;
-        const clsStatus = getImageClassStatus(img, cls);
-
         const item = document.createElement('div');
         item.className = 'grid-item eval-thumb';
         item.title = img.filename;
@@ -356,20 +352,18 @@ function renderGrid() {
         imgEl.loading = 'lazy';
         item.appendChild(imgEl);
 
-        const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-        svgEl.classList.add('thumb-canvas');
-        item.appendChild(svgEl);
+        // GT / Pred badge
+        const badge = document.createElement('div');
+        badge.className = 'grid-label-tag ' + (img.correct ? 'tag-ok' : 'tag-wrong');
+        badge.textContent = `GT:${img.gt || '?'} → ${img.pred || '无'}`;
+        item.appendChild(badge);
 
-        function tryDraw() {
-            if (imgEl.naturalWidth > 0) {
-                drawThumbBoxes(svgEl, imgEl.naturalWidth, imgEl.naturalHeight, img, cls);
-            }
-        }
-        imgEl.addEventListener('load', tryDraw);
-        if (imgEl.complete && imgEl.naturalWidth > 0) tryDraw();
-
-        item.appendChild(makeStatusIcons(clsStatus));
+        const statusIcons = document.createElement('div');
+        statusIcons.className = 'eval-status-icons';
+        statusIcons.innerHTML = img.correct
+            ? '<span class="si ok" title="正确">✓</span>'
+            : '<span class="si fp" title="错误">!</span>';
+        item.appendChild(statusIcons);
 
         const fname = document.createElement('div');
         fname.className = 'grid-filename';
@@ -381,60 +375,7 @@ function renderGrid() {
     });
 }
 
-function drawThumbBoxes(svgEl, natW, natH, imgData, cls) {
-    svgEl.setAttribute('viewBox', `0 0 ${natW} ${natH}`);
-    svgEl.innerHTML = '';
-
-    const sw = Math.max(natW, natH) / 60;
-    const dashLen = sw * 4;
-    const gapLen = sw * 2;
-
-    function addRect(x1, y1, x2, y2, color, dashed) {
-        const rx = Math.min(x1, x2);
-        const ry = Math.min(y1, y2);
-        const rw = Math.abs(x2 - x1);
-        const rh = Math.abs(y2 - y1);
-        if (rw < 1 || rh < 1) return;
-        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        rect.setAttribute('x', rx);
-        rect.setAttribute('y', ry);
-        rect.setAttribute('width', rw);
-        rect.setAttribute('height', rh);
-        rect.setAttribute('fill', 'none');
-        rect.setAttribute('stroke', color);
-        rect.setAttribute('stroke-width', sw);
-        if (dashed) rect.setAttribute('stroke-dasharray', `${dashLen},${gapLen}`);
-        svgEl.appendChild(rect);
-    }
-
-    imgData.gt_boxes.filter(b => b.label === cls).forEach(box => {
-        const [p1, p2] = box.points;
-        addRect(p1[0], p1[1], p2[0], p2[1], box.matched ? '#00c853' : '#00b7ff', !box.matched);
-    });
-
-    imgData.pred_boxes.filter(b => b.label === cls).forEach(box => {
-        const [p1, p2] = box.points;
-        addRect(p1[0], p1[1], p2[0], p2[1], box.matched ? '#ff6d00' : '#d43f3a', false);
-    });
-}
-
-function makeStatusIcons(status) {
-    const wrap = document.createElement('div');
-    wrap.className = 'eval-status-icons';
-    if (status === 'ok') {
-        wrap.innerHTML = '<span class="si ok" title="检测OK">✓</span>';
-    } else {
-        if (status === 'fp' || status === 'fp_fn') {
-            wrap.innerHTML += '<span class="si fp" title="有误检">!</span>';
-        }
-        if (status === 'fn' || status === 'fp_fn') {
-            wrap.innerHTML += '<span class="si fn" title="有漏检">✕</span>';
-        }
-    }
-    return wrap;
-}
-
-// ── Pagination ────────────────────────────────────────────────
+// ── Pagination ─────────────────────────────────────────────────
 
 document.getElementById('btn-eval-prev-page').addEventListener('click', () => {
     if (currentPage > 0) { currentPage--; renderGrid(); }
@@ -444,7 +385,7 @@ document.getElementById('btn-eval-next-page').addEventListener('click', () => {
     if (currentPage < totalPages - 1) { currentPage++; renderGrid(); }
 });
 
-// ── Image viewer ──────────────────────────────────────────────
+// ── Image viewer ───────────────────────────────────────────────
 
 function openViewer(globalIdx) {
     viewerIndex = globalIdx;
@@ -457,95 +398,19 @@ function loadViewerImage(idx) {
     const img = filteredResults[idx];
     if (!img) return;
     viewerIndex = idx;
-    const cls = getSelectedClass();
-    const clsStatus = getImageClassStatus(img, cls);
-
     const imgEl = document.getElementById('eval-current-image');
     imgEl.src = '/image/' + encodeURIComponent(img.name) + '?version_id=' + encodeURIComponent(VERSION_ID);
+    const mark = img.correct ? '✓ 正确' : '✕ 错误';
     document.getElementById('eval-viewer-title').textContent =
-        `${img.filename}  [${idx + 1} / ${filteredResults.length}]  —  ${escHtml(cls)}  ${statusLabel(clsStatus)}`;
-
-    imgEl.onload = () => drawOverlay(img, imgEl, cls);
-    if (imgEl.complete && imgEl.naturalWidth) drawOverlay(img, imgEl, cls);
-}
-
-function drawOverlay(imgData, imgEl, cls) {
-    const svg = document.getElementById('eval-overlay');
-    svg.innerHTML = '';
-
-    const dispW = imgEl.offsetWidth;
-    const dispH = imgEl.offsetHeight;
-    const natW = imgEl.naturalWidth || 1;
-    const natH = imgEl.naturalHeight || 1;
-
-    const scaleX = dispW / natW;
-    const scaleY = dispH / natH;
-
-    function makeRect(x1, y1, x2, y2, color, dashed, labelText) {
-        const rx = Math.min(x1, x2) * scaleX;
-        const ry = Math.min(y1, y2) * scaleY;
-        const rw = Math.abs(x2 - x1) * scaleX;
-        const rh = Math.abs(y2 - y1) * scaleY;
-
-        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        rect.setAttribute('x', rx);
-        rect.setAttribute('y', ry);
-        rect.setAttribute('width', rw);
-        rect.setAttribute('height', rh);
-        rect.setAttribute('fill', 'none');
-        rect.setAttribute('stroke', color);
-        rect.setAttribute('stroke-width', '2');
-        if (dashed) rect.setAttribute('stroke-dasharray', '6,3');
-        svg.appendChild(rect);
-
-        if (labelText) {
-            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', rx + 2);
-            text.setAttribute('y', ry > 16 ? ry - 3 : ry + 14);
-            text.setAttribute('fill', color);
-            text.setAttribute('font-size', '12');
-            text.setAttribute('font-family', 'Arial, sans-serif');
-            text.setAttribute('paint-order', 'stroke');
-            text.setAttribute('stroke', 'rgba(0,0,0,0.65)');
-            text.setAttribute('stroke-width', '3');
-            text.textContent = labelText;
-            svg.appendChild(text);
-        }
-    }
-
-    imgData.gt_boxes.filter(b => b.label === cls).forEach(box => {
-        const [p1, p2] = box.points;
-        if (box.matched) {
-            makeRect(p1[0], p1[1], p2[0], p2[1], '#00c853', false, 'GT');
-        } else {
-            makeRect(p1[0], p1[1], p2[0], p2[1], '#00b7ff', true, 'FN');
-        }
-    });
-
-    imgData.pred_boxes.filter(b => b.label === cls).forEach(box => {
-        const [p1, p2] = box.points;
-        const conf = (box.conf * 100).toFixed(0) + '%';
-        if (box.matched) {
-            makeRect(p1[0], p1[1], p2[0], p2[1], '#ff6d00', false, conf);
-        } else {
-            makeRect(p1[0], p1[1], p2[0], p2[1], '#d43f3a', false, conf);
-        }
-    });
-
-    const gtCls = imgData.gt_boxes.filter(b => b.label === cls);
-    const predCls = imgData.pred_boxes.filter(b => b.label === cls);
-    const tp = predCls.filter(p => p.matched).length;
-    const fp = predCls.filter(p => !p.matched).length;
-    const fn = gtCls.filter(g => !g.matched).length;
+        `${img.filename}  [${idx + 1} / ${filteredResults.length}]`;
     document.getElementById('eval-box-legend').textContent =
-        `[${cls}]  GT标注: ${gtCls.length}  TP命中: ${tp}  FP误检: ${fp}  FN漏检: ${fn}`;
+        `真值：${img.gt || '?'}    预测：${img.pred || '（无）'}    置信度：${(img.conf * 100).toFixed(0)}%    ${mark}`;
 }
 
 document.getElementById('btn-eval-back-grid').addEventListener('click', () => {
     document.getElementById('eval-viewer').style.display = 'none';
     document.getElementById('eval-grid-wrap').style.display = 'block';
 });
-
 document.getElementById('btn-eval-prev').addEventListener('click', () => {
     if (viewerIndex > 0) loadViewerImage(viewerIndex - 1);
 });
@@ -563,23 +428,12 @@ document.addEventListener('keydown', e => {
     }
 });
 
-// ── Helpers ───────────────────────────────────────────────────
-
-function statusLabel(status) {
-    switch (status) {
-        case 'ok': return '✓ 检测OK';
-        case 'fp': return '! 误检';
-        case 'fn': return '✕ 漏检';
-        case 'fp_fn': return '! ✕ 误检+漏检';
-        default: return status;
-    }
-}
+// ── Helpers ────────────────────────────────────────────────────
 
 function escHtml(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Init ──────────────────────────────────────────────────────
+// ── Init ───────────────────────────────────────────────────────
 
-buildClassSelect();
 loadResultList();

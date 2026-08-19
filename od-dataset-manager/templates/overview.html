@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>{{ project_name }} - 概况分析</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <header>
+        <a href="/project/{{ project_id }}" class="header-back">← 返回项目</a>
+        <h1>{{ project_name }} - 概况分析</h1>
+    </header>
+    <div class="container">
+        <main>
+            <!-- 统计卡片 -->
+            <div class="overview-cards" id="overview-cards">
+                <div class="ov-card">
+                    <div class="ov-card-label">图片总数</div>
+                    <div class="ov-card-value" id="stat-total-images">-</div>
+                </div>
+                <div class="ov-card">
+                    <div class="ov-card-label">已标注</div>
+                    <div class="ov-card-value" id="stat-labeled">-</div>
+                </div>
+                <div class="ov-card">
+                    <div class="ov-card-label">未标注</div>
+                    <div class="ov-card-value" id="stat-unlabeled">-</div>
+                </div>
+                <div class="ov-card">
+                    <div class="ov-card-label">检测框总数</div>
+                    <div class="ov-card-value" id="stat-total-boxes">-</div>
+                </div>
+                <div class="ov-card">
+                    <div class="ov-card-label">平均框数/图</div>
+                    <div class="ov-card-value" id="stat-avg-boxes">-</div>
+                </div>
+            </div>
+
+            <!-- 饼图 + 类别统计表 -->
+            <div class="overview-charts">
+                <div class="chart-card">
+                    <div class="chart-title">各类别检测框占比</div>
+                    <div class="chart-wrap">
+                        <canvas id="class-pie-chart"></canvas>
+                    </div>
+                    <div class="chart-empty" id="pie-empty" style="display:none;">暂无标注数据</div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">各类别统计详情</div>
+                    <div class="ov-table-wrap">
+                        <table class="ov-table" id="class-stats-table">
+                            <thead>
+                                <tr>
+                                    <th>类别</th>
+                                    <th>框数</th>
+                                    <th>占比</th>
+                                    <th>涉及图片数</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+    const CLASSES = {{ classes | tojson | safe }};
+    const PROJECT_ID = {{ project_id | tojson | safe }};
+    const VERSION_ID = {{ version_id | tojson | safe }};
+
+    const CLASS_COLORS = ['#00b7ff','#ff6d00','#00c853','#d43f3a','#9c27b0','#ff9800','#2196f3','#4caf50','#e91e63','#00bcd4'];
+    function classColor(label) {
+        const idx = CLASSES.indexOf(label);
+        return idx >= 0 ? CLASS_COLORS[idx % CLASS_COLORS.length] : '#00b7ff';
+    }
+
+    let overviewData = null;
+    let pieChart = null;
+
+    function loadOverview() {
+        fetch(`/api/overview/${VERSION_ID}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) { alert(data.error); return; }
+                overviewData = data;
+                renderStats(data);
+                renderPie(data);
+                renderClassTable(data);
+            })
+            .catch(err => { console.error(err); alert('加载失败'); });
+    }
+
+    function renderStats(data) {
+        document.getElementById('stat-total-images').textContent = data.total_images;
+        document.getElementById('stat-labeled').textContent = data.labeled_images;
+        document.getElementById('stat-unlabeled').textContent = data.unlabeled_images;
+        document.getElementById('stat-total-boxes').textContent = data.total_boxes;
+        const avg = data.total_images > 0 ? (data.total_boxes / data.total_images).toFixed(2) : '0';
+        document.getElementById('stat-avg-boxes').textContent = avg;
+    }
+
+    function renderPie(data) {
+        const ctx = document.getElementById('class-pie-chart').getContext('2d');
+        const empty = document.getElementById('pie-empty');
+        if (data.total_boxes === 0) {
+            empty.style.display = 'block';
+            document.getElementById('class-pie-chart').style.display = 'none';
+            return;
+        }
+        empty.style.display = 'none';
+        document.getElementById('class-pie-chart').style.display = 'block';
+        const labels = data.class_stats.map(s => s.class);
+        const counts = data.class_stats.map(s => s.count);
+        const colors = labels.map(l => classColor(l));
+        if (pieChart) pieChart.destroy();
+        pieChart = new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: counts,
+                    backgroundColor: colors,
+                    borderColor: '#fff',
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: { font: { size: 12 }, padding: 10 }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const total = ctx.dataset.data.reduce((a,b) => a+b, 0);
+                                const pct = total > 0 ? (ctx.parsed / total * 100).toFixed(1) : 0;
+                                return `${ctx.label}: ${ctx.parsed} (${pct}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    function renderClassTable(data) {
+        const tbody = document.querySelector('#class-stats-table tbody');
+        tbody.innerHTML = '';
+        data.class_stats.forEach(stat => {
+            const tr = document.createElement('tr');
+            const pct = (stat.ratio * 100).toFixed(1) + '%';
+            tr.innerHTML = `
+                <td><span class="ov-color-dot" style="background:${classColor(stat.class)}"></span>${escHtml(stat.class)}</td>
+                <td>${stat.count}</td>
+                <td>${pct}</td>
+                <td>${stat.image_count}</td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    loadOverview();
+    </script>
+</body>
+</html>

@@ -44,8 +44,11 @@ __pycache__/
 # Office 锁文件（LibreOffice/Word，.~ 前缀）
 .~*
 
-# demo 视频制作中间截图产物
-demo/评测平台截图/
+# 参赛材料相关（不入库：交付物/演示视频脚本/评分自评/审计建议图）
+参赛材料/
+demo/
+docs/评分自评.md
+jianyi.png
 
 # Node（playwright 测试用）
 node_modules/

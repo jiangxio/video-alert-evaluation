@@ -94,28 +94,88 @@ def _encode_image(image_path: str) -> tuple[str, str]:
     return mime, data
 
 
-def build_prompt(valid_event_types: list[str]) -> str:
-    """根据允许的事件类型构建多模态分析 prompt"""
-    from app.event_types import get_type_descriptions
+def build_prompt(valid_event_types: list[str], event_descriptions: dict = None) -> str:
+    """根据允许的事件类型构建多模态分析 prompt（要求返回 JSON 含 label+confidence）。
+
+    每个类型同时列出 key（模型要返回的 label）+ 中文名 + 描述。描述优先级：
+    用户动态注入的 event_descriptions > DB description > 仅中文名。
+    prompt 始终通用——按 valid_event_types 动态列出，不硬编码任一事件类型。
+    """
+    from app.event_types import get_type_descriptions, get_type_names
 
     type_descriptions = get_type_descriptions()
+    type_names = get_type_names()
+    event_descriptions = event_descriptions or {}
 
     lines = [
         "Analyze the image and identify if any of the following events are present. "
-        "Return ONLY the applicable English labels, comma-separated. No explanations.",
+        'Return ONLY a JSON object of the form: '
+        '{"labels":[{"label":"<event_type>","confidence":<0.0-1.0>}, ...]}. '
+        "No explanations, no markdown fences.",
         "",
     ]
     for i, etype in enumerate(valid_event_types, 1):
-        desc = type_descriptions.get(etype, etype)
-        lines.append(f"{i}. {etype}: {desc}")
+        name = type_names.get(etype, etype)
+        desc = event_descriptions.get(etype) or type_descriptions.get(etype) or ""
+        if desc:
+            lines.append(f"{i}. {etype}（{name}）: {desc}")
+        else:
+            lines.append(f"{i}. {etype}（{name}）")
 
     lines.extend([
         "",
         f"Valid labels: {', '.join(valid_event_types)}, normal.",
-        "Return 'normal' only if NONE of the above apply.",
-        "Never combine 'normal' with other labels.",
+        "Include 'normal' with a confidence only if NONE of the above apply; "
+        "never combine 'normal' with other labels.",
+        "confidence is your certainty (0.0-1.0) that the label applies to the image.",
     ])
     return "\n".join(lines)
+
+
+def _parse_label_confidence(result: str, valid_labels: set) -> list[dict]:
+    """解析模型输出为 [{"label": str, "confidence": float}]。
+
+    优先按 JSON {"labels":[{"label","confidence"}]} 解析；失败回退逗号分隔标签
+    （confidence=1.0，向后兼容旧调用方）。confidence 夹到 [0,1]。
+    """
+    text = (result or "").strip()
+    parsed = None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(text[start:end + 1])
+            except Exception:
+                parsed = None
+
+    items = []
+    if isinstance(parsed, dict) and isinstance(parsed.get("labels"), list):
+        for entry in parsed["labels"]:
+            if isinstance(entry, dict):
+                lab = str(entry.get("label", "")).strip().lower()
+                try:
+                    conf = float(entry.get("confidence", 1.0))
+                except (TypeError, ValueError):
+                    conf = 1.0
+            elif isinstance(entry, str):
+                lab = entry.strip().lower()
+                conf = 1.0
+            else:
+                continue
+            if lab in valid_labels:
+                items.append({"label": lab, "confidence": max(0.0, min(1.0, conf))})
+        if items:
+            return items
+
+    # 回退：逗号分隔标签（confidence=1.0，向后兼容旧调用方/旧模型输出）
+    for part in (result or "").replace("，", ",").replace("、", ",").split(","):
+        lab = part.strip().lower()
+        if lab in valid_labels:
+            items.append({"label": lab, "confidence": 1.0})
+    return items
 
 
 def analyze_frame(
@@ -123,7 +183,8 @@ def analyze_frame(
     model_name: str,
     image_path: str,
     valid_event_types: list[str],
-) -> list[str]:
+    event_descriptions: dict = None,
+) -> list[dict]:
     """对单帧图片进行多模态行为分析
 
     Args:
@@ -131,18 +192,21 @@ def analyze_frame(
         model_name: 模型名称
         image_path: 图片路径
         valid_event_types: 允许的事件类型列表
+        event_descriptions: 可选，{事件类型: 描述}，动态注入 prompt 指导标注（优先于 DB 描述）
 
     Returns:
-        检测到的事件标签列表（已过滤、去重），保底返回 ["normal"]
+        检测到的事件标签列表，每项 {"label": str, "confidence": float}（已过滤、去重），
+        保底返回 [{"label": "normal", "confidence": 1.0}]。模型返回非法 JSON 时容错
+        回退：按逗号分隔解析标签，confidence 置 1.0（向后兼容旧调用方）。
     """
     mime, b64 = _encode_image(image_path)
     image_url = f"data:{mime};base64,{b64}"
 
-    prompt_text = build_prompt(valid_event_types)
+    prompt_text = build_prompt(valid_event_types, event_descriptions)
     valid_labels = set(valid_event_types + ["normal"])
 
     messages = [
-        {"role": "system", "content": "You are an image analysis expert. Identify events precisely."},
+        {"role": "system", "content": "You are an image analysis expert. Identify events precisely. Respond with JSON only."},
         {
             "role": "user",
             "content": [
@@ -153,21 +217,22 @@ def analyze_frame(
     ]
 
     completion = client.chat.completions.create(model=model_name, messages=messages)
-    result = completion.choices[0].message.content or "normal"
+    result = completion.choices[0].message.content or ""
 
-    # 解析标签
-    labels = []
-    for part in result.replace("，", ",").replace("、", ",").split(","):
-        label = part.strip().lower()
-        if label in valid_labels:
-            labels.append(label)
+    items = _parse_label_confidence(result, valid_labels)
 
     # 去重并保持顺序
     seen = set()
-    labels = [l for l in labels if not (l in seen or seen.add(l))]
+    deduped = []
+    for it in items:
+        lab = it["label"]
+        if lab in seen:
+            continue
+        seen.add(lab)
+        deduped.append(it)
 
     # 去掉 normal 如果还有其他标签
-    if len(labels) > 1 and "normal" in labels:
-        labels.remove("normal")
+    if len(deduped) > 1:
+        deduped = [it for it in deduped if it["label"] != "normal"]
 
-    return labels if labels else ["normal"]
+    return deduped if deduped else [{"label": "normal", "confidence": 1.0}]

@@ -29,6 +29,10 @@ def create_app(config_class=Config):
     app.register_blueprint(review.bp)
     app.register_blueprint(extract.bp)
 
+    # 注册 /api/v1 REST API（独立命名空间，与上述旧蓝图并行）
+    from app.api import register_api
+    register_api(app)
+
     # 向所有模板注入事件类型注册表
     from app.event_types import (
         get_event_types,

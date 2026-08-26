@@ -11,10 +11,10 @@ import shutil
 
 from app.database import get_db, DATABASE_PATH
 from app.services.verification_service import (
-    parse_alert_config, extract_alert_type_id, run_ocr
+    parse_alert_config, extract_alert_type_id, ocr_and_save
 )
 from app.routes import send_file_with_cache, send_image_with_thumbnail
-from app.utils import allowed_file
+from app.utils import allowed_file, safe_filename
 
 bp = Blueprint('alerts', __name__, url_prefix='/alerts')
 
@@ -297,18 +297,48 @@ def download_dataset(dataset_id):
         return jsonify({'error': str(e)}), 500
 
 
+def _assert_within(dest: Path, member_name: str):
+    """校验解压成员路径不会逃出 dest 目录，阻止 Zip/Tar Slip。"""
+    member_path = (dest / member_name).resolve()
+    try:
+        member_path.relative_to(dest)
+    except ValueError:
+        raise ValueError(f'非法压缩包路径: {member_name}')
+
+
+def _safe_extract_zip(zf: zipfile.ZipFile, dest_dir):
+    dest = Path(dest_dir).resolve()
+    for info in zf.infolist():
+        _assert_within(dest, info.filename)
+    zf.extractall(dest_dir)
+
+
+def _safe_extract_tar(tf: tarfile.TarFile, dest_dir):
+    dest = Path(dest_dir).resolve()
+    for member in tf.getmembers():
+        _assert_within(dest, member.name)
+        # 拒绝指向外部的符号链接/硬链接
+        if member.issym() or member.islnk():
+            raise ValueError(f'压缩包含非法链接: {member.name}')
+    # filter='data' 进一步过滤危险成员（Python 3.12+），低版本回退为已校验的 extractall
+    try:
+        tf.extractall(dest_dir, filter='data')
+    except TypeError:
+        tf.extractall(dest_dir)
+
+
 def _extract_archive(archive_path, dest_dir, filename=None):
-    """根据扩展名自动解压 zip / tar / tar.gz 到目标目录"""
+    """根据扩展名自动解压 zip / tar / tar.gz 到目标目录（带路径穿越防护）"""
     name = (filename or archive_path).lower()
     if name.endswith('.zip'):
         with zipfile.ZipFile(archive_path, 'r') as zf:
-            zf.extractall(dest_dir)
+            _safe_extract_zip(zf, dest_dir)
     elif name.endswith('.tar'):
         with tarfile.open(archive_path, 'r:') as tf:
-            tf.extractall(dest_dir)
+            _safe_extract_tar(tf, dest_dir)
     elif name.endswith('.tar.gz') or name.endswith('.tgz'):
         with tarfile.open(archive_path, 'r:gz') as tf:
-            tf.extractall(dest_dir)
+            _safe_extract_tar(tf, dest_dir)
     else:
         raise ValueError('不支持的压缩格式')
 
@@ -651,7 +681,10 @@ def upload_to_dataset(dataset_id):
             errors.append(f'{file.filename}: 不支持的格式')
             continue
 
-        filename = file.filename
+        filename = safe_filename(file.filename)
+        if not filename:
+            errors.append(f'{file.filename}: 非法文件名')
+            continue
 
         # 同数据集内防重复
         cursor.execute(
@@ -904,23 +937,7 @@ def ocr_single(image_id):
     if not img:
         return jsonify({'error': '图片不存在'}), 404
 
-    ocr_result = run_ocr(img['file_path'])
-
-    if 'error' not in ocr_result:
-        cursor.execute('''
-            INSERT INTO ocr_results
-            (alert_image_id, raw_ocr_text, video_id, timestamp, timestamp_seconds, success, full_result)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            image_id,
-            ocr_result.get('raw_ocr_text'),
-            ocr_result.get('video_id'),
-            ocr_result.get('timestamp'),
-            ocr_result.get('timestamp_seconds'),
-            ocr_result.get('success', False),
-            json.dumps(ocr_result, ensure_ascii=False)
-        ))
-        db.commit()
+    ocr_result, _ = ocr_and_save(db, image_id, img['file_path'])
 
     return jsonify({'success': 'error' not in ocr_result, 'ocr': ocr_result})
 
@@ -1018,7 +1035,6 @@ def ocr_batch(dataset_id):
         # 线程内使用独立数据库连接
         conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
         conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
 
         has_stopped = False
         for img in images:
@@ -1034,25 +1050,8 @@ def ocr_batch(dataset_id):
             success = False
 
             if not skipped:
-                ocr_result = run_ocr(img['file_path'])
+                ocr_result, _ = ocr_and_save(conn, img['id'], img['file_path'])
                 success = 'error' not in ocr_result and ocr_result.get('success', False)
-
-                if 'error' not in ocr_result:
-                    cur.execute('''
-                        INSERT INTO ocr_results
-                        (alert_image_id, raw_ocr_text, video_id, timestamp,
-                         timestamp_seconds, success, full_result)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        img['id'],
-                        ocr_result.get('raw_ocr_text'),
-                        ocr_result.get('video_id'),
-                        ocr_result.get('timestamp'),
-                        ocr_result.get('timestamp_seconds'),
-                        ocr_result.get('success', False),
-                        json.dumps(ocr_result, ensure_ascii=False)
-                    ))
-                    conn.commit()
 
                 # 如果启用了 stop_on_failure 且识别失败，停止后续处理
                 if stop_on_failure and not success:

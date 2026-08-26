@@ -212,7 +212,10 @@ def download_file():
     upload_dir = Path(current_app.config.get("UPLOAD_FOLDER", "uploads")).resolve()
 
     # 安全检查：确保文件在 uploads 目录下
-    if not str(file_path).startswith(str(upload_dir)):
+    # 注意：不能用 str.startswith，否则 "uploads_evil" 这类目录可绕过
+    try:
+        file_path.relative_to(upload_dir)
+    except ValueError:
         return jsonify({"error": "非法路径"}), 403
 
     if not file_path.exists():

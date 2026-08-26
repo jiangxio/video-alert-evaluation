@@ -153,7 +153,12 @@ def _verify_ocr(output_path, expected_video_id, reader=None):
             return 'failed', "无法提取中间帧进行验证"
 
         if reader is None:
-            reader = ocr_easy.get_reader()
+            try:
+                reader = ocr_easy.get_reader()
+            except Exception as e:
+                # OCR 模型首次下载可能因网络超时失败；水印本身已生成，
+                # 不应让自检崩溃中断整个流程，降级为"跳过自检"。
+                return 'skipped', f"OCR 模型不可用（跳过自检）: {e}"
         ocr_text = ocr_easy.preprocess_and_ocr(tmp_frame, reader=reader)
         parsed = ocr_easy.parse_watermark_text(ocr_text)
 
@@ -190,9 +195,14 @@ def build_ffmpeg_cmd(input_path, output_path, video_id,
 
     safe_video_id = video_id.replace(':', '-')
 
+    # drawtext 滤镜串以冒号作为选项分隔符，fontfile 路径里的冒号
+    # （Windows 盘符 C:）必须转义为 \: ，否则 FFmpeg 会把 "C:" 吞掉，
+    # 报 "No option name near '/Windows/...'"。单引号包裹不足以保护冒号。
+    safe_font_file = font_file.replace(':', '\\:')
+
     # pts:hms 中的冒号在 drawtext filter 中需要转义
     drawtext = (
-        f"drawtext=fontfile='{font_file}':"
+        f"drawtext=fontfile='{safe_font_file}':"
         f"text='{safe_video_id} %{{pts\\:hms}}':"
         f"x={config['watermark_x']}:"
         f"y={config['watermark_y']}:"

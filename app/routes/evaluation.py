@@ -569,10 +569,32 @@ def execute_task(task_id):
 
     def _worker():
         import sqlite3
+        import logging
+        import traceback
         conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        try:
+            _worker_body(cur, conn)
+        except Exception:
+            # 异常时必须：记日志、置 failed、关连接、清除 running 标志，
+            # 否则 status 永远 'evaluating'、_eval_progress.running 恒 True（409 阻塞重跑、finalize 被锁）。
+            logging.getLogger(__name__).exception(f'评测任务 {task_id} 执行失败')
+            try:
+                cur.execute('UPDATE eval_tasks SET status = ? WHERE id = ?', ('failed', task_id))
+                conn.commit()
+            except Exception:
+                pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with _eval_lock:
+                if task_id in _eval_progress:
+                    _eval_progress[task_id]['running'] = False
 
+    def _worker_body(cur, conn):
         # 判断是否为实时模式
         is_realtime = _is_realtime_task(cur, task_id)
 
@@ -701,9 +723,6 @@ def execute_task(task_id):
                 WHERE id = ?
             ''', ('done', accuracy, recall, avg_fp_per_hour, event_metrics_json, task_id))
         conn.commit()
-        conn.close()
-        with _eval_lock:
-            _eval_progress[task_id]['running'] = False
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
@@ -801,9 +820,8 @@ def get_results(task_id):
 
         total_count = sum(total_count_by_type.values())
         fp_count = sum(fp_by_type.values())
-        all_alert_types = set(list(fp_by_type.keys()) + list(total_count_by_type.keys()))
-        avg_fp_values = [round(fp_by_type.get(et, 0) / duration_hours, 2) for et in all_alert_types] if duration_hours else []
-        avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+        # 整体平均误检数/小时 = 全类型误检总数 / duration_hours（不是各类型速率的算术平均）
+        avg_fp_per_hour = round(fp_count / duration_hours, 2) if duration_hours else 0
         accuracy = (total_count - fp_count) / total_count if total_count > 0 else None
         recall = None
 
@@ -1833,6 +1851,9 @@ def delete_chat_session(task_id, session_id):
     if cursor.rowcount == 0:
         return jsonify({'error': '会话不存在'}), 404
     return jsonify({'success': True})
+
+
+@bp.route('/api/tasks/<int:task_id>/detailed-report-pdf', methods=['POST'])
 def detailed_report_pdf(task_id):
     """生成详细报告 PDF（Playwright 渲染）"""
     from app.services.eval_service import generate_detailed_report
@@ -1870,19 +1891,24 @@ def detailed_report_pdf(task_id):
             f.write(html)
             tmp_html = f.name
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            page.goto(f'file://{tmp_html}')
-            page.wait_for_load_state('networkidle')
-            pdf_bytes = page.pdf(
-                format='A4',
-                print_background=True,
-                margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
-            )
-            browser.close()
-
-        os.unlink(tmp_html)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page()
+                page.goto(f'file://{tmp_html}')
+                page.wait_for_load_state('networkidle')
+                pdf_bytes = page.pdf(
+                    format='A4',
+                    print_background=True,
+                    margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
+                )
+                browser.close()
+        finally:
+            # 无论渲染是否成功都清理临时 HTML，避免文件泄漏
+            try:
+                os.unlink(tmp_html)
+            except OSError:
+                pass
     except Exception as e:
         import traceback
         current_app.logger.error(f'PDF 生成失败: {e}\n{traceback.format_exc()}')
@@ -1938,7 +1964,7 @@ def detailed_report_preview(task_id):
         except Exception:
             pass
 
-    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    # 整体平均误检数/小时 = 各事件类型误检速率之和（= 总误检数 / 时长，非算术平均）
     avg_fp_per_hour = compute_overall_avg_fp(event_metrics)
 
     metrics_json = json.dumps({
@@ -2045,7 +2071,7 @@ def detailed_report_chat(task_id):
         except Exception:
             pass
 
-    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+    # 整体平均误检数/小时 = 各事件类型误检速率之和（= 总误检数 / 时长，非算术平均）
     avg_fp_per_hour = compute_overall_avg_fp(event_metrics)
 
     metrics_json = json.dumps({

@@ -1,0 +1,81 @@
+╌╌╌╌╌ REST API 改造计划（增量推进，一次一个模块）
+
+ 目标
+
+ 新建独立 /api/v1/* REST API，与现有页面路由/前端调用并行；旧端点保留并标记弃用。范围：URL 资源化 +
+ 正确 HTTP 动词 + 版本前缀 + 统一信封 + 统一错误处理。不做 schema 校验、不做鉴权。
+
+ 推进方式：先搭基础设施 +
+ 用第一个资源模块（videos）验证模板；之后每个资源模块单独规划、单独实现、单独验证。
+
+ 通用约定（所有模块复用，定一次）
+
+ - 信封：成功 {"code":0,"message":"ok","data":{...}}；列表
+ data:{items,total,page,page_size,has_next}（?page=1&page_size=20，默认20上限100）；错误
+ {"code":<int>,"message":"...","errors":[...]?}。二进制响应（下载/缩略图/日志）不走信封。
+ - URL 结构：/api/v1/<功能域>/<资源>，功能域沿用现有分组（videos/alerts/evaluation/streaming/algori
+ thms/auto-annotation/extract/assistant/config/review），一看就知道属于哪块功能。同名资源在不同功能
+ 域下天然不撞，避免复合名（如 alerts 的 eval-sets 与 videos 的 eval-sets 各归各域）。
+ - HTTP 动词：POST 创建、GET 读取、PATCH 部分更新、PUT 整体替换（singleton）、DELETE 删除。
+ - RPC 动词端点用 :action 后缀（如 :execute/:start/:clone/:finalize），子资源用名词
+ /<id>/<sub>。异步动作返回 202 + Location header。
+ - 错误处理：app 级 errorhandler，handler 内按 request.path.startswith('/api/v1/')
+ 分流——新命名空间返信封错误，其余回退原行为。旧端点用 return jsonify({error}),code 主动返回（不
+ raise），不受影响。
+ - 弃用标记：after_request 钩子，命中旧 API
+ 前缀（/<bp>/api/、/api/alerts/、/api/verification/）即加 Deprecation: true + Link 指向新资源。
+ - 逻辑复用：简单查询/CRUD → 抽 operation 到 app/services/ 新旧共用；带锁/线程/进程的高风险异步端点
+ → 委托旧视图函数 + 信封转换（compat.wrap_old_view），不抽不改旧逻辑。
+ - 不动：app/routes/*.py（11 个旧蓝图）、app/static/js/*、app/routes/__init__.py 的文件发送工具。
+
+ 本轮范围：基础设施 + videos 模块
+
+ 新增文件
+
+ - app/api/__init__.py — register_api(app)：注册 v1 蓝图 + errorhandler + 弃用钩子。
+ - app/api/v1/__init__.py — 聚合资源蓝图，url_prefix='/api/v1'。
+ - app/api/v1/responses.py — ok()/created()/accepted()/no_content()/err() + ApiError。
+ - app/api/v1/errors.py — app 级 errorhandler 分流。
+ - app/api/v1/deprecation.py — after_request 弃用钩子 + 前缀列表 + 旧→新映射。
+ - app/api/v1/compat.py — wrap_old_view() 委托旧视图 + 信封转换。
+ - app/api/v1/videos.py — videos 资源族端点（第一个模块）。
+
+ 修改
+
+ - app/__init__.py — create_app() 末尾加 register_api(app)。
+ - tests/conftest.py — 加 app/client fixture（保留 db_conn）。
+
+ videos 模块端点（旧→新）
+
+ ┌────────────────────────────────────┬───────────────────────────────┬─────────────────────┐
+ │                 旧                 │              新               │        方法         │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/all                    │ /api/v1/videos                │ GET                 │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/search                 │ /api/v1/videos（带 ?q= 过滤） │ GET                 │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/watermarked            │ /api/v1/videos/watermarked    │ GET                 │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/upload                 │ /api/v1/videos                │ POST                │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/<id>                   │ /api/v1/videos/<id>           │ GET/DELETE          │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/<id>/rename、/video-id │ /api/v1/videos/<id>           │ PATCH               │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/<id>/download          │ /api/v1/videos/<id>/download  │ GET(二进制)         │
+ ├────────────────────────────────────┼───────────────────────────────┼─────────────────────┤
+ │ /videos/api/eval-sets              │ /api/v1/videos/eval-sets      │ GET/POST/PUT/DELETE │
+ └────────────────────────────────────┴───────────────────────────────┴─────────────────────┘
+
+ 验证
+
+ - pytest tests/test_api_v1_videos.py tests/test_api_v1_errors.py tests/test_deprecation.py 全绿。
+ - python run.py 后：curl /api/v1/videos 返信封；curl /videos/api/all 返旧格式 + Deprecation:
+ true；/api/v1/不存在 返 404 信封；旧页面功能不受影响。
+
+ 后续模块（做到时再单独规划，本轮不展开）
+
+ 按风险从低到高顺序，URL 均按 /api/v1/<功能域>/<资源> 分组：alerts(datasets/images/eval-sets) →
+ alerts OCR 系列 → algorithms/event_types → config → streaming/tasks → auto-annotation/tasks →
+ extract/tasks → assistant → evaluation/tasks(查询型先于 :execute/:finalize，最后做) → review →
+ 文档 docs/rest-api.md。

@@ -1260,6 +1260,7 @@ function renderGtGrid() {
   const pagedRows = rows.slice((gtPage - 1) * PAGE_SIZE, gtPage * PAGE_SIZE);
 
   const grid = document.getElementById('gt-result-grid');
+  if (!grid) return;  // 实时模式无 GT 面板，DOM 不存在
   grid.innerHTML = '';
   if (!rows.length) {
     grid.innerHTML = '<div id="empty-state">该条件下无结果</div>';

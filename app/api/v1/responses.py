@@ -108,3 +108,14 @@ def pick_fields(data, allowed):
     known = {k: v for k, v in data.items() if k in allowed}
     unknown = [k for k in data if k not in allowed]
     return known, unknown
+
+
+def reject_unknown_fields(data, allowed):
+    """PATCH 字段白名单便捷包装：有未知字段返 400 UNKNOWN_FIELD 错误信封，否则 None。
+
+    端点用法：`resp = reject_unknown_fields(data, {"mode"}); if resp: return resp`。
+    """
+    _, unknown = pick_fields(data, allowed)
+    if unknown:
+        return err(400, f"不支持的字段: {unknown}", error_code="UNKNOWN_FIELD")
+    return None

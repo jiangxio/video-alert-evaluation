@@ -9,10 +9,8 @@ OCR 逻辑（后台线程 / `_ocr_progress` 内存态 / 线程内独立 sqlite �
 不引入 sxs 文档的 5 位错误码 / BLUEPRINTS / call_old_view——沿用已落地的
 wrap_old_view + v1_bp + 方案3 error_code。
 """
-from flask import Response
-
 from app.api.v1 import v1_bp
-from app.api.v1.compat import _split_rv, wrap_old_view
+from app.api.v1.compat import _extract, wrap_old_view
 from app.api.v1.responses import ok
 from app.routes.alerts import (
     ocr_batch,
@@ -27,18 +25,6 @@ _ocr_single = wrap_old_view(ocr_single)
 _ocr_manual = wrap_old_view(ocr_save_manual)
 _ocr_batch = wrap_old_view(ocr_batch)
 _ocr_cancel = wrap_old_view(ocr_cancel)
-
-
-def _extract(raw):
-    """从旧视图返回值取 (data, status)：处理 Response / tuple。"""
-    body, status, _ = _split_rv(raw)
-    if isinstance(body, Response):
-        data = body.get_json(silent=True)
-        if status == 200:
-            status = body.status_code
-    else:
-        data = body
-    return data, status
 
 
 @v1_bp.route("/alerts/images/<int:image_id>/ocr", methods=["POST"])

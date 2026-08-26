@@ -20,8 +20,7 @@ PATCH /api/v1/videos/<id>（合并 rename/video-id，新形状）、GET /api/v1/
 from flask import request
 
 from app.api.v1 import v1_bp
-from app.api.v1.compat import wrap_old_view
-from app.api.v1.responses import ok, paginate, parse_pagination
+from app.api.v1.compat import paginate_old_list, wrap_old_view
 from app.routes.videos import (
     create_eval_set,
     delete_video,
@@ -39,29 +38,11 @@ _download = wrap_old_view(download_video)
 _create_eval_set = wrap_old_view(create_eval_set)
 
 
-def _paginate_list(items):
-    """对旧视图返回的列表做内存分页并装成功信封。"""
-    page, page_size = parse_pagination(request.args)
-    total = len(items)
-    start = (page - 1) * page_size
-    page_items = items[start:start + page_size]
-    return ok(paginate(page_items, total, page, page_size))
-
-
-def _body_of(raw):
-    """旧视图可能返回 Response（jsonify）或裸 dict，统一取出 JSON body。"""
-    if hasattr(raw, "get_json"):
-        return raw.get_json()
-    return raw
-
-
 @v1_bp.route("/videos", methods=["GET"])
 def v1_list_videos():
     """视频列表，支持 ?q= 过滤，返回分页信封。"""
     q = request.args.get("q", "").strip()
-    raw = search_videos() if q else list_all_videos()
-    body = _body_of(raw)
-    return _paginate_list(body if isinstance(body, list) else [])
+    return paginate_old_list(lambda: search_videos() if q else list_all_videos())
 
 
 @v1_bp.route("/videos", methods=["POST"])
@@ -81,15 +62,7 @@ def v1_download_video(video_id):
 
 @v1_bp.route("/videos/eval-sets", methods=["GET"])
 def v1_list_eval_sets():
-    raw = list_eval_sets()
-    body = _body_of(raw)
-    if isinstance(body, dict):
-        items = body.get("sets", [])
-    elif isinstance(body, list):
-        items = body
-    else:
-        items = []
-    return _paginate_list(items)
+    return paginate_old_list(list_eval_sets, list_key="sets")
 
 
 @v1_bp.route("/videos/eval-sets", methods=["POST"])

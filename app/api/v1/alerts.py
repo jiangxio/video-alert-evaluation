@@ -17,16 +17,16 @@
 """
 import json
 
-from flask import Response, request
+from flask import request
 
 from app.api.v1 import v1_bp
 from app.api.v1.compat import (
+    _extract,
     _extract_message,
-    _split_rv,
     paginate_old_list,
     wrap_old_view,
 )
-from app.api.v1.responses import err, ok, pick_fields
+from app.api.v1.responses import err, ok, reject_unknown_fields
 from app.database import get_db
 from app.routes.alerts import (
     _parse_id_list,
@@ -70,18 +70,6 @@ _rename_eval_set = wrap_old_view(rename_alert_eval_set)
 _delete_eval_set = wrap_old_view(delete_alert_eval_set)
 
 
-def _extract(raw):
-    """从旧视图返回值取 (data, status)：处理 Response / tuple / 裸 dict。"""
-    body, status, _ = _split_rv(raw)
-    if isinstance(body, Response):
-        data = body.get_json(silent=True)
-        if status == 200:
-            status = body.status_code
-    else:
-        data = body
-    return data, status
-
-
 # ── 数据集 datasets ────────────────────────────────────────────────────────────
 
 @v1_bp.route("/alerts/datasets", methods=["GET"])
@@ -115,9 +103,9 @@ def v1_delete_dataset(dataset_id):
 def v1_patch_dataset(dataset_id):
     """只改 mode。未知字段返 400 UNKNOWN_FIELD；mode 值校验仍在旧视图。"""
     data = request.get_json(silent=True) or {}
-    _, unknown = pick_fields(data, {"mode"})
-    if unknown:
-        return err(400, f"不支持的字段: {unknown}", error_code="UNKNOWN_FIELD")
+    resp = reject_unknown_fields(data, {"mode"})
+    if resp:
+        return resp
     return _update_mode(dataset_id)
 
 
@@ -210,9 +198,9 @@ def v1_serve_image(image_id):
 def v1_patch_image(image_id):
     """只改 event_label。未知字段返 400 UNKNOWN_FIELD。"""
     data = request.get_json(silent=True) or {}
-    _, unknown = pick_fields(data, {"event_label"})
-    if unknown:
-        return err(400, f"不支持的字段: {unknown}", error_code="UNKNOWN_FIELD")
+    resp = reject_unknown_fields(data, {"event_label"})
+    if resp:
+        return resp
     return _set_label(image_id)
 
 
@@ -249,9 +237,9 @@ def v1_get_alert_eval_set(set_id):
 def v1_patch_alert_eval_set(set_id):
     """只改 name。未知字段返 400 UNKNOWN_FIELD。"""
     data = request.get_json(silent=True) or {}
-    _, unknown = pick_fields(data, {"name"})
-    if unknown:
-        return err(400, f"不支持的字段: {unknown}", error_code="UNKNOWN_FIELD")
+    resp = reject_unknown_fields(data, {"name"})
+    if resp:
+        return resp
     return _rename_eval_set(set_id)
 
 

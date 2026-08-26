@@ -46,6 +46,23 @@ def _split_rv(rv):
     return rv, status, headers
 
 
+def _extract(raw):
+    """从旧视图返回值取 (data, status)：处理 Response / tuple / 裸 dict。
+
+    用于列表端点等需手动取 data/status 再加工的场景（paginate_old_list、
+    端点内显式判 status 补 error_code）。与 _envelope_response 不同：后者
+    直接产出信封，本函数只拆解供调用方二次处理。
+    """
+    body, status, _ = _split_rv(raw)
+    if isinstance(body, Response):
+        data = body.get_json(silent=True)
+        if status == 200:
+            status = body.status_code
+    else:
+        data = body
+    return data, status
+
+
 def _extract_message(data):
     """从旧错误 body 提取 message（兼容 error / message 字段）。"""
     if isinstance(data, dict):
@@ -116,15 +133,7 @@ def paginate_old_list(old_call, list_key=None):
 
     from app.api.v1.responses import err, ok, paginate, parse_pagination
 
-    body, status, _ = _split_rv(old_call())
-    # 取 JSON：body 可能是 Response（jsonify）或裸 dict/list
-    if isinstance(body, Response):
-        data = body.get_json(silent=True)
-        if status == 200:
-            status = body.status_code
-    else:
-        data = body
-
+    data, status = _extract(old_call())
     if status >= 400:
         return err(status, _extract_message(data))
 

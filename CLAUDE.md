@@ -24,27 +24,36 @@ A video watermark benchmarking tool that tests OCR capabilities to extract video
 
 ## Common Commands
 
+### Unified CLI (process.py)
+
+`process.py` 是统一命令行入口，把分散在 `scripts/` 与项目根目录的脚本收编为子命令；命中后用 subprocess 透传参数到目标脚本，退出码原样回传。脚本文件保持原位——Flask 服务直接 import 它们，不能移动/改名。
+
+运行 `python process.py` 查看按分组排列的全部命令；`python process.py <命令> --help` 查看参数（带 argparse 的命令透传原生帮助，无 argparse 的显示入口说明）。旧写法 `--single/--batch/--install` 仍可用，自动映射到 `watermark`/`watermark-batch`/`install` 子命令并打印弃用提示。
+
 ### Video Watermarking (CLI)
 ```bash
-python process.py --install          # Install dependencies
-python process.py --single video1/046-3.30-18:16.mp4  # Watermark single video
-python process.py --batch            # Watermark all videos in video1/ and video2/
+python process.py install            # Install dependencies
+python process.py watermark video1/046-3.30-18:16.mp4  # Watermark single video
+python process.py watermark-batch    # Watermark all videos in video1/ and video2/
 ```
 
 ### OCR and Verification (CLI)
 ```bash
 # Verify single alert image (with real OCR)
-python scripts/verify_alert.py report/402_1774925112_103.png
+python process.py verify report/402_1774925112_103.png
 
-# Verify with mock OCR (for testing without GPU/OCR dependencies)
-python scripts/verify_alert.py report/402_1774925112_103.png --mock-ocr '{"video_id": "046", "timestamp_seconds": 90}'
+# Verify with mock OCR (skips the OCR branch — no EasyOCR import / model download;
+# drives ground-truth matching with mock video_id + timestamp). EasyOCR uses gpu=False (CPU).
+python process.py verify report/402_1774925112_103.png --mock-ocr '{"video_id": "046", "timestamp_seconds": 90}'
 
 # Batch verify all alert images
-python scripts/verify_alert.py --batch
+python process.py verify --batch
 
 # Run EasyOCR directly on an image
-python scripts/ocr_easy.py report/402_1774925112_103.png
+python process.py ocr report/402_1774925112_103.png
 ```
+
+> 其它子命令：`ocr-paddle`（PaddleOCR）、`stream`/`stream-fight`/`stream-merged`（推流到 MediaMTX）、`db-fix-duplicates`（清理重复 video_id）、`recall`/`recall-audit`/`leakage`/`leakage-v2`/`detection-report`/`retest-report`/`algo-condition`/`annotate-alarms`/`md2pdf`（分析报告）。脚本仍可直接 `python scripts/<脚本>.py` 运行。
 
 ### Web Platform
 ```bash

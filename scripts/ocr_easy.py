@@ -47,6 +47,14 @@ def preprocess_and_ocr(image_path, reader=None):
     # 反色（黑底白字→白底黑字）
     img_inverted = ImageOps.invert(img_enhanced)
 
+    # 放大提升小字符识别稳定性：水印字符较小，原始分辨率下 EasyOCR 易把
+    # 时间戳误识（如 00:03 → 100.3），放大 2× 后置信度与格式正确率显著提升
+    scale = 2
+    img_inverted = img_inverted.resize(
+        (img_inverted.width * scale, img_inverted.height * scale),
+        Image.LANCZOS
+    )
+
     # EasyOCR识别
     try:
         import numpy as np
@@ -86,7 +94,12 @@ def parse_watermark_text(text):
     # 自动纠正：把时间戳里的冒号/点/3/2/空格 混用统一为 HH:MM:SS.sss
     # 支持任意冒号位置被误识别为 3/. 的变体，以及冒号完全消失的情况
     # 如 00:38:26.667 / 0039.30.667 / 00.41224.267 / 00:19.:11.333 / 00 38 26.667 等
-    cleaned = re.sub(r'(\d{2})[:.,*32 ]*(\d{2})[:.,*32 ]*(\d{2})[:.,*32 ]*[.,](\d{3})', r'\1:\2:\3.\4', cleaned)
+    # 首段允许 2~3 位以容错 OCR 多识一位前导数字（如 00:03 被误识为 100.3），
+    # 替换时只保留末两位，丢弃多余前导数字
+    m = re.search(r'(\d{2,3})[:.,*32 ]*(\d{2})[:.,*32 ]*(\d{2})[:.,*32 ]*[.,](\d{3})', cleaned)
+    if m:
+        h = m.group(1)[-2:]
+        cleaned = cleaned[:m.start()] + f"{h}:{m.group(2)}:{m.group(3)}.{m.group(4)}" + cleaned[m.end():]
 
     # 提取时间戳（固定格式 HH:MM:SS.sss，必须严格匹配）
     time_match = re.search(r'(\d{2}:\d{2}:\d{2}\.\d{3})', cleaned)

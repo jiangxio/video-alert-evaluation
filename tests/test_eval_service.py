@@ -40,19 +40,22 @@ class TestComputeOverallAvgFp:
         assert compute_overall_avg_fp([]) == 0
 
     def test_normal(self):
+        # 整体 avg_fp = 各类型速率之【和】（= total_fp / total_duration_hours），
+        # 不是算术平均——见 CLAUDE.md「平均误检数/小时」。早期 sum/len 实现已修正为求和。
         event_metrics = [
             {"avg_fp_per_hour": 2.0},
             {"avg_fp_per_hour": 4.0},
         ]
-        assert compute_overall_avg_fp(event_metrics) == 3.0
+        assert compute_overall_avg_fp(event_metrics) == 6.0
 
     def test_skips_none(self):
+        # None 值跳过后求和（非平均）
         event_metrics = [
             {"avg_fp_per_hour": 2.0},
             {"avg_fp_per_hour": None},
             {"avg_fp_per_hour": 4.0},
         ]
-        assert compute_overall_avg_fp(event_metrics) == 3.0
+        assert compute_overall_avg_fp(event_metrics) == 6.0
 
     def test_missing_key_defaults_to_zero(self):
         # em.get('avg_fp_per_hour', 0) 会把缺失键当作 0，但 is not None 会过滤掉它

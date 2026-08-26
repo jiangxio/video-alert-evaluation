@@ -333,7 +333,7 @@ def db_get_version(version_id):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT v.*, p.classes AS project_classes, p.name AS project_name, p.labels_format
+            SELECT v.*, p.classes AS project_classes, p.name AS project_name, p.labels_format, p.mode
             FROM versions v
             JOIN projects p ON v.project_id = p.id
             WHERE v.id = ?
@@ -1317,8 +1317,8 @@ def version_page(version_id):
         project_id=version['project_id'],
         project_name=version.get('project_name', '')
     )
-    project = db_get_project(version['project_id'])
-    if project and project.get('mode') == 'classification':
+    # Route by project mode: classification -> classify page, detection -> index page
+    if version.get('mode') == 'classification':
         return render_template('classify.html', **ctx)
     return render_template('index.html', **ctx)
 
@@ -2027,17 +2027,20 @@ def overview_page(version_id):
                            base_dir=config.BASE_DIR,
                            version_id=version['id'],
                            project_id=version['project_id'],
-                           project_name=version.get('project_name', ''))
+                           project_name=version.get('project_name', ''),
+                           mode=version.get('mode', 'detection'))
 
 
 @app.route('/api/overview/<version_id>')
 def api_overview(version_id):
-    """Dataset overview: total boxes, per-class distribution, per-image stats."""
+    """Dataset overview: total boxes, per-class distribution, per-image stats.
+    Detection mode counts boxes; classification mode counts images per class."""
     version = db_get_version(version_id)
     if not version:
         return jsonify({"error": "version not found"}), 404
 
     classes = version['classes']
+    mode = version.get('mode', 'detection')
     images = db_list_images(version_id)
 
     per_class_count = [0] * len(classes)
@@ -2046,44 +2049,67 @@ def api_overview(version_id):
     labeled_count = 0
     per_image = []
 
-    for item in images:
-        lbl = db_get_label(version_id, item['name'])
-        box_count = 0
-        class_counts_img = [0] * len(classes)
-        if lbl and lbl['shapes']:
-            labeled_count += 1
-            for shape in lbl['shapes']:
-                if not isinstance(shape, dict):
-                    continue
-                cls_idx = shape.get('class_idx', 0)
-                if not (0 <= cls_idx < len(classes)):
-                    cls_idx = 0
-                per_class_count[cls_idx] += 1
-                class_counts_img[cls_idx] += 1
-                total_boxes += 1
-                box_count += 1
-        per_image.append({
-            'name': item['name'],
-            'filename': item['filename'],
-            'has_label': item['has_label'],
-            'box_count': box_count,
-            'class_counts': class_counts_img
-        })
+    if mode == 'classification':
+        # Each image carries one whole-image class_label (or none). No boxes.
+        for item in images:
+            cl = item.get('class_label')
+            class_counts_img = [0] * len(classes)
+            if cl:
+                labeled_count += 1
+                idx = classes.index(cl) if cl in classes else 0
+                per_class_count[idx] += 1
+                class_counts_img[idx] += 1
+            per_image.append({
+                'name': item['name'],
+                'filename': item['filename'],
+                'has_label': item['has_label'],
+                'class_label': cl,
+                'box_count': 0,
+                'class_counts': class_counts_img
+            })
+        # In classification, image_count == count (one class per image)
+        per_class_images = list(per_class_count)
+        total_boxes = 0
+    else:
+        for item in images:
+            lbl = db_get_label(version_id, item['name'])
+            box_count = 0
+            class_counts_img = [0] * len(classes)
+            if lbl and lbl['shapes']:
+                labeled_count += 1
+                for shape in lbl['shapes']:
+                    if not isinstance(shape, dict):
+                        continue
+                    cls_idx = shape.get('class_idx', 0)
+                    if not (0 <= cls_idx < len(classes)):
+                        cls_idx = 0
+                    per_class_count[cls_idx] += 1
+                    class_counts_img[cls_idx] += 1
+                    total_boxes += 1
+                    box_count += 1
+            per_image.append({
+                'name': item['name'],
+                'filename': item['filename'],
+                'has_label': item['has_label'],
+                'box_count': box_count,
+                'class_counts': class_counts_img
+            })
+        for idx in range(len(classes)):
+            per_class_images[idx] = sum(1 for img in per_image if img['class_counts'][idx] > 0)
 
-    # Update per-class image count
-    for idx in range(len(classes)):
-        per_class_images[idx] = sum(1 for img in per_image if img['class_counts'][idx] > 0)
-
+    # ratio denominator: classification → labeled images, detection → total boxes
+    ratio_total = labeled_count if mode == 'classification' else total_boxes
     class_stats = []
     for idx, cls in enumerate(classes):
         class_stats.append({
             'class': cls,
             'count': per_class_count[idx],
             'image_count': per_class_images[idx],
-            'ratio': (per_class_count[idx] / total_boxes) if total_boxes > 0 else 0.0
+            'ratio': (per_class_count[idx] / ratio_total) if ratio_total > 0 else 0.0
         })
 
     return jsonify({
+        'mode': mode,
         'total_images': len(images),
         'labeled_images': labeled_count,
         'unlabeled_images': len(images) - labeled_count,

@@ -545,82 +545,8 @@ document.getElementById('btn-refresh').addEventListener('click', () => {
     showMessage('已刷新');
 });
 
-// 上传弹窗逻辑
-const uploadModal = document.getElementById('upload-modal');
-const uploadFileInput = document.getElementById('upload-file-input');
-const uploadFilePreview = document.getElementById('upload-file-preview');
-const uploadResult = document.getElementById('upload-result');
-
-document.getElementById('btn-upload').addEventListener('click', () => {
-    uploadFileInput.value = '';
-    uploadFilePreview.innerHTML = '';
-    uploadResult.style.display = 'none';
-    uploadResult.innerHTML = '';
-    uploadModal.style.display = 'flex';
-});
-
-uploadFileInput.addEventListener('change', () => {
-    const files = Array.from(uploadFileInput.files);
-    if (files.length === 0) {
-        uploadFilePreview.innerHTML = '<span style="color:#999;">未选择文件</span>';
-    } else {
-        uploadFilePreview.innerHTML = `<strong>已选择 ${files.length} 个文件：</strong><br>` +
-            files.map(f => f.name).join(', ');
-    }
-});
-
-document.getElementById('upload-confirm').addEventListener('click', () => {
-    const files = uploadFileInput.files;
-    if (!files.length) {
-        uploadResult.style.display = 'block';
-        uploadResult.innerHTML = '<span style="color:#d32f2f;">请先选择要上传的图片文件</span>';
-        return;
-    }
-
-    // 显示上传进度
-    uploadResult.style.display = 'block';
-    uploadResult.innerHTML = '<span style="color:#3098d8;">正在上传，请稍候...</span>';
-
-    const formData = new FormData();
-    for (let f of files) formData.append('images', f);
-
-    fetch(qp('/api/upload_images'), {
-        method: 'POST',
-        body: formData
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.success) {
-            uploadResult.innerHTML = `<span style="color:#388e3c;">✓ 上传成功！共上传 ${data.count || files.length} 张图片</span>`;
-            // 延迟刷新列表并关闭弹窗
-            setTimeout(() => {
-                reloadImageList();
-                uploadModal.style.display = 'none';
-            }, 1500);
-        } else {
-            uploadResult.innerHTML = `<span style="color:#d32f2f;">✗ 上传失败：${data.error || '未知错误'}</span>`;
-        }
-    })
-    .catch(err => {
-        uploadResult.innerHTML = `<span style="color:#d32f2f;">✗ 上传失败：${err.message}</span>`;
-        console.error(err);
-    });
-});
-
-document.getElementById('upload-cancel').addEventListener('click', () => {
-    uploadModal.style.display = 'none';
-});
-
-document.getElementById('upload-close').addEventListener('click', () => {
-    uploadModal.style.display = 'none';
-});
-
-// 点击遮罩层关闭弹窗
-uploadModal.addEventListener('click', (e) => {
-    if (e.target === uploadModal) {
-        uploadModal.style.display = 'none';
-    }
-});
+// 上传弹窗逻辑（公共模块，见 upload_modal.js；index.html 需先引入该脚本）
+initUploadModal({ uploadUrl: qp('/api/upload_images'), onUploaded: reloadImageList });
 
 // ── Class color legend ──────────────────────────────────────
 function buildColorLegend() {

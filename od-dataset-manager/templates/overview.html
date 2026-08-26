@@ -27,6 +27,7 @@
                     <div class="ov-card-label">未标注</div>
                     <div class="ov-card-value" id="stat-unlabeled">-</div>
                 </div>
+                {% if mode == 'detection' %}
                 <div class="ov-card">
                     <div class="ov-card-label">检测框总数</div>
                     <div class="ov-card-value" id="stat-total-boxes">-</div>
@@ -35,12 +36,13 @@
                     <div class="ov-card-label">平均框数/图</div>
                     <div class="ov-card-value" id="stat-avg-boxes">-</div>
                 </div>
+                {% endif %}
             </div>
 
             <!-- 饼图 + 类别统计表 -->
             <div class="overview-charts">
                 <div class="chart-card">
-                    <div class="chart-title">各类别检测框占比</div>
+                    <div class="chart-title">{% if mode == 'detection' %}各类别检测框占比{% else %}各类别图片占比{% endif %}</div>
                     <div class="chart-wrap">
                         <canvas id="class-pie-chart"></canvas>
                     </div>
@@ -53,9 +55,9 @@
                             <thead>
                                 <tr>
                                     <th>类别</th>
-                                    <th>框数</th>
+                                    <th>{% if mode == 'detection' %}框数{% else %}图片数{% endif %}</th>
                                     <th>占比</th>
-                                    <th>涉及图片数</th>
+                                    {% if mode == 'detection' %}<th>涉及图片数</th>{% endif %}
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -70,6 +72,7 @@
     const CLASSES = {{ classes | tojson | safe }};
     const PROJECT_ID = {{ project_id | tojson | safe }};
     const VERSION_ID = {{ version_id | tojson | safe }};
+    const MODE = {{ mode | tojson | safe }};
 
     const CLASS_COLORS = ['#00b7ff','#ff6d00','#00c853','#d43f3a','#9c27b0','#ff9800','#2196f3','#4caf50','#e91e63','#00bcd4'];
     function classColor(label) {
@@ -97,15 +100,23 @@
         document.getElementById('stat-total-images').textContent = data.total_images;
         document.getElementById('stat-labeled').textContent = data.labeled_images;
         document.getElementById('stat-unlabeled').textContent = data.unlabeled_images;
-        document.getElementById('stat-total-boxes').textContent = data.total_boxes;
-        const avg = data.total_images > 0 ? (data.total_boxes / data.total_images).toFixed(2) : '0';
-        document.getElementById('stat-avg-boxes').textContent = avg;
+        if (MODE === 'detection') {
+            const boxesEl = document.getElementById('stat-total-boxes');
+            const avgEl = document.getElementById('stat-avg-boxes');
+            if (boxesEl) boxesEl.textContent = data.total_boxes;
+            if (avgEl) {
+                const avg = data.total_images > 0 ? (data.total_boxes / data.total_images).toFixed(2) : '0';
+                avgEl.textContent = avg;
+            }
+        }
     }
 
     function renderPie(data) {
         const ctx = document.getElementById('class-pie-chart').getContext('2d');
         const empty = document.getElementById('pie-empty');
-        if (data.total_boxes === 0) {
+        // classification: empty when no labeled images; detection: empty when no boxes
+        const isEmpty = (MODE === 'classification') ? (data.labeled_images === 0) : (data.total_boxes === 0);
+        if (isEmpty) {
             empty.style.display = 'block';
             document.getElementById('class-pie-chart').style.display = 'none';
             return;
@@ -155,11 +166,18 @@
         data.class_stats.forEach(stat => {
             const tr = document.createElement('tr');
             const pct = (stat.ratio * 100).toFixed(1) + '%';
-            tr.innerHTML = `
-                <td><span class="ov-color-dot" style="background:${classColor(stat.class)}"></span>${escHtml(stat.class)}</td>
-                <td>${stat.count}</td>
-                <td>${pct}</td>
-                <td>${stat.image_count}</td>`;
+            if (MODE === 'detection') {
+                tr.innerHTML = `
+                    <td><span class="ov-color-dot" style="background:${classColor(stat.class)}"></span>${escHtml(stat.class)}</td>
+                    <td>${stat.count}</td>
+                    <td>${pct}</td>
+                    <td>${stat.image_count}</td>`;
+            } else {
+                tr.innerHTML = `
+                    <td><span class="ov-color-dot" style="background:${classColor(stat.class)}"></span>${escHtml(stat.class)}</td>
+                    <td>${stat.count}</td>
+                    <td>${pct}</td>`;
+            }
             tbody.appendChild(tr);
         });
     }

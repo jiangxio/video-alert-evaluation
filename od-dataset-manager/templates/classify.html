@@ -9,30 +9,39 @@
     <header>
         <a href="/project/{{ project_id }}" class="header-back">← 返回项目</a>
         <h1>{{ project_name }}</h1>
-        <a href="/version/{{ version_id }}/evaluate-classify" class="header-eval-btn">分类结果评估</a>
+        <div class="header-actions">
+            <a href="/version/{{ version_id }}/evaluate-classify" class="header-eval-btn">分类结果评估</a>
+            <a href="/version/{{ version_id }}/overview" class="header-eval-btn">概况分析</a>
+            <a href="/version/{{ version_id }}/qc" class="header-eval-btn">数据质检</a>
+        </div>
     </header>
     <div class="container">
-        <aside id="side-panel">
-            <h2>图片列表</h2>
-            <div>
-                <input type="file" id="upload-images" multiple accept="image/*" style="display:none" />
-                <button id="btn-select-upload">选择上传图像</button>
-                <button id="btn-upload">上传</button>
-            </div>
-            <button id="btn-refresh">刷新列表</button>
-            <button id="btn-unlabeled">未标注</button>
-            <button id="btn-annotate-all">开始标注</button>
-            <ul id="image-list"></ul>
-            <div class="info" id="stats"></div>
-        </aside>
         <main>
+            <div class="toolbar">
+                <div class="toolbar-stats" id="stats"></div>
+                <div class="toolbar-filters">
+                    <button class="filter-btn active" data-filter="all">全部</button>
+                    <button class="filter-btn" data-filter="labeled">已标注</button>
+                    <button class="filter-btn" data-filter="unlabeled">未标注</button>
+                </div>
+                <div class="toolbar-class-filter">
+                    <label for="class-filter-select" class="class-filter-label">类别：</label>
+                    <select id="class-filter-select">
+                        <option value="all">全部类别</option>
+                    </select>
+                </div>
+                <div class="toolbar-actions">
+                    <button id="btn-upload">上传图片</button>
+                    <button id="btn-refresh">刷新</button>
+                    <button id="btn-annotate">标注</button>
+                    <button id="btn-delete-selected">删除选中</button>
+                </div>
+            </div>
             <div id="grid-view">
                 <div id="grid-controls">
                     <button id="btn-prev-page">上一页</button>
                     <span id="page-info">第 1 页 / 共 1 页</span>
                     <button id="btn-next-page">下一页</button>
-                    <button id="btn-annotate">标注选中图像</button>
-                    <button id="btn-delete-selected">删除选中图像</button>
                 </div>
                 <div id="image-grid"></div>
             </div>
@@ -55,7 +64,27 @@
         </main>
     </div>
 
-    <!-- Dir Browser Modal (used by upload path selection - not needed here but kept for parity) -->
+    <!-- Upload Modal (shared DOM shape with index.html; logic in upload_modal.js) -->
+    <div id="upload-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-box" style="width:560px;">
+            <div class="modal-header">
+                <strong>上传图片</strong>
+                <button class="modal-close" id="upload-close">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>选择图片文件</label>
+                    <input type="file" id="upload-file-input" multiple accept="image/*" />
+                </div>
+                <div id="upload-file-preview" style="font-size:12px; color:#666; max-height:120px; overflow-y:auto;"></div>
+                <div id="upload-result" style="display:none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" id="upload-confirm">确认上传</button>
+                <button class="btn-edit" id="upload-cancel">取消</button>
+            </div>
+        </div>
+    </div>
 
     <script>
       const CLASSES = {{ classes | tojson | safe }};
@@ -63,6 +92,7 @@
       const PROJECT_ID = {{ project_id | tojson | safe }};
       const VERSION_ID = {{ version_id | tojson | safe }};
     </script>
+    <script src="/static/upload_modal.js"></script>
     <script src="/static/classify.js"></script>
 </body>
 </html>

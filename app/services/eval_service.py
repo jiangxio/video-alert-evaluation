@@ -637,35 +637,42 @@ def _img_to_base64(path, max_width=400):
         return None
 
 
-def _call_claude(prompt_text, api_key=None, base_url=None):
-    """调用 Claude API，失败时返回 None。
+def _call_text_llm(prompt_text, api_key=None, base_url=None):
+    """调用文本逻辑组 LLM（OpenAI 兼容协议），失败时返回 None。
 
-    api_key/base_url/model 优先用传入参数，缺失时回退到统一 API 配置（api_config_service）。
+    api_key/base_url/model 优先用传入参数，缺失时回退到统一 API 配置（api_config_service 的文本逻辑组）。
     """
     from app.services import api_config_service
-    creds = api_config_service.get_claude_creds()
+    creds = api_config_service.get_text_creds()
     if not api_key:
-        api_key = creds.get('auth_token')
+        api_key = creds.get('api_key')
     if not api_key:
         return None
     if not base_url:
         base_url = creds.get('base_url')
-    model = creds.get('model', 'claude-sonnet-5')
+    model = creds.get('model', 'gpt-4o-mini')
     try:
-        import anthropic
+        from openai import OpenAI
         kwargs = {'api_key': api_key}
         if base_url:
             kwargs['base_url'] = base_url
-        client = anthropic.Anthropic(**kwargs)
-        resp = client.messages.create(
+        client = OpenAI(**kwargs)
+        system_prompt = '你是一位计算机视觉算法验证专家，请用中文回答，语言简洁专业。'
+        resp = client.chat.completions.create(
             model=model,
             max_tokens=2048,
-            system='你是一位计算机视觉算法验证专家，请用中文回答，语言简洁专业。',
-            messages=[{'role': 'user', 'content': prompt_text}],
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': prompt_text},
+            ],
         )
-        return resp.content[0].text if resp.content else None
+        return resp.choices[0].message.content if resp.choices else None
     except Exception:
         return None
+
+
+# 向后兼容别名（供 evaluation.py 旧调用逐步迁移）
+_call_claude = _call_text_llm
 
 
 def _build_report_html(task, event_metrics, summary_text, conclusion_text,
@@ -1291,7 +1298,8 @@ def generate_detailed_report(task_id, db, config=None):
     conclusion_text = config.get('conclusion_text', '')
 
     if not summary_text and not conclusion_text:
-        api_key = os.environ.get('ANTHROPIC_AUTH_TOKEN')
+        from app.services import api_config_service
+        api_key = api_config_service.get_text_creds().get('api_key')
         if api_key:
             metrics_json = json.dumps({
                 'accuracy': accuracy,
@@ -1540,31 +1548,31 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
     return accuracy, recall, avg_fp_per_hour, event_metrics, total_duration
 
 
-def _call_claude_chat(messages, current_summary, current_conclusion, metrics_json, api_key, base_url=None):
-    """根据对话上下文调用 Claude API 修改摘要和结论。
+def _call_text_llm_chat(messages, current_summary, current_conclusion, metrics_json, api_key, base_url=None):
+    """根据对话上下文调用文本逻辑组 LLM（OpenAI 兼容协议）修改摘要和结论。
 
-    api_key/base_url/model 优先用传入参数，缺失时回退到统一 API 配置（api_config_service）。
+    api_key/base_url/model 优先用传入参数，缺失时回退到统一 API 配置（api_config_service 的文本逻辑组）。
     """
     from app.services import api_config_service
-    creds = api_config_service.get_claude_creds()
+    creds = api_config_service.get_text_creds()
     if not api_key:
-        api_key = creds.get('auth_token')
+        api_key = creds.get('api_key')
     if not base_url:
         base_url = creds.get('base_url')
-    model = creds.get('model', 'claude-sonnet-5')
+    model = creds.get('model', 'gpt-4o-mini')
     if not api_key:
         return {'summary': current_summary, 'conclusion': current_conclusion}
 
     # 只保留 user 消息；assistant 消息中的内容和 system prompt 中的
     # current_summary/current_conclusion 完全重复，传给模型会造成混淆，
     # 导致模型直接复制已有内容而不做修改。
-    claude_messages = []
+    chat_messages = []
     for msg in messages:
         if msg.get('role') == 'user':
-            claude_messages.append({'role': 'user', 'content': msg['content']})
+            chat_messages.append({'role': 'user', 'content': msg['content']})
 
     # 最后一条必须是用户消息
-    if not claude_messages or claude_messages[-1]['role'] != 'user':
+    if not chat_messages or chat_messages[-1]['role'] != 'user':
         return {'summary': current_summary, 'conclusion': current_conclusion}
 
     system_prompt = f'''你是一位计算机视觉算法验证专家。用户正在编辑一份算法验证报告的测试摘要和结论章节。
@@ -1596,18 +1604,17 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
 5. 重要：不要直接复制"当前版本"中的内容。必须根据用户的具体要求做出实际修改。'''
 
     try:
-        import anthropic
+        from openai import OpenAI
         kwargs = {'api_key': api_key}
         if base_url:
             kwargs['base_url'] = base_url
-        client = anthropic.Anthropic(**kwargs)
-        resp = client.messages.create(
+        client = OpenAI(**kwargs)
+        resp = client.chat.completions.create(
             model=model,
             max_tokens=4096,
-            system=system_prompt,
-            messages=claude_messages,
+            messages=[{'role': 'system', 'content': system_prompt}] + chat_messages,
         )
-        text = resp.content[0].text if resp.content else ''
+        text = resp.choices[0].message.content if resp.choices else ''
 
         # 解析返回文本
         summary = current_summary
@@ -1641,3 +1648,7 @@ def _call_claude_chat(messages, current_summary, current_conclusion, metrics_jso
         return {'summary': summary, 'conclusion': conclusion}
     except Exception:
         return {'summary': current_summary, 'conclusion': current_conclusion}
+
+
+# 向后兼容别名（供 evaluation.py 旧调用逐步迁移）
+_call_claude_chat = _call_text_llm_chat

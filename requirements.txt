@@ -9,10 +9,7 @@ easyocr>=1.7
 # 图像处理
 Pillow>=9.0
 
-# Claude API
-anthropic>=0.30.0
-
-# AI 助手
+# AI 助手 / 多模态调用（统一 OpenAI 兼容协议）
 openai>=1.30.0
 cryptography>=42.0.0
 python-dotenv>=1.0.0

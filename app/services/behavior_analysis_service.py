@@ -30,8 +30,8 @@ def load_config(config_path: str | None = None) -> dict:
     except (FileNotFoundError, json.JSONDecodeError):
         file_cfg = {}
 
-    creds = api_config_service.get_openai_creds()
-    interval = api_config_service.get_openai_request_interval()
+    creds = api_config_service.get_vision_creds()
+    interval = api_config_service.get_vision_request_interval()
 
     return {
         "api_key": creds.get("api_key") or file_cfg.get("api_key", ""),
@@ -53,12 +53,12 @@ def save_config(config: dict, config_path: str | None = None) -> None:
 
     api_key = config.get("api_key")
     if api_key:
-        # 委托统一服务把 key 写入 .env，并同步 base_url/model
+        # 委托统一服务把 key 写入 .env，并同步 base_url/model（多模态审查组）
         api_config_service.save_config({
-            'openai_api_key': api_key,
-            'openai_base_url': config.get('base_url', ''),
-            'openai_model': config.get('model', ''),
-            'openai_request_interval_sec': config.get('request_interval_sec'),
+            'vision_api_key': api_key,
+            'vision_base_url': config.get('base_url', ''),
+            'vision_model': config.get('model', ''),
+            'vision_request_interval_sec': config.get('request_interval_sec'),
         })
 
     # 非敏感项落 JSON 兜底（不含 key）

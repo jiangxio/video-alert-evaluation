@@ -1956,9 +1956,9 @@ def detailed_report_preview(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     from app.services import api_config_service
-    claude_creds = api_config_service.get_claude_creds()
-    api_key = data.get('api_key') or claude_creds.get('auth_token')
-    api_base_url = data.get('api_base_url', '').strip() or claude_creds.get('base_url') or None
+    text_creds = api_config_service.get_text_creds()
+    api_key = data.get('api_key') or text_creds.get('api_key')
+    api_base_url = data.get('api_base_url', '').strip() or text_creds.get('base_url') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key，请在 /api-config/ 页面配置 Claude 组'}), 400
 
@@ -2059,9 +2059,9 @@ def detailed_report_chat(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     from app.services import api_config_service
-    claude_creds = api_config_service.get_claude_creds()
-    api_key = data.get('api_key') or claude_creds.get('auth_token')
-    api_base_url = data.get('api_base_url', '').strip() or claude_creds.get('base_url') or None
+    text_creds = api_config_service.get_text_creds()
+    api_key = data.get('api_key') or text_creds.get('api_key')
+    api_base_url = data.get('api_base_url', '').strip() or text_creds.get('base_url') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key，请在 /api-config/ 页面配置 Claude 组'}), 400
 

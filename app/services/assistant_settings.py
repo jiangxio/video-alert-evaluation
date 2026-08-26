@@ -138,15 +138,7 @@ def update_assistant_settings(data: dict) -> dict:
 
     fields = []
     values = []
-    if 'openai_api_key' in data:
-        fields.append('openai_api_key = ?')
-        values.append(_encrypt(data['openai_api_key']))
-    if 'openai_base_url' in data:
-        fields.append('openai_base_url = ?')
-        values.append(data['openai_base_url'])
-    if 'openai_model' in data:
-        fields.append('openai_model = ?')
-        values.append(data['openai_model'])
+    # 模型 API Key/Base URL/模型名已统一到 /api-config/ 的文本逻辑组，此处不再写入
     if 'max_messages_per_session' in data:
         fields.append('max_messages_per_session = ?')
         values.append(int(data['max_messages_per_session']))

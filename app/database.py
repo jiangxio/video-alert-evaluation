@@ -663,20 +663,37 @@ def init_db():
         )
     ''')
 
-    # 统一 API Token 配置表（非敏感项；密钥仅存 .env，此处只存"是否已配置"标记）
+    # 统一 API Token 配置表（非敏感项；密钥仅存 .env，此处只存“是否已配置”标记）
+    # 字段按“能力角色”分组：openai_* = 文本逻辑组，vision_* = 多模态审查组；
+    # claude_* 字段保留但已停用（①②报告生成已迁移到 OpenAI 协议）。
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS api_config (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             openai_base_url TEXT,
-            openai_model TEXT DEFAULT 'Qwen3-VL-8B-Instruct',
+            openai_model TEXT DEFAULT 'gpt-4o-mini',
             openai_request_interval_sec INTEGER DEFAULT 1,
             claude_base_url TEXT,
             claude_model TEXT DEFAULT 'claude-sonnet-5',
             openai_key_configured INTEGER DEFAULT 0,
             claude_key_configured INTEGER DEFAULT 0,
+            vision_base_url TEXT,
+            vision_model TEXT DEFAULT 'Qwen3-VL-8B-Instruct',
+            vision_request_interval_sec INTEGER DEFAULT 1,
+            vision_key_configured INTEGER DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # 为 api_config 追加 vision_* 列（兼容已有库）
+    for col_def in [
+        'vision_base_url TEXT',
+        "vision_model TEXT DEFAULT 'Qwen3-VL-8B-Instruct'",
+        'vision_request_interval_sec INTEGER DEFAULT 1',
+        'vision_key_configured INTEGER DEFAULT 0',
+    ]:
+        try:
+            cursor.execute(f'ALTER TABLE api_config ADD COLUMN {col_def}')
+        except Exception:
+            pass  # 列已存在
 
     # AI 助手待确认操作表
     cursor.execute('''

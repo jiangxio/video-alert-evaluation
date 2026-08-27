@@ -69,19 +69,40 @@ COPY --chown=appuser:appuser scripts/ ./scripts/
 COPY --chown=appuser:appuser config/ ./config/
 COPY --chown=appuser:appuser run.py process.py requirements.txt ./
 
+# od 目标检测评测子服务（合并进主镜像，端口 5000）
+COPY --chown=appuser:appuser od-dataset-manager/ ./od-dataset-manager/
+
+# 单容器双服务启动脚本（主 8080 前台 + od 5000 后台）
+COPY --chown=appuser:appuser docker-entrypoint.sh ./
+
 # 预创建运行时目录（init_db 启动时需要写入；/app/data 供 DATABASE_PATH 持久化卷挂载）
 # 以 root 创建目录并改属主，再切回 appuser
 USER root
 RUN mkdir -p uploads/videos uploads/alerts output ground_truth thumbnails \
         generated_videos extracted_frames auto_annotation_frames logs tmp report data \
+        od-dataset-manager/data \
+        od-dataset-manager/datasets/calling/images \
+        od-dataset-manager/datasets/calling/labels \
+    && chmod +x /app/docker-entrypoint.sh \
     && chown -R appuser:appuser /app
+
+# ── 软瘦身：清理运行不需要的编译产物 / torch 自带测试目录 / pip 缓存 ──
+# 只做零功能风险清理；不动 torch 本体、Playwright、scipy、opencv、EasyOCR
+# 模型、字体——保证 OCR 与 PDF 报告全链路完整。3.2GB → 约 3.1GB（仍 2-5GB
+# 档，镜像更干净、离线导出体积更小）。
+USER root
+RUN find /usr/local/lib/python3.10/site-packages -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null ; \
+    find /usr/local/lib/python3.10/site-packages/torch -type d \( -name 'test' -o -name 'tests' \) -exec rm -rf {} + 2>/dev/null ; \
+    find /usr/local/lib/python3.10/site-packages -name '*.pyc' -delete 2>/dev/null ; \
+    rm -rf /root/.cache /home/appuser/.cache/pip ; \
+    true
 
 USER appuser
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-EXPOSE 8080
+EXPOSE 8080 5000
 
-# waitress 启动，0.0.0.0:8080
-CMD ["python", "run.py"]
+# 单容器双服务：docker-entrypoint.sh 后台起 od(5000)，前台起主平台(8080, waitress)
+CMD ["/app/docker-entrypoint.sh"]

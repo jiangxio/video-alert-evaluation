@@ -50,3 +50,8 @@ WEB_PLATFORM_README.md
 .DS_Store
 .vscode/
 .idea/
+
+# od-dataset-manager 运行时数据（合并进主镜像后由 volume 持久化，不拷入）
+od-dataset-manager/datasets/
+od-dataset-manager/projects/
+od-dataset-manager/annotations.db.bak.sync

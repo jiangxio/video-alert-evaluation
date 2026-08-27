@@ -1,0 +1,51 @@
+# 增量更新 Dockerfile —— 基于原始依赖镜像 video-alert-eval:base
+#
+# base = 8月14日构建的原始依赖镜像（python:3.10-slim + torch/easyocr/
+#        playwright/ffmpeg/字体，3.2GB，无应用代码）。先执行：
+#        docker tag <原始镜像ID> video-alert-eval:base
+# 用途：依赖大镜像已存在、仅需同步最新应用代码时，避免 20 分钟全量重建。
+#       FROM base → 清空旧代码 → COPY 最新代码（含 od 子服务）→ 软瘦身。
+# 构建：docker build -t video-alert-eval:latest -f Dockerfile.patch .
+#
+# od 目标检测评测已合并进主镜像：同容器双端口（8080 主平台 + 5000 od），
+# 由 docker-entrypoint.sh 启动。od 依赖仅 Flask+Pillow，主镜像已含，无需额外安装。
+
+FROM video-alert-eval:base
+
+USER root
+
+# 清空旧应用代码（含 od 子目录与启动脚本），避免孤儿残留
+RUN rm -rf /app/app /app/scripts /app/config /app/process.py /app/run.py \
+           /app/od-dataset-manager /app/docker-entrypoint.sh
+
+# 拷贝最新主平台代码与配置
+COPY --chown=appuser:appuser app/ ./app/
+COPY --chown=appuser:appuser scripts/ ./scripts/
+COPY --chown=appuser:appuser config/ ./config/
+COPY --chown=appuser:appuser run.py process.py ./
+
+# od 目标检测评测子服务（合并进主镜像，端口 5000）
+COPY --chown=appuser:appuser od-dataset-manager/ ./od-dataset-manager/
+
+# 单容器双服务启动脚本
+COPY --chown=appuser:appuser docker-entrypoint.sh ./
+
+# 预创建 od 运行时目录（volume 首次挂载时复制容器内属主，确保 appuser 可写）
+RUN mkdir -p /app/od-dataset-manager/data \
+             /app/od-dataset-manager/datasets/calling/images \
+             /app/od-dataset-manager/datasets/calling/labels \
+    && chmod +x /app/docker-entrypoint.sh \
+    && chown -R appuser:appuser /app/od-dataset-manager /app/docker-entrypoint.sh
+
+# 软瘦身：清理运行不需要的编译产物 / torch 自带测试目录 / pip 缓存（不影响功能）
+RUN find /usr/local/lib/python3.10/site-packages -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null ; \
+    find /usr/local/lib/python3.10/site-packages/torch -type d \( -name 'test' -o -name 'tests' \) -exec rm -rf {} + 2>/dev/null ; \
+    find /usr/local/lib/python3.10/site-packages -name '*.pyc' -delete 2>/dev/null ; \
+    rm -rf /root/.cache /home/appuser/.cache/pip ; \
+    true
+
+USER appuser
+WORKDIR /app
+
+EXPOSE 8080 5000
+CMD ["/app/docker-entrypoint.sh"]

@@ -27,7 +27,7 @@ def _envelope(resp):
 
 
 def _make_dataset(client, name="ds"):
-    return client.post("/api/v1/alerts/datasets", json={"name": name}).get_json()["data"]["id"]
+    return client.post("/api/v1/alerts/datasets", json={"name": name}).get_json()["data"]["dataset"]["id"]
 
 
 def _find_font_path():
@@ -122,7 +122,7 @@ def test_ocr_single_real(client):
 def test_ocr_single_not_found(client):
     resp = client.post("/api/v1/alerts/images/999999/ocr")
     assert resp.status_code == 404
-    assert resp.get_json()["code"] == 20320
+    assert resp.get_json()["code"] == 404
 
 
 def test_ocr_save_manual(client):
@@ -144,7 +144,7 @@ def test_ocr_save_manual(client):
 def test_ocr_save_manual_not_found(client):
     resp = client.post("/api/v1/alerts/images/999999/ocr:manual", json={"video_id": "x"})
     assert resp.status_code == 404
-    assert resp.get_json()["code"] == 20320
+    assert resp.get_json()["code"] == 404
 
 
 # ── 批量 OCR（后台线程） ───────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ def test_ocr_batch_conflict(client):
     assert client.post(f"/api/v1/alerts/datasets/{did}/ocr:batch", json={}).status_code == 200
     resp = client.post(f"/api/v1/alerts/datasets/{did}/ocr:batch", json={})
     assert resp.status_code == 409
-    assert resp.get_json()["code"] == 30340
+    assert resp.get_json()["code"] == 409
 
 
 def test_ocr_batch_no_images(client):
@@ -180,7 +180,7 @@ def test_ocr_batch_no_images(client):
     did = _make_dataset(client)
     resp = client.post(f"/api/v1/alerts/datasets/{did}/ocr:batch", json={})
     assert resp.status_code == 400
-    assert resp.get_json()["code"] == 10311
+    assert resp.get_json()["code"] == 400
 
 
 def test_ocr_status_empty(client):
@@ -203,7 +203,7 @@ def test_ocr_cancel(client):
     assert client.post(f"/api/v1/alerts/datasets/{did}/ocr:batch", json={}).status_code == 200
     resp = client.post(f"/api/v1/alerts/datasets/{did}/ocr-status:cancel")
     assert resp.status_code == 200
-    assert resp.get_json()["data"]["cancelled"] is True
+    assert resp.get_json()["data"]["success"] is True
 
     data = _poll_until_done(client, did, timeout=60)
     assert data["running"] is False

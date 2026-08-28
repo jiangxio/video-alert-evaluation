@@ -1,99 +1,74 @@
-"""/api/v1/alerts OCR 系列（5 端点）。
+"""alerts OCR 系列 v1 端点（sxs-rest-api-alerts-ocr.md 蓝图，第 3 步）。
 
-委托 app.routes.alerts 的 5 个旧 OCR 视图，不改其后台线程 / _ocr_progress /
-_ocr_lock / 线程内独立 sqlite 连接（CLAUDE.md 高风险区），只在新端点套统一信封 +
-5 位错误码。旧视图在同一个 request context 内运行，request.get_json / get_db /
-current_app 均可用，故 ocr:manual / ocr:batch 的请求体由旧视图自读，新端点透传。
+OCR 逻辑（后台线程 / `_ocr_progress` 内存态 / 线程内独立 sqlite 连接）属 CLAUDE.md
+警告的高风险区——只 wrap 委托不改。
 
-语义保持：ocr_single 的 OCR 失败仍 HTTP 200（success:false 在 data 里）；
-ocr_batch 当场同步起线程非排队故 200；ocr_status 无任务返 200 空进度 + message
-（修正旧版 404，前端轮询统一解析）；ocr_cancel 幂等，未运行也 200。
+唯一改语义的点：`ocr-status` 无任务时旧版返 404，v1 改返 200 空进度，让前端轮询
+统一按 data 解析、无需区分 404/200（对应 sxs 文档 §3 的有意偏差）。
+
+不引入 sxs 文档的 5 位错误码 / BLUEPRINTS / call_old_view——沿用已落地的
+wrap_old_view + v1_bp + 方案3 error_code。
 """
-from flask import Blueprint
+from app.api.v1 import v1_bp
+from app.api.v1.compat import _extract, wrap_old_view
+from app.api.v1.responses import ok
+from app.routes.alerts import (
+    ocr_batch,
+    ocr_cancel,
+    ocr_save_manual,
+    ocr_single,
+    ocr_status,
+)
 
-from app.routes import alerts as _legacy
-from .compat import call_old_view
-from .responses import ok, ApiError
-
-bp = Blueprint("api_v1_alerts_ocr", __name__, url_prefix="/api/v1")
-
-# 旧视图错误 → 5 位错误码（docs/rest-api-error-codes.md：FF=02 datasets、FF=03 alert-images）。
-# 元组顺序 = (code, http_status, default_message)，与 _raise_from_legacy 的索引语义一致。
-_IMG_NOT_FOUND = (20320, 404, "图片不存在")
-_DS_NOT_FOUND = (20220, 404, "数据集不存在")
-_OCR_RUNNING = (30340, 409, "OCR 正在运行中")
-_NO_IMG_TO_OCR = (10311, 400, "没有需要 OCR 的图片")
-
-
-def _raise_from_legacy(body, status, mapping):
-    """旧视图返回非 200 时按 status 映射到 ApiError；body 里若无 error 文案用默认。
-    mapping = (code, http_status, default_message)。"""
-    if body and isinstance(body, dict) and body.get("error"):
-        msg = body["error"]
-    else:
-        msg = mapping[2]
-    raise ApiError(mapping[0], msg, mapping[1])
+# 预包装旧视图（CRUD），避免每次请求重复构造
+_ocr_single = wrap_old_view(ocr_single)
+_ocr_manual = wrap_old_view(ocr_save_manual)
+_ocr_batch = wrap_old_view(ocr_batch)
+_ocr_cancel = wrap_old_view(ocr_cancel)
 
 
-# ── 单图 OCR（同步） ───────────────────────────────────────────────────────────
+@v1_bp.route("/alerts/images/<int:image_id>/ocr", methods=["POST"])
+def v1_ocr_single(image_id):
+    """对单张图片执行 OCR。OCR 失败仍 HTTP 200（success 在 data，不在 HTTP）。"""
+    return _ocr_single(image_id)
 
-@bp.route("/alerts/images/<int:image_id>/ocr", methods=["POST"])
-def ocr_single(image_id):
-    """对单张告警图执行 OCR。OCR 失败仍 200（success:false, ocr:{error} 在 data）。"""
-    body, status = call_old_view(_legacy.ocr_single, image_id)
+
+@v1_bp.route("/alerts/images/<int:image_id>/ocr:manual", methods=["POST"])
+def v1_ocr_manual(image_id):
+    """手动保存 OCR 结果。"""
+    return _ocr_manual(image_id)
+
+
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/ocr:batch", methods=["POST"])
+def v1_ocr_batch(dataset_id):
+    """批量 OCR（后台线程）。
+
+    保持 200 非 202：旧版当场同步起 daemon 线程（非排队），故 200。
+    404=数据集不存在；400=无可 OCR 的图；409=已在运行（错误信封由 wrap 转换）。
+    """
+    return _ocr_batch(dataset_id)
+
+
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/ocr-status", methods=["GET"])
+def v1_ocr_status(dataset_id):
+    """查询批量 OCR 进度。
+
+    有意偏差：无任务时旧版返 404，v1 改返 200 空进度，便于前端轮询统一解析。
+    """
+    data, status = _extract(ocr_status(dataset_id))
     if status == 404:
-        _raise_from_legacy(body, status, _IMG_NOT_FOUND)
-    return ok({"success": body.get("success"), "ocr": body.get("ocr")})
+        return ok({
+            "total": 0,
+            "done": 0,
+            "running": False,
+            "cancelled": False,
+            "stopped": False,
+            "results": [],
+        })
+    return ok(data)
 
 
-@bp.route("/alerts/images/<int:image_id>/ocr:manual", methods=["POST"])
-def ocr_save_manual(image_id):
-    """手动保存 OCR 结果。请求体 {video_id,timestamp,timestamp_seconds,success} 由旧视图读取。"""
-    body, status = call_old_view(_legacy.ocr_save_manual, image_id)
-    if status == 404:
-        _raise_from_legacy(body, status, _IMG_NOT_FOUND)
-    return ok({"ocr": body.get("ocr")})
-
-
-# ── 批量 OCR（后台线程） ───────────────────────────────────────────────────────
-
-@bp.route("/alerts/datasets/<int:dataset_id>/ocr:batch", methods=["POST"])
-def ocr_batch(dataset_id):
-    """启动批量 OCR。旧视图当场起 daemon 线程，非排队，故 200（不改 202）。
-    请求体 {force_all,stop_on_failure} 由旧视图读取。"""
-    body, status = call_old_view(_legacy.ocr_batch, dataset_id)
-    if status == 404:
-        _raise_from_legacy(body, status, _DS_NOT_FOUND)
-    if status == 400:
-        _raise_from_legacy(body, status, _NO_IMG_TO_OCR)
-    if status == 409:
-        _raise_from_legacy(body, status, _OCR_RUNNING)
-    return ok({"total": body.get("total")})
-
-
-@bp.route("/alerts/datasets/<int:dataset_id>/ocr-status", methods=["GET"])
-def ocr_status(dataset_id):
-    """查询批量 OCR 进度。无任务 → 200 空进度 + message（修正旧版 404，前端轮询统一解析）。
-    不校验数据集存在性，对齐旧版语义。"""
-    body, status = call_old_view(_legacy.ocr_status, dataset_id)
-    if status == 404:
-        # 旧版无任务返 404，此处改为 200 + 空进度，前端轮询统一按 data 解析
-        return ok(
-            {
-                "total": 0,
-                "done": 0,
-                "running": False,
-                "cancelled": False,
-                "stopped": False,
-                "results": [],
-            },
-            message="没有正在进行的 OCR 任务",
-        )
-    return ok(body)
-
-
-@bp.route("/alerts/datasets/<int:dataset_id>/ocr-status:cancel", methods=["POST"])
-def ocr_cancel(dataset_id):
-    """中断批量 OCR（已成功的保留）。幂等，未运行也返 200。"""
-    call_old_view(_legacy.ocr_cancel, dataset_id)
-    return ok({"cancelled": True})
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/ocr-status:cancel", methods=["POST"])
+def v1_ocr_cancel(dataset_id):
+    """中断批量 OCR（幂等：未运行也 200）。"""
+    return _ocr_cancel(dataset_id)

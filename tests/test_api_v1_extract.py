@@ -32,10 +32,10 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, (resp.status_code, resp.get_json())
     body = resp.get_json()
-    assert body["code"] == code, body
+    assert body["code"] == status, body
     return body
 
 
@@ -146,17 +146,17 @@ def test_start_success(app, client, seed):
 
 
 def test_start_no_wm_ids(client, seed):
-    _err(client.post("/api/v1/extract/tasks", json={}), 400, 11100)
+    _err(client.post("/api/v1/extract/tasks", json={}), 400)
 
 
 def test_start_bad_interval(client, seed):
     # 旧代码 `float(data.get('interval_sec') or 1.0)`：0 是 falsy→被当默认 1.0，不触发；
     # 须传负数（truthy 且 ≤0）才命中「抽帧间隔必须大于0」。
-    _err(client.post("/api/v1/extract/tasks", json={"wm_ids": [1], "interval_sec": -1}), 400, 11101)
+    _err(client.post("/api/v1/extract/tasks", json={"wm_ids": [1], "interval_sec": -1}), 400)
 
 
 def test_start_wm_not_found(client, seed):
-    _err(client.post("/api/v1/extract/tasks", json={"wm_ids": [999]}), 404, 21100)
+    _err(client.post("/api/v1/extract/tasks", json={"wm_ids": [999]}), 404)
 
 
 def test_start_all_invalid(app, client, tmp_path):
@@ -173,7 +173,7 @@ def test_start_all_invalid(app, client, tmp_path):
             "VALUES (2, 2, 'v2_wm.mp4', '/nonexistent/path.mp4', 10.0)"
         )
         db.commit()
-    _err(client.post("/api/v1/extract/tasks", json={"wm_ids": [2], "interval_sec": 2}), 400, 11102)
+    _err(client.post("/api/v1/extract/tasks", json={"wm_ids": [2], "interval_sec": 2}), 400)
 
 
 # ── 3. status（委托）──────────────────────────────────────────────────────────
@@ -199,18 +199,18 @@ def test_status_db_fallback(app, client, seed):
 
 
 def test_status_not_found(client, seed):
-    _err(client.get("/api/v1/extract/tasks/999/status"), 404, 21101)
+    _err(client.get("/api/v1/extract/tasks/999/status"), 404)
 
 
 # ── 4. download（原位重写·二进制）────────────────────────────────────────────
 
 def test_download_not_found(client, seed):
-    _err(client.get("/api/v1/extract/tasks/999/download"), 404, 21101)
+    _err(client.get("/api/v1/extract/tasks/999/download"), 404)
 
 
 def test_download_dir_missing(app, client, seed):
     tid = _insert_task(app, output_dir="/nonexistent/dir")
-    _err(client.get(f"/api/v1/extract/tasks/{tid}/download"), 404, 21102)
+    _err(client.get(f"/api/v1/extract/tasks/{tid}/download"), 404)
 
 
 def test_download_success(app, client, seed, tmp_path):
@@ -231,7 +231,7 @@ def test_download_success(app, client, seed, tmp_path):
 # ── 5. delete（原位重写）──────────────────────────────────────────────────────
 
 def test_delete_not_found(client, seed):
-    _err(client.delete("/api/v1/extract/tasks/999"), 404, 21101)
+    _err(client.delete("/api/v1/extract/tasks/999"), 404)
 
 
 def test_delete_success(app, client, seed, tmp_path):

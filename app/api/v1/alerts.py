@@ -1,713 +1,317 @@
-"""/api/v1/alerts 资源族端点（查询型 CRUD，不含 OCR 系列）。
+"""alerts 资源 v1 端点（sxs2 蓝图子集，OCR 5 端点留第 3 步）。
 
-按批准计划实现 24 个端点：datasets CRUD + PATCH(mode)、algorithm-versions
-GET/POST(保持 POST)、images 集合 GET/POST(多文件)/:import/:batch-delete/
-logs/download(GET)、images 单条 GET/file/PATCH(label)/DELETE、eval-alert-sets
-CRUD + GET + 成员 :batch-add/:batch-remove。OCR 系列依赖 _ocr_progress 内存态
-进度+后台线程，留待后续阶段委托旧视图实现。
+策略（对应 docs/rest-api-alerts-borrow-analysis.md + sxs2 设计决策）：
+- 方案 A（不改旧视图、接受查询重复）：CRUD/二进制走 wrap_old_view 委托；列表端点
+  走 paginate_old_list（wrap 补不回 total/has_next）。
+- PATCH 严格字段白名单：datasets 只 mode、images 只 event_label、eval-sets 只 name，
+  未知字段返 400 UNKNOWN_FIELD（pick_fields）。
+- :action 命名：images:import / images:batch-delete / datasets:batch-add / datasets:batch-remove。
+- download POST→GET（读操作）。
+- 两个新详情端点（datasets/<id>、eval-sets/<id> GET）用「调旧 list + 按 id 过滤」实现，
+  复用旧版富化逻辑，零 SQL 重复。
+- batch-add/remove 重实现：set_id 从 path（旧版从 body），复用 _parse_id_list 去重。
 
-风格：只改 URL 结构 + 信封 + 明显错误动词（download POST→GET），不改交互语义。
-单字段更新用 PATCH（旧版 PUT 改单字段不严谨，修正）。复用 app.routes.alerts
-私有 helper 与 verification_service，不重复实现。二进制响应不走信封。
+已知偏差（记入 docstring，后续可优化）：
+- creates 返 200 非 201（旧视图均返 200，wrap 保持；与 videos 一致）。
+- images list 沿用旧 per_page 参数名（保留服务端筛选分页，不重写复杂查询）。
 """
 import json
-import os
-import shutil
-import tempfile
-import uuid
-import zipfile
-from pathlib import Path
 
-from flask import Blueprint, request, current_app, after_this_request
+from flask import request
 
+from app.api.v1 import v1_bp
+from app.api.v1.compat import (
+    _extract,
+    _extract_message,
+    paginate_old_list,
+    wrap_old_view,
+)
+from app.api.v1.responses import err, ok, paginate, parse_pagination, reject_unknown_fields
 from app.database import get_db
-from app.routes import send_file_with_cache, send_image_with_thumbnail
 from app.routes.alerts import (
-    _extract_archive,
-    _find_image_root,
-    _get_image_size,
-    _get_dataset_algorithm_versions,
-    _load_alert_config,
-    _log_image_action,
     _parse_id_list,
-    _set_dataset_algorithm_versions,
-    _validate_algorithm_versions,
+    batch_delete_images,
+    create_alert_eval_set,
+    create_dataset,
+    delete_alert_eval_set,
+    delete_dataset,
+    delete_image,
+    download_dataset,
+    get_dataset_algorithm_versions,
+    get_image_detail,
+    import_zip,
+    list_alert_eval_sets,
+    list_dataset_images,
+    list_datasets,
+    list_image_logs,
+    rename_alert_eval_set,
+    serve_image,
+    set_dataset_algorithm_versions,
+    set_label,
+    update_dataset_mode,
+    upload_to_dataset,
 )
-from app.services.verification_service import extract_alert_type_id
-from app.utils import allowed_file, safe_filename
-from .responses import ok, created, paginated, no_content, ApiError
 
-bp = Blueprint("api_v1_alerts", __name__, url_prefix="/api/v1")
-
-_IMAGE_FIELDS = (
-    "id, filename, file_path, alert_type_id, alert_type, file_size, "
-    "uploaded_at, dataset_id, image_width, image_height, event_label"
-)
-_DATASET_FIELDS = "id, name, notes, mode, created_at"
-_EVAL_SET_FIELDS = "id, name, notes, dataset_ids, created_at"
-
-
-def _parse_pagination():
-    """?page & ?page_size，page≥1，page_size 1..100，默认 20。"""
-    try:
-        page = max(1, int(request.args.get("page", "1")))
-    except (TypeError, ValueError):
-        page = 1
-    try:
-        page_size = int(request.args.get("page_size", "20"))
-    except (TypeError, ValueError):
-        page_size = 20
-    return page, max(1, min(page_size, 100))
-
-
-def _slice_page(rows, page, page_size):
-    total = len(rows)
-    start = (page - 1) * page_size
-    return rows[start:start + page_size], total
-
-
-def _require_dataset(cursor, dataset_id):
-    cursor.execute("SELECT id FROM datasets WHERE id = ?", (dataset_id,))
-    if not cursor.fetchone():
-        raise ApiError(20220, "数据集不存在", 404)
+# 预包装旧视图（CRUD/二进制），避免每次请求重复构造
+_create_dataset = wrap_old_view(create_dataset)
+_delete_dataset = wrap_old_view(delete_dataset)
+_update_mode = wrap_old_view(update_dataset_mode)
+_set_algo_versions = wrap_old_view(set_dataset_algorithm_versions)
+_upload = wrap_old_view(upload_to_dataset)
+_import = wrap_old_view(import_zip)
+_batch_delete = wrap_old_view(batch_delete_images)
+_download = wrap_old_view(download_dataset)
+_get_image = wrap_old_view(get_image_detail)
+_serve_image = wrap_old_view(serve_image)
+_set_label = wrap_old_view(set_label)
+_delete_image = wrap_old_view(delete_image)
+_create_eval_set = wrap_old_view(create_alert_eval_set)
+_rename_eval_set = wrap_old_view(rename_alert_eval_set)
+_delete_eval_set = wrap_old_view(delete_alert_eval_set)
 
 
 # ── 数据集 datasets ────────────────────────────────────────────────────────────
 
-@bp.route("/alerts/datasets", methods=["GET"])
-def list_datasets():
-    page, page_size = _parse_pagination()
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("""
-        SELECT d.*, COUNT(a.id) AS image_count
-        FROM datasets d
-        LEFT JOIN alert_images a ON a.dataset_id = d.id
-        GROUP BY d.id
-        ORDER BY d.created_at DESC
-    """)
-    rows = []
-    for r in cur.fetchall():
-        row = dict(r)
-        row["algorithm_versions"] = _get_dataset_algorithm_versions(db, row["id"])
-        rows.append(row)
-    page_rows, total = _slice_page(rows, page, page_size)
-    return paginated(page_rows, total, page, page_size)
+@v1_bp.route("/alerts/datasets", methods=["GET"])
+def v1_list_datasets():
+    """数据集列表（含 image_count、algorithm_versions），分页信封。"""
+    return paginate_old_list(list_datasets)
 
 
-@bp.route("/alerts/datasets", methods=["POST"])
-def create_dataset():
+@v1_bp.route("/alerts/datasets", methods=["POST"])
+def v1_create_dataset():
+    return _create_dataset()
+
+
+@v1_bp.route("/alerts/datasets/<int:dataset_id>", methods=["GET"])
+def v1_get_dataset(dataset_id):
+    """数据集详情（REST 补全，旧版无 GET /<id>）。调旧 list 按 id 过滤，复用富化逻辑。"""
+    data, _ = _extract(list_datasets())
+    items = data if isinstance(data, list) else []
+    for item in items:
+        if item.get("id") == dataset_id:
+            return ok(item)
+    return err(404, "数据集不存在", error_code="DATASET_NOT_FOUND")
+
+
+@v1_bp.route("/alerts/datasets/<int:dataset_id>", methods=["DELETE"])
+def v1_delete_dataset(dataset_id):
+    return _delete_dataset(dataset_id)
+
+
+@v1_bp.route("/alerts/datasets/<int:dataset_id>", methods=["PATCH"])
+def v1_patch_dataset(dataset_id):
+    """只改 mode。未知字段返 400 UNKNOWN_FIELD；mode 值校验仍在旧视图。"""
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    notes = (data.get("notes") or "").strip()
-    mode = data.get("mode", "normal")
-    algorithm_version_ids = data.get("algorithm_version_ids", [])
-    if not name:
-        raise ApiError(10200, "数据集名称不能为空", 400)
-
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "INSERT INTO datasets (name, notes, mode) VALUES (?, ?, ?)",
-        (name, notes or None, mode),
-    )
-    db.commit()
-    dataset_id = cur.lastrowid
-
-    if algorithm_version_ids:
-        ok_flag, err = _validate_algorithm_versions(db, algorithm_version_ids)
-        if not ok_flag:
-            raise ApiError(10201, err, 400)
-        _set_dataset_algorithm_versions(db, dataset_id, algorithm_version_ids)
-
-    cur.execute(f"SELECT {_DATASET_FIELDS} FROM datasets WHERE id = ?", (dataset_id,))
-    row = dict(cur.fetchone())
-    cur.execute("SELECT COUNT(id) AS c FROM alert_images WHERE dataset_id = ?", (dataset_id,))
-    row["image_count"] = cur.fetchone()["c"]
-    row["algorithm_versions"] = _get_dataset_algorithm_versions(db, dataset_id)
-    return created(row, location=f"/api/v1/alerts/datasets/{dataset_id}")
+    resp = reject_unknown_fields(data, {"mode"})
+    if resp:
+        return resp
+    return _update_mode(dataset_id)
 
 
-@bp.route("/alerts/datasets/<int:dataset_id>", methods=["GET"])
-def get_dataset(dataset_id):
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    cur.execute(f"SELECT {_DATASET_FIELDS} FROM datasets WHERE id = ?", (dataset_id,))
-    row = dict(cur.fetchone())
-    cur.execute("SELECT COUNT(id) AS c FROM alert_images WHERE dataset_id = ?", (dataset_id,))
-    row["image_count"] = cur.fetchone()["c"]
-    row["algorithm_versions"] = _get_dataset_algorithm_versions(db, dataset_id)
-    return ok(row)
+# ── 算法版本 algorithm-versions ────────────────────────────────────────────────
+
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/algorithm-versions", methods=["GET"])
+def v1_list_algorithm_versions(dataset_id):
+    """数据集启用的算法版本列表。数据集不存在时旧版返 404 → 透传错误信封。"""
+    return paginate_old_list(lambda: get_dataset_algorithm_versions(dataset_id))
 
 
-@bp.route("/alerts/datasets/<int:dataset_id>", methods=["DELETE"])
-def delete_dataset(dataset_id):
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    cur.execute("SELECT file_path FROM alert_images WHERE dataset_id = ?", (dataset_id,))
-    for row in cur.fetchall():
-        try:
-            os.unlink(row["file_path"])
-        except Exception:
-            pass
-    cur.execute("DELETE FROM alert_images WHERE dataset_id = ?", (dataset_id,))
-    cur.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
-    db.commit()
-    return no_content()
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/algorithm-versions", methods=["POST"])
+def v1_set_algorithm_versions(dataset_id):
+    """提交算法版本选择（保持 POST：服务端有校验 + is_active 历史逻辑）。"""
+    return _set_algo_versions(dataset_id)
 
 
-@bp.route("/alerts/datasets/<int:dataset_id>", methods=["PATCH"])
-def update_dataset(dataset_id):
-    """部分更新；本轮只支持 mode 字段（对齐旧版 /mode PUT）。"""
-    data = request.get_json(silent=True) or {}
-    if "mode" not in data:
-        raise ApiError(10210, "没有可更新的字段（mode）", 400)
-    mode = data["mode"]
-    if mode not in ("normal", "realtime"):
-        raise ApiError(10202, "无效的模式，必须是 normal 或 realtime", 400)
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    cur.execute("UPDATE datasets SET mode = ? WHERE id = ?", (mode, dataset_id))
-    db.commit()
-    cur.execute(f"SELECT {_DATASET_FIELDS} FROM datasets WHERE id = ?", (dataset_id,))
-    return ok(dict(cur.fetchone()))
+# ── 数据集图片 images 集合 ─────────────────────────────────────────────────────
+
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/images", methods=["GET"])
+def v1_list_dataset_images(dataset_id):
+    """数据集图片列表。旧版已服务端分页+筛选，这里重塑为 v1 信封（保留旧的 total/page）。
+
+    已知偏差：沿用旧参数名 per_page（非 page_size）及 event_type/video_id/label_status
+    筛选参数——不重写复杂查询，避免口径漂移。
+    """
+    data, status = _extract(list_dataset_images(dataset_id))
+    if status >= 400:
+        return err(status, _extract_message(data), error_code="DATASET_NOT_FOUND")
+    if isinstance(data, list):
+        # fork legacy returns bare list → memory paginate
+        page, page_size = parse_pagination(request.args)
+        total = len(data)
+        start = (page - 1) * page_size
+        items = data[start:start + page_size]
+    else:
+        data = data or {}
+        items = data.get("images", [])
+        total = data.get("total", 0)
+        page = data.get("page", 1)
+        page_size = data.get("per_page", 20)
+    has_next = page * page_size < total
+    return ok({
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_next": has_next,
+    })
 
 
-# ── 数据集算法版本 algorithm-versions（子集合） ────────────────────────────────
-
-@bp.route("/alerts/datasets/<int:dataset_id>/algorithm-versions", methods=["GET"])
-def get_dataset_algorithm_versions(dataset_id):
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    return ok(_get_dataset_algorithm_versions(db, dataset_id))
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/images", methods=["POST"])
+def v1_upload_images(dataset_id):
+    """多文件上传（字段 image）。"""
+    return _upload(dataset_id)
 
 
-@bp.route("/alerts/datasets/<int:dataset_id>/algorithm-versions", methods=["POST"])
-def set_dataset_algorithm_versions(dataset_id):
-    """设置启用集合（保持 POST：提交选择让服务端校验处理，非客户端全权定状态）。"""
-    data = request.get_json(silent=True) or {}
-    algorithm_version_ids = data.get("algorithm_version_ids", [])
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    ok_flag, err = _validate_algorithm_versions(db, algorithm_version_ids)
-    if not ok_flag:
-        raise ApiError(10203, err, 400)
-    _set_dataset_algorithm_versions(db, dataset_id, algorithm_version_ids)
-    return ok(_get_dataset_algorithm_versions(db, dataset_id))
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/images:import", methods=["POST"])
+def v1_import_images(dataset_id):
+    """zip/tar/tar.gz 导入（字段 file）。"""
+    return _import(dataset_id)
 
 
-# ── 数据集图片 images（集合） ──────────────────────────────────────────────────
-
-@bp.route("/alerts/datasets/<int:dataset_id>/images", methods=["GET"])
-def list_dataset_images(dataset_id):
-    page, page_size = _parse_pagination()
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    cur.execute(
-        f"SELECT {_IMAGE_FIELDS} FROM alert_images WHERE dataset_id = ? ORDER BY uploaded_at ASC",
-        (dataset_id,),
-    )
-    rows = []
-    for row in cur.fetchall():
-        img = dict(row)
-        cur.execute(
-            "SELECT video_id, timestamp, timestamp_seconds, success "
-            "FROM ocr_results WHERE alert_image_id = ? ORDER BY created_at DESC LIMIT 1",
-            (img["id"],),
-        )
-        ocr = cur.fetchone()
-        img["ocr"] = dict(ocr) if ocr else None
-        rows.append(img)
-    page_rows, total = _slice_page(rows, page, page_size)
-    return paginated(page_rows, total, page, page_size)
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/images:batch-delete", methods=["POST"])
+def v1_batch_delete_images(dataset_id):
+    """批量删除（body 可带 video_id/event_type 筛选）。"""
+    return _batch_delete(dataset_id)
 
 
-@bp.route("/alerts/datasets/<int:dataset_id>/images", methods=["POST"])
-def upload_images(dataset_id):
-    """上传图片（多文件）。multipart 字段名 image。"""
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    files = request.files.getlist("image")
-    if not files:
-        raise ApiError(10301, "没有上传文件", 400)
-
-    config = _load_alert_config()
-    uploaded, errors = [], []
-    for file in files:
-        if not file.filename:
-            continue
-        if not allowed_file(file.filename, current_app.config["ALLOWED_IMAGE_EXTENSIONS"]):
-            errors.append(f"{file.filename}: 不支持的格式")
-            continue
-        filename = safe_filename(file.filename)
-        if not filename:
-            errors.append(f"{file.filename}: 非法文件名")
-            continue
-
-        cur.execute(
-            "SELECT id FROM alert_images WHERE dataset_id = ? AND filename = ?",
-            (dataset_id, filename),
-        )
-        if cur.fetchone():
-            errors.append(f"{filename}: 已存在于该数据集")
-            continue
-
-        dataset_dir = Path(current_app.config["UPLOAD_ALERTS"]) / str(dataset_id)
-        dataset_dir.mkdir(parents=True, exist_ok=True)
-        save_path = dataset_dir / filename
-        if save_path.exists():
-            save_path = save_path.parent / f"{save_path.stem}_{uuid.uuid4().hex[:6]}{save_path.suffix}"
-            filename = save_path.name
-
-        file.save(str(save_path))
-        width, height = _get_image_size(str(save_path))
-        alert_type_id = extract_alert_type_id(filename)
-        alert_type = config.get(alert_type_id) if alert_type_id else None
-        file_size = save_path.stat().st_size
-        cur.execute(
-            "INSERT INTO alert_images (filename, file_path, alert_type_id, alert_type, file_size, "
-            "dataset_id, image_width, image_height, event_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (filename, str(save_path), alert_type_id, alert_type, file_size, dataset_id, width, height, alert_type),
-        )
-        db.commit()
-        uploaded.append({
-            "id": cur.lastrowid,
-            "filename": filename,
-            "alert_type": alert_type,
-            "image_width": width,
-            "image_height": height,
-        })
-
-    _log_image_action(db, dataset_id, "upload", len(uploaded), "; ".join(errors) if errors else None)
-    return ok({"uploaded": uploaded, "errors": errors})
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/images/logs", methods=["GET"])
+def v1_list_image_logs(dataset_id):
+    """数据集图片操作日志（分页信封）。"""
+    return paginate_old_list(lambda: list_image_logs(dataset_id), list_key="logs")
 
 
-@bp.route("/alerts/datasets/<int:dataset_id>/images:import", methods=["POST"])
-def import_images(dataset_id):
-    """从压缩包（zip/tar/tar.gz/tgz）导入图片。multipart 字段名 file。"""
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    if "file" not in request.files:
-        raise ApiError(10302, "没有上传文件", 400)
-    f = request.files["file"]
-    fname = (f.filename or "").lower()
-    supported = (".zip", ".tar", ".tar.gz", ".tgz")
-    if not any(fname.endswith(ext) for ext in supported):
-        raise ApiError(10303, "仅支持 .zip / .tar / .tar.gz / .tgz 格式", 400)
-
-    config = _load_alert_config()
-    image_exts = current_app.config["ALLOWED_IMAGE_EXTENSIONS"]
-    tmp_dir = tempfile.mkdtemp()
-    try:
-        archive_path = os.path.join(tmp_dir, "upload")
-        f.save(archive_path)
-        _extract_archive(archive_path, tmp_dir, f.filename)
-        search_root = _find_image_root(tmp_dir)
-
-        imported, skipped = [], []
-        for src in sorted(search_root.rglob("*")):
-            if not src.is_file() or src.suffix.lower().lstrip(".") not in image_exts:
-                continue
-            filename = src.name
-            cur.execute(
-                "SELECT id FROM alert_images WHERE dataset_id = ? AND filename = ?",
-                (dataset_id, filename),
-            )
-            if cur.fetchone():
-                skipped.append(filename)
-                continue
-
-            dataset_dir = Path(current_app.config["UPLOAD_ALERTS"]) / str(dataset_id)
-            dataset_dir.mkdir(parents=True, exist_ok=True)
-            dest = dataset_dir / filename
-            if dest.exists():
-                dest = dest.parent / f"{dest.stem}_{uuid.uuid4().hex[:6]}{dest.suffix}"
-                filename = dest.name
-            shutil.copy2(str(src), str(dest))
-
-            width, height = _get_image_size(str(dest))
-            alert_type_id = extract_alert_type_id(filename)
-            alert_type = config.get(alert_type_id) if alert_type_id else None
-            file_size = dest.stat().st_size
-            cur.execute(
-                "INSERT INTO alert_images (filename, file_path, alert_type_id, alert_type, file_size, "
-                "dataset_id, image_width, image_height, event_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (filename, str(dest), alert_type_id, alert_type, file_size, dataset_id, width, height, alert_type),
-            )
-            db.commit()
-            imported.append(filename)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    _log_image_action(db, dataset_id, "import", len(imported), f"跳过 {len(skipped)} 张" if skipped else None)
-    return ok({"imported": len(imported), "skipped": len(skipped), "skipped_files": skipped})
-
-
-@bp.route("/alerts/datasets/<int:dataset_id>/images:batch-delete", methods=["POST"])
-def batch_delete_images(dataset_id):
-    """批量删图片，可选 video_id/event_type 筛选。"""
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    data = request.get_json(silent=True) or {}
-    video_id = (data.get("video_id") or "").strip()
-    event_type = (data.get("event_type") or "").strip()
-
-    conditions = ["dataset_id = ?"]
-    params = [dataset_id]
-    if video_id:
-        conditions.append("id IN (SELECT alert_image_id FROM ocr_results WHERE video_id = ?)")
-        params.append(video_id)
-    if event_type:
-        conditions.append("alert_type = ?")
-        params.append(event_type)
-
-    where_clause = " AND ".join(conditions)
-    cur.execute(f"SELECT id, file_path FROM alert_images WHERE {where_clause}", params)
-    images = cur.fetchall()
-    if not images:
-        raise ApiError(20221, "没有找到符合条件的图片", 404)
-
-    deleted_count = 0
-    for row in images:
-        try:
-            os.unlink(row["file_path"])
-        except Exception:
-            pass
-        deleted_count += 1
-    cur.execute(f"DELETE FROM alert_images WHERE {where_clause}", params)
-    db.commit()
-
-    details_parts = []
-    if video_id:
-        details_parts.append(f"视频ID: {video_id}")
-    if event_type:
-        details_parts.append(f"事件类型: {event_type}")
-    _log_image_action(db, dataset_id, "batch_delete", deleted_count, "; ".join(details_parts) if details_parts else None)
-    return ok({"deleted_count": deleted_count})
-
-
-@bp.route("/alerts/datasets/<int:dataset_id>/images/logs", methods=["GET"])
-def list_image_logs(dataset_id):
-    """数据集图片操作日志（最近 50 条）。"""
-    db = get_db()
-    cur = db.cursor()
-    _require_dataset(cur, dataset_id)
-    cur.execute(
-        "SELECT id, action, image_count, details, created_at "
-        "FROM dataset_image_logs WHERE dataset_id = ? ORDER BY created_at DESC LIMIT 50",
-        (dataset_id,),
-    )
-    return ok([dict(r) for r in cur.fetchall()])
-
-
-@bp.route("/alerts/datasets/<int:dataset_id>/download", methods=["GET"])
-def download_dataset(dataset_id):
-    """打包下载数据集全部图片为 zip（二进制，不走信封）。"""
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT id, name FROM datasets WHERE id = ?", (dataset_id,))
-    dataset = cur.fetchone()
-    if not dataset:
-        raise ApiError(20220, "数据集不存在", 404)
-    cur.execute("SELECT file_path, filename FROM alert_images WHERE dataset_id = ?", (dataset_id,))
-    images = cur.fetchall()
-    if not images:
-        raise ApiError(20222, "数据集为空", 404)
-
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".zip")
-    os.close(tmp_fd)
-    try:
-        added = 0
-        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_STORED) as zf:
-            for img in images:
-                fp = Path(img["file_path"])
-                if fp.exists():
-                    zf.write(str(fp), img["filename"])
-                    added += 1
-        if added == 0:
-            os.unlink(tmp_path)
-            raise ApiError(20223, "没有可下载的图片文件", 404)
-
-        @after_this_request
-        def cleanup(response):
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-            return response
-
-        return send_file_with_cache(
-            tmp_path,
-            mimetype="application/zip",
-            as_attachment=True,
-            download_name=f"{dataset['name']}.zip",
-        )
-    except ApiError:
-        raise
-    except Exception as e:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-        raise ApiError(40280, f"打包下载失败: {e}", 500)
+@v1_bp.route("/alerts/datasets/<int:dataset_id>/download", methods=["GET"])
+def v1_download_dataset(dataset_id):
+    """打包下载全部图片（zip，二进制透传；旧版 POST→GET）。"""
+    return _download(dataset_id)
 
 
 # ── 单张图片 images ────────────────────────────────────────────────────────────
 
-def _fetch_image(cursor, image_id):
-    cursor.execute(f"SELECT {_IMAGE_FIELDS} FROM alert_images WHERE id = ?", (image_id,))
-    return cursor.fetchone()
+@v1_bp.route("/alerts/images/<int:image_id>", methods=["GET"])
+def v1_get_image(image_id):
+    """图片详情（含最新 OCR 结果）。"""
+    return _get_image(image_id)
 
 
-@bp.route("/alerts/images/<int:image_id>", methods=["GET"])
-def get_image_detail(image_id):
-    db = get_db()
-    cur = db.cursor()
-    img = _fetch_image(cur, image_id)
-    if not img:
-        raise ApiError(20320, "图片不存在", 404)
-    result = dict(img)
-    cur.execute(
-        "SELECT video_id, timestamp, timestamp_seconds, success, full_result, raw_ocr_text "
-        "FROM ocr_results WHERE alert_image_id = ? ORDER BY created_at DESC LIMIT 1",
-        (image_id,),
-    )
-    ocr_row = cur.fetchone()
-    if ocr_row:
-        ocr = dict(ocr_row)
-        if ocr.get("full_result"):
-            try:
-                full_result = json.loads(ocr["full_result"])
-                for key, value in full_result.items():
-                    if key not in ocr or ocr[key] is None:
-                        ocr[key] = value
-            except (json.JSONDecodeError, TypeError):
-                pass
-        result["ocr"] = ocr
-    else:
-        result["ocr"] = None
-    return ok(result)
+@v1_bp.route("/alerts/images/<int:image_id>/file", methods=["GET"])
+def v1_serve_image(image_id):
+    """图片文件/缩略图（?w= & ?h= 生成缩略图，二进制透传）。"""
+    return _serve_image(image_id)
 
 
-@bp.route("/alerts/images/<int:image_id>/file", methods=["GET"])
-def serve_image(image_id):
-    """图片文件，?w=&h= 生成缩略图（二进制，不走信封）。"""
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT file_path, filename FROM alert_images WHERE id = ?", (image_id,))
-    row = cur.fetchone()
-    if not row:
-        raise ApiError(20320, "图片不存在", 404)
-    path = Path(row["file_path"])
-    if not path.exists():
-        raise ApiError(20321, "文件不存在于磁盘", 404)
-    max_w = request.args.get("w", type=int)
-    max_h = request.args.get("h", type=int)
-    if max_w or max_h:
-        return send_image_with_thumbnail(str(path), max_width=max_w, max_height=max_h)
-    return send_file_with_cache(str(path))
-
-
-@bp.route("/alerts/images/<int:image_id>", methods=["PATCH"])
-def update_image(image_id):
-    """部分更新；只支持 event_label 字段（对齐旧版 /label PUT）。"""
+@v1_bp.route("/alerts/images/<int:image_id>", methods=["PATCH"])
+def v1_patch_image(image_id):
+    """只改 event_label。未知字段返 400 UNKNOWN_FIELD。"""
     data = request.get_json(silent=True) or {}
-    if "event_label" not in data:
-        raise ApiError(10310, "没有可更新的字段（event_label）", 400)
-    label = (data.get("event_label") or "").strip()
-    if not label:
-        raise ApiError(10300, "event_label 不能为空", 400)
-    db = get_db()
-    cur = db.cursor()
-    if not _fetch_image(cur, image_id):
-        raise ApiError(20320, "图片不存在", 404)
-    cur.execute("UPDATE alert_images SET event_label = ? WHERE id = ?", (label, image_id))
-    db.commit()
-    return ok({"event_label": label})
+    resp = reject_unknown_fields(data, {"event_label"})
+    if resp:
+        return resp
+    return _set_label(image_id)
 
 
-@bp.route("/alerts/images/<int:image_id>", methods=["DELETE"])
-def delete_image(image_id):
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT file_path FROM alert_images WHERE id = ?", (image_id,))
-    row = cur.fetchone()
-    if not row:
-        raise ApiError(20320, "图片不存在", 404)
-    try:
-        os.unlink(row["file_path"])
-    except Exception:
-        pass
-    cur.execute("DELETE FROM alert_images WHERE id = ?", (image_id,))
-    db.commit()
-    return no_content()
+@v1_bp.route("/alerts/images/<int:image_id>", methods=["DELETE"])
+def v1_delete_image(image_id):
+    return _delete_image(image_id)
 
 
-# ── 告警评测集 eval-alert-sets（对应 eval_alert_sets 表） ──────────────────────
+# ── 告警评测集 eval-sets ───────────────────────────────────────────────────────
 
-@bp.route("/alerts/eval-sets", methods=["GET"])
-def list_eval_sets():
-    page, page_size = _parse_pagination()
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(f"SELECT {_EVAL_SET_FIELDS} FROM eval_alert_sets ORDER BY created_at DESC")
-    rows = []
-    for row in cur.fetchall():
-        item = dict(row)
-        dataset_ids = _parse_id_list(item.get("dataset_ids"))
-        item["dataset_ids"] = dataset_ids
-        item["dataset_count"] = len(dataset_ids)
-        item["image_count"] = 0
-        item["dataset_names"] = []
-        if dataset_ids:
-            placeholders = ",".join("?" for _ in dataset_ids)
-            cur.execute(
-                f"SELECT d.id, d.name, COUNT(a.id) AS image_count "
-                f"FROM datasets d LEFT JOIN alert_images a ON a.dataset_id = d.id "
-                f"WHERE d.id IN ({placeholders}) GROUP BY d.id",
-                dataset_ids,
-            )
-            sub = cur.fetchall()
-            item["image_count"] = sum(r["image_count"] or 0 for r in sub)
-            names_by_id = {r["id"]: r["name"] for r in sub}
-            item["dataset_names"] = [names_by_id.get(i) for i in dataset_ids if names_by_id.get(i)]
-        rows.append(item)
-    page_rows, total = _slice_page(rows, page, page_size)
-    return paginated(page_rows, total, page, page_size)
+@v1_bp.route("/alerts/eval-sets", methods=["GET"])
+def v1_list_alert_eval_sets():
+    """评测集列表（含 dataset_count/image_count/dataset_names），分页信封。"""
+    return paginate_old_list(list_alert_eval_sets, list_key="sets")
 
 
-@bp.route("/alerts/eval-sets", methods=["POST"])
-def create_eval_set():
+@v1_bp.route("/alerts/eval-sets", methods=["POST"])
+def v1_create_alert_eval_set():
+    return _create_eval_set()
+
+
+@v1_bp.route("/alerts/eval-sets/<int:set_id>", methods=["GET"])
+def v1_get_alert_eval_set(set_id):
+    """评测集详情（REST 补全）。调旧 list 按 id 过滤，复用富化逻辑。"""
+    data, _ = _extract(list_alert_eval_sets())
+    sets = (data or {}).get("sets", []) if isinstance(data, dict) else []
+    for item in sets:
+        if item.get("id") == set_id:
+            return ok(item)
+    return err(404, "评测集不存在", error_code="EVAL_SET_NOT_FOUND")
+
+
+@v1_bp.route("/alerts/eval-sets/<int:set_id>", methods=["PATCH"])
+def v1_patch_alert_eval_set(set_id):
+    """只改 name。未知字段返 400 UNKNOWN_FIELD。"""
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    if not name:
-        raise ApiError(10500, "评测集名称不能为空", 400)
-    dataset_ids = data.get("dataset_ids", [])
-    if not isinstance(dataset_ids, list):
-        dataset_ids = []
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "INSERT INTO eval_alert_sets (name, notes, dataset_ids) VALUES (?, ?, ?)",
-        (name, data.get("notes", ""), json.dumps(dataset_ids)),
-    )
-    db.commit()
-    new_id = cur.lastrowid
-    return created(
-        {"id": new_id, "name": name, "notes": data.get("notes", ""), "dataset_ids": dataset_ids},
-        location=f"/api/v1/alerts/eval-sets/{new_id}",
-    )
+    resp = reject_unknown_fields(data, {"name"})
+    if resp:
+        return resp
+    return _rename_eval_set(set_id)
 
 
-@bp.route("/alerts/eval-sets/<int:set_id>", methods=["GET"])
-def get_eval_set(set_id):
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(f"SELECT {_EVAL_SET_FIELDS} FROM eval_alert_sets WHERE id = ?", (set_id,))
-    row = cur.fetchone()
-    if not row:
-        raise ApiError(20520, "评测集不存在", 404)
-    item = dict(row)
-    dataset_ids = _parse_id_list(item.get("dataset_ids"))
-    item["dataset_ids"] = dataset_ids
-    item["dataset_count"] = len(dataset_ids)
-    return ok(item)
+@v1_bp.route("/alerts/eval-sets/<int:set_id>", methods=["DELETE"])
+def v1_delete_alert_eval_set(set_id):
+    return _delete_eval_set(set_id)
 
 
-@bp.route("/alerts/eval-sets/<int:set_id>", methods=["PATCH"])
-def update_eval_set(set_id):
-    """部分更新元数据；只支持 name 字段（对齐旧版 rename）。不碰 dataset_ids（成员管理专属 :batch-add/:batch-remove）。"""
-    data = request.get_json(silent=True) or {}
-    if "name" not in data:
-        raise ApiError(10510, "没有可更新的字段（name）", 400)
-    new_name = (data.get("name") or "").strip()
-    if not new_name:
-        raise ApiError(10501, "名称不能为空", 400)
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT id FROM eval_alert_sets WHERE id = ?", (set_id,))
-    if not cur.fetchone():
-        raise ApiError(20520, "评测集不存在", 404)
-    cur.execute("UPDATE eval_alert_sets SET name = ? WHERE id = ?", (new_name, set_id))
-    db.commit()
-    cur.execute(f"SELECT {_EVAL_SET_FIELDS} FROM eval_alert_sets WHERE id = ?", (set_id,))
-    item = dict(cur.fetchone())
-    item["dataset_ids"] = _parse_id_list(item.get("dataset_ids"))
-    return ok(item)
+@v1_bp.route("/alerts/eval-sets/<int:set_id>/datasets:batch-add", methods=["POST"])
+def v1_alert_eval_set_batch_add(set_id):
+    """批量添加数据集到评测集（set_id 从 path，dataset_ids 从 body）。
 
-
-@bp.route("/alerts/eval-sets/<int:set_id>", methods=["DELETE"])
-def delete_eval_set(set_id):
-    db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT id FROM eval_alert_sets WHERE id = ?", (set_id,))
-    if not cur.fetchone():
-        raise ApiError(20520, "评测集不存在", 404)
-    cur.execute("DELETE FROM eval_alert_sets WHERE id = ?", (set_id,))
-    db.commit()
-    return no_content()
-
-
-# ── 评测集成员管理 datasets 子集合（增量语义，:batch-add / :batch-remove） ───────
-
-@bp.route("/alerts/eval-sets/<int:set_id>/datasets:batch-add", methods=["POST"])
-def batch_add_datasets(set_id):
-    """批量加数据集成员（接收 dataset_ids 数组，去重加入）。"""
+    重实现去重（方案 A）：旧版从 body 读 set_id，v1 改 RESTful path 参数，不能 raw-wrap。
+    复用 _parse_id_list，逻辑仅 list append + json dump。
+    """
     data = request.get_json(silent=True) or {}
     dataset_ids = data.get("dataset_ids", [])
     if not dataset_ids:
-        raise ApiError(10502, "请选择要添加的数据集", 400)
+        return err(400, "请选择要添加的数据集", error_code="VALIDATION_ERROR")
+
     db = get_db()
     cur = db.cursor()
-    cur.execute(f"SELECT {_EVAL_SET_FIELDS} FROM eval_alert_sets WHERE id = ?", (set_id,))
+    cur.execute("SELECT dataset_ids FROM eval_alert_sets WHERE id = ?", (set_id,))
     row = cur.fetchone()
     if not row:
-        raise ApiError(20520, "评测集不存在", 404)
-    current_ids = _parse_id_list(row["dataset_ids"])
+        return err(404, "评测集不存在", error_code="EVAL_SET_NOT_FOUND")
+
+    current = _parse_id_list(row["dataset_ids"])
     added_count = 0
     for did in dataset_ids:
-        if did not in current_ids:
-            current_ids.append(did)
+        if did not in current:
+            current.append(did)
             added_count += 1
     cur.execute(
         "UPDATE eval_alert_sets SET dataset_ids = ? WHERE id = ?",
-        (json.dumps(current_ids), set_id),
+        (json.dumps(current), set_id),
     )
     db.commit()
-    return ok({"added_count": added_count, "dataset_ids": current_ids})
+    return ok({"added_count": added_count, "dataset_ids": current})
 
 
-@bp.route("/alerts/eval-sets/<int:set_id>/datasets:batch-remove", methods=["POST"])
-def batch_remove_datasets(set_id):
-    """批量移数据集成员（接收 dataset_ids 数组）。"""
+@v1_bp.route("/alerts/eval-sets/<int:set_id>/datasets:batch-remove", methods=["POST"])
+def v1_alert_eval_set_batch_remove(set_id):
+    """批量移除数据集（set_id 从 path，dataset_ids 从 body）。重实现，同 batch-add。"""
     data = request.get_json(silent=True) or {}
     dataset_ids = data.get("dataset_ids", [])
     if not dataset_ids:
-        raise ApiError(10503, "请选择要移出的数据集", 400)
+        return err(400, "请选择要移出的数据集", error_code="VALIDATION_ERROR")
+
     db = get_db()
     cur = db.cursor()
-    cur.execute(f"SELECT {_EVAL_SET_FIELDS} FROM eval_alert_sets WHERE id = ?", (set_id,))
+    cur.execute("SELECT dataset_ids FROM eval_alert_sets WHERE id = ?", (set_id,))
     row = cur.fetchone()
     if not row:
-        raise ApiError(20520, "评测集不存在", 404)
-    current_ids = _parse_id_list(row["dataset_ids"])
+        return err(404, "评测集不存在", error_code="EVAL_SET_NOT_FOUND")
+
+    current = _parse_id_list(row["dataset_ids"])
     removed_count = 0
     for did in dataset_ids:
-        if did in current_ids:
-            current_ids.remove(did)
+        if did in current:
+            current.remove(did)
             removed_count += 1
     cur.execute(
         "UPDATE eval_alert_sets SET dataset_ids = ? WHERE id = ?",
-        (json.dumps(current_ids), set_id),
+        (json.dumps(current), set_id),
     )
     db.commit()
-    return ok({"removed_count": removed_count, "dataset_ids": current_ids})
+    return ok({"removed_count": removed_count, "dataset_ids": current})

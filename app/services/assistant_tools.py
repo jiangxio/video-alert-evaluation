@@ -1695,14 +1695,14 @@ def analyze_start_auto_annotation(video_db_id: int, event_types: list, **_extra)
 def execute_start_auto_annotation(params: dict) -> dict:
     """启动自动标注（委托旧 start_task 视图：在 app context 内推 request context 传 JSON 体）。"""
     from flask import current_app
-    from app.api.v1.compat import call_old_view
+    from app.api.v1.compat import _extract
     from app.routes import auto_annotation as _aa
     analysis = analyze_start_auto_annotation(params["video_db_id"], params["event_types"])
     if "error" in analysis:
         raise ValueError(analysis["error"])
     app = current_app._get_current_object()
     with app.test_request_context(json=params):
-        body, status = call_old_view(_aa.start_task)
+        body, status = _extract(_aa.start_task())
     if status != 200:
         raise RuntimeError((body.get("error") if isinstance(body, dict) else None) or "启动标注失败")
     return {"success": True, "task_id": body.get("task_id"),

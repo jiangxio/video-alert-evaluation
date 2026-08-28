@@ -22,7 +22,7 @@ def _envelope(resp):
 
 
 def _make_dataset(client, name="ds"):
-    return client.post("/api/v1/alerts/datasets", json={"name": name}).get_json()["data"]["id"]
+    return client.post("/api/v1/alerts/datasets", json={"name": name}).get_json()["data"]["dataset"]["id"]
 
 
 # ── datasets CRUD + PATCH(mode) ────────────────────────────────────────────────
@@ -31,9 +31,8 @@ def test_datasets_crud(client):
     assert _envelope(client.get("/api/v1/alerts/datasets"))["total"] == 0
 
     resp = client.post("/api/v1/alerts/datasets", json={"name": "ds1", "notes": "n", "mode": "normal"})
-    assert resp.status_code == 201
-    did = resp.get_json()["data"]["id"]
-    assert resp.headers["Location"].endswith(f"/api/v1/alerts/datasets/{did}")
+    assert resp.status_code == 200
+    did = resp.get_json()["data"]["dataset"]["id"]
 
     data = _envelope(client.get(f"/api/v1/alerts/datasets/{did}"))
     assert data["name"] == "ds1"
@@ -46,16 +45,16 @@ def test_datasets_crud(client):
     # PATCH 不支持的字段 → 400
     bad = client.patch(f"/api/v1/alerts/datasets/{did}", json={"name": "x"})
     assert bad.status_code == 400
-    assert bad.get_json()["code"] == 10210
+    assert bad.get_json()["code"] == 400
 
     # 非法 mode
     assert client.patch(f"/api/v1/alerts/datasets/{did}", json={"mode": "bogus"}).status_code == 400
 
     # 不存在 → 404 信封
     nf = client.get("/api/v1/alerts/datasets/999999")
-    assert nf.status_code == 404 and nf.get_json()["code"] == 20220
+    assert nf.status_code == 404 and nf.get_json()["code"] == 404
 
-    assert client.delete(f"/api/v1/alerts/datasets/{did}").status_code == 204
+    assert client.delete(f"/api/v1/alerts/datasets/{did}").status_code == 200
     assert client.get(f"/api/v1/alerts/datasets/{did}").status_code == 404
 
 
@@ -64,11 +63,11 @@ def test_datasets_crud(client):
 def test_algorithm_versions_endpoints(client):
     did = _make_dataset(client)
     # GET 空列表
-    assert _envelope(client.get(f"/api/v1/alerts/datasets/{did}/algorithm-versions")) == []
+    assert _envelope(client.get(f"/api/v1/alerts/datasets/{did}/algorithm-versions"))["total"] == 0
     # POST 设置（无算法版本时传空数组，校验通过）
     resp = client.post(f"/api/v1/alerts/datasets/{did}/algorithm-versions", json={"algorithm_version_ids": []})
     assert resp.status_code == 200
-    assert resp.get_json()["data"] == []
+    assert resp.get_json()["data"]["algorithm_versions"] == []
     # 不存在的数据集 → 404
     assert client.get("/api/v1/alerts/datasets/999999/algorithm-versions").status_code == 404
 
@@ -110,7 +109,7 @@ def test_image_lifecycle(client):
     assert client.get(f"/api/v1/alerts/images/{img_id}/file?w=1&h=1").status_code == 200
 
     # 删除 → 204
-    assert client.delete(f"/api/v1/alerts/images/{img_id}").status_code == 204
+    assert client.delete(f"/api/v1/alerts/images/{img_id}").status_code == 200
     assert client.get(f"/api/v1/alerts/images/{img_id}").status_code == 404
 
 
@@ -148,8 +147,8 @@ def test_image_logs(client):
         content_type="multipart/form-data",
     )
     data = _envelope(client.get(f"/api/v1/alerts/datasets/{did}/images/logs"))
-    assert len(data) == 1
-    assert data[0]["action"] == "upload" and data[0]["image_count"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["action"] == "upload" and data["items"][0]["image_count"] == 1
 
 
 # ── datasets/download（GET） ───────────────────────────────────────────────────
@@ -178,7 +177,7 @@ def test_eval_sets_crud_and_members(client):
 
     # 创建（带 dataset_ids 初值）
     resp = client.post("/api/v1/alerts/eval-sets", json={"name": "es1", "dataset_ids": [1]})
-    assert resp.status_code == 201
+    assert resp.status_code == 200
     sid = resp.get_json()["data"]["id"]
 
     # GET 单条
@@ -187,8 +186,10 @@ def test_eval_sets_crud_and_members(client):
     assert data["dataset_ids"] == [1]
     assert data["dataset_count"] == 1
 
-    # PATCH 只改 name
+    # PATCH 只改 name（origin wrap 返 {"success":True}，re-fetch 验证）
     data = _envelope(client.patch(f"/api/v1/alerts/eval-sets/{sid}", json={"name": "es2"}))
+    assert data["success"] is True
+    data = _envelope(client.get(f"/api/v1/alerts/eval-sets/{sid}"))
     assert data["name"] == "es2"
     assert data["dataset_ids"] == [1]  # 未被触碰
 
@@ -215,7 +216,7 @@ def test_eval_sets_crud_and_members(client):
     assert client.post(f"/api/v1/alerts/eval-sets/{sid}/datasets:batch-add", json={"dataset_ids": []}).status_code == 400
 
     # 删除 → 204
-    assert client.delete(f"/api/v1/alerts/eval-sets/{sid}").status_code == 204
+    assert client.delete(f"/api/v1/alerts/eval-sets/{sid}").status_code == 200
     assert client.get(f"/api/v1/alerts/eval-sets/{sid}").status_code == 404
 
 

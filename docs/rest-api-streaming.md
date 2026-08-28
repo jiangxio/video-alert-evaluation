@@ -1,5 +1,7 @@
 # /api/v1 streaming 改造文档
 
+> ⚠️ **错误码已改为方案3**（HTTP 状态即 `code` + 可选 `error_code` 字符串）。下方 5 位 `H FF SS` 码列已废弃，以代码实际行为为准；完整规范见 [错误码文档](./rest-api-error-codes.md)。
+
 > REST API 改造第 7 模块。把 `app/routes/streaming.py` 的 11 个内联 JSON 端点资源化进 `/api/v1/streaming/*`，统一信封 + 5 位错误码（FF=09 stream-tasks）。streaming 是高风险模块（start 用 `subprocess.Popen` 起 ffmpeg + `_monitor_video_process` 后台 daemon 线程；`list_tasks` 调 `_sync_running_status` 可能起重连线程；模块级 `_stream_processes`/`_stream_lock`/`_reconnecting_tasks`/`_reconnect_lock` 状态），故**原位重写 handler 但函数级复用旧高风险逻辑**（start 直接调旧 `_start_task_internal`，不重写 `_play_video`），与 OCR 的路由级 `call_old_view` 委托不同。旧端点保留并自动加弃用 header。
 
 ## 变更总览（TL;DR）

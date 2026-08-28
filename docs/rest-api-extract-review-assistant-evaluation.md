@@ -1,5 +1,7 @@
 # /api/v1 extract / review / assistant / evaluation 改造文档
 
+> ⚠️ **错误码已改为方案3**（HTTP 状态即 `code` + 可选 `error_code` 字符串）。下方 5 位 `H FF SS` 码列已废弃，以代码实际行为为准；完整规范见 [错误码文档](./rest-api-error-codes.md)。
+
 > REST API 改造第 9–12 模块（2026-08-21 一轮完成）。把 `app/routes/{extract,review,assistant,evaluation}.py` 共 54 个 JSON 端点资源化进 `/api/v1/*`，统一信封 + 5 位错误码（FF=11/14/12/13）。本轮共 +121 测试，全套 v1 由 146 → **267 passed, 1 skipped**。复用新建的 `app/api/v1/_helpers.py`（`parse_pagination`/`paginate`/`raise_msg`）。旧端点保留并自动加弃用 header。
 
 ## 变更总览（TL;DR）

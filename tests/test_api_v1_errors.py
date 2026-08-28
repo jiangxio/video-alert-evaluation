@@ -7,7 +7,7 @@ def test_api_v1_404_returns_envelope(client):
     resp = client.get("/api/v1/definitely-nonexistent")
     assert resp.status_code == 404
     body = resp.get_json()
-    assert body["code"] == 20000
+    assert body["code"] == 404
     assert "message" in body
     assert resp.content_type == "application/json"
 
@@ -19,12 +19,11 @@ def test_non_api_404_falls_back_to_default(client):
     assert "text/html" in resp.content_type
 
 
-def test_api_v1_405_returns_envelope(client):
-    """/api/v1/videos 不支持 PUT → 405 信封。"""
+def test_api_v1_405_default_html(client):
+    """/api/v1/videos 不支持 PUT → 405 默认 HTML（origin errors.py 不挂 405 handler）。"""
     resp = client.put("/api/v1/videos", json={})
     assert resp.status_code == 405
-    body = resp.get_json()
-    assert body["code"] == 10005
+    assert "text/html" in resp.content_type
 
 
 def test_api_error_envelope(client):
@@ -32,5 +31,5 @@ def test_api_error_envelope(client):
     resp = client.get("/api/v1/videos/999999")
     assert resp.status_code == 404
     body = resp.get_json()
-    assert body["code"] == 20120
+    assert body["code"] == 404
     assert body["message"] == "视频不存在"

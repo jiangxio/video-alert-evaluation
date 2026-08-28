@@ -1,9 +1,9 @@
-"""/api/v1 REST API 命名空间：聚合各资源蓝图。
+"""REST API v1 命名空间（/api/v1/*）。
 
-每新增一个资源模块，在此 import 并加入 BLUEPRINTS。
+register_api(app) 在 create_app 末尾调用：注册 v1 蓝图 + 资源模块 +
+全局 errorhandler（errors.py）+ 弃用钩子（deprecation.py）。L5b golden 基线已就位，
+可盯防全局钩子对旧 API 响应的误伤。
 """
-from . import alerts, alerts_ocr, algorithms, assistant, auto_annotation, config, evaluation, event_types, extract, review, streaming, videos
+from flask import Blueprint
 
-
-BLUEPRINTS = [videos.bp, alerts.bp, alerts_ocr.bp, algorithms.bp, assistant.bp, auto_annotation.bp,
-              config.bp, evaluation.bp, event_types.bp, extract.bp, review.bp, streaming.bp]
+v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")

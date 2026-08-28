@@ -36,10 +36,10 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, (resp.status_code, resp.get_json())
     body = resp.get_json()
-    assert body["code"] == code, body
+    assert body["code"] == status, body
     return body
 
 
@@ -243,31 +243,31 @@ def test_start_success_queued(app, client, seed):
 
 
 def test_start_no_video(client, seed):
-    _err(client.post("/api/v1/auto-annotation/tasks", json={"event_types": ["fight"]}), 400, 11000)
+    _err(client.post("/api/v1/auto-annotation/tasks", json={"event_types": ["fight"]}), 400)
 
 
 def test_start_bad_frame_interval(client, seed):
     _err(client.post("/api/v1/auto-annotation/tasks", json={
         "video_db_id": 1, "frame_interval_sec": 0, "event_types": ["fight"],
-    }), 400, 11001)
+    }), 400)
 
 
 def test_start_bad_merge_interval(client, seed):
     _err(client.post("/api/v1/auto-annotation/tasks", json={
         "video_db_id": 1, "merge_interval_sec": -1, "event_types": ["fight"],
-    }), 400, 11002)
+    }), 400)
 
 
 def test_start_no_event_types(client, seed):
     _err(client.post("/api/v1/auto-annotation/tasks", json={
         "video_db_id": 1, "event_types": [],
-    }), 400, 11003)
+    }), 400)
 
 
 def test_start_video_not_found(client, seed):
     _err(client.post("/api/v1/auto-annotation/tasks", json={
         "video_db_id": 999, "event_types": ["fight"],
-    }), 404, 21021)
+    }), 404)
 
 
 def test_start_no_watermark(app, client, tmp_path):
@@ -282,7 +282,7 @@ def test_start_no_watermark(app, client, tmp_path):
         db.commit()
     _err(client.post("/api/v1/auto-annotation/tasks", json={
         "video_db_id": 2, "event_types": ["fight"],
-    }), 404, 21022)
+    }), 404)
 
 
 # ── 3. stop（委托）────────────────────────────────────────────────────────────
@@ -299,7 +299,7 @@ def test_stop_success(app, client):
 
 def test_stop_no_running(client):
     """无运行任务→409(31040，旧 400→409)。"""
-    _err(client.post("/api/v1/auto-annotation/tasks:stop"), 409, 31040)
+    _err(client.post("/api/v1/auto-annotation/tasks:stop"), 409)
 
 
 # ── 4. status（委托）─────────────────────────────────────────────────────────
@@ -376,13 +376,13 @@ def test_list_tasks_by_video_excludes_non_done(app, client, seed):
 # ── 7. get-json（原位重写）────────────────────────────────────────────────────
 
 def test_get_json_task_not_found(client):
-    _err(client.get("/api/v1/auto-annotation/tasks/999/json"), 404, 21020)
+    _err(client.get("/api/v1/auto-annotation/tasks/999/json"), 404)
 
 
 def test_get_json_file_missing(app, client, seed):
     """task 存在但 result_json_path 指向不存在文件→21023。"""
     tid = _insert_task(app, status="done", result_json_path="/tmp/nonexistent.json")
-    _err(client.get(f"/api/v1/auto-annotation/tasks/{tid}/json"), 404, 21023)
+    _err(client.get(f"/api/v1/auto-annotation/tasks/{tid}/json"), 404)
 
 
 def test_get_json_success(app, client, seed, tmp_path):
@@ -399,7 +399,7 @@ def test_get_json_success(app, client, seed, tmp_path):
 # ── 8. delete（原位重写）──────────────────────────────────────────────────────
 
 def test_delete_not_found(client):
-    _err(client.delete("/api/v1/auto-annotation/tasks/999"), 404, 21020)
+    _err(client.delete("/api/v1/auto-annotation/tasks/999"), 404)
 
 
 def test_delete_success(app, client, seed, _proj_root):
@@ -460,19 +460,19 @@ def test_clear_idempotent(app, client, seed, _proj_root):
 # ── 10. convert-to-events（委托）──────────────────────────────────────────────
 
 def test_convert_not_found(client):
-    _err(client.post("/api/v1/auto-annotation/tasks/999:convert-to-events"), 404, 21020)
+    _err(client.post("/api/v1/auto-annotation/tasks/999:convert-to-events"), 404)
 
 
 def test_convert_not_done(app, client, seed):
     """status≠done→409(31041，旧 400→409)。"""
     tid = _insert_task(app, status="processing", result_json_path="/tmp/gt.json")
-    _err(client.post(f"/api/v1/auto-annotation/tasks/{tid}:convert-to-events"), 409, 31041)
+    _err(client.post(f"/api/v1/auto-annotation/tasks/{tid}:convert-to-events"), 409)
 
 
 def test_convert_json_missing(app, client, seed):
     """done 但结果 JSON 文件不存在→404(21023，旧 400→404)。"""
     tid = _insert_task(app, status="done", result_json_path="/tmp/nonexistent.json")
-    _err(client.post(f"/api/v1/auto-annotation/tasks/{tid}:convert-to-events"), 404, 21023)
+    _err(client.post(f"/api/v1/auto-annotation/tasks/{tid}:convert-to-events"), 404)
 
 
 def test_convert_success(app, client, seed, tmp_path):
@@ -753,7 +753,7 @@ def test_list_pending_events(app, client, seed):
 
 
 def test_list_pending_events_task_not_found(client, seed):
-    _err(client.get("/api/v1/auto-annotation/tasks/999/pending-events"), 404, 21020)
+    _err(client.get("/api/v1/auto-annotation/tasks/999/pending-events"), 404)
 
 
 def test_review_approve(app, client, seed):
@@ -824,7 +824,7 @@ def test_review_edit_keeps_pending(app, client, seed):
 
 def test_review_not_found(client, seed):
     _err(client.post("/api/v1/auto-annotation/events/999:review",
-                     json={"action": "approve"}), 404, 21024)
+                     json={"action": "approve"}), 404)
 
 
 def test_review_non_pending(app, client, seed):
@@ -832,14 +832,14 @@ def test_review_non_pending(app, client, seed):
     tid = _insert_task(app, status="done")
     eid = _insert_anno_event(app, tid, review_status="approved")
     _err(client.post(f"/api/v1/auto-annotation/events/{eid}:review",
-                     json={"action": "approve"}), 409, 31042)
+                     json={"action": "approve"}), 409)
 
 
 def test_review_bad_action(app, client, seed):
     tid = _insert_task(app, status="done")
     eid = _insert_anno_event(app, tid, review_status="pending")
     _err(client.post(f"/api/v1/auto-annotation/events/{eid}:review",
-                     json={"action": "bogus"}), 400, 11004)
+                     json={"action": "bogus"}), 400)
 
 
 def test_batch_approve_all(app, client, seed):
@@ -865,7 +865,7 @@ def test_batch_approve_subset(app, client, seed):
 
 
 def test_batch_approve_task_not_found(client, seed):
-    _err(client.post("/api/v1/auto-annotation/tasks/999:batch-approve", json={}), 404, 21020)
+    _err(client.post("/api/v1/auto-annotation/tasks/999:batch-approve", json={}), 404)
 
 
 # ── 11. 质量评估（阶段3·只读）────────────────────────────────────────────────
@@ -919,7 +919,7 @@ def test_get_quality(app, client, seed):
 
 
 def test_get_quality_task_not_found(client, seed):
-    _err(client.get("/api/v1/auto-annotation/tasks/999/quality"), 404, 21020)
+    _err(client.get("/api/v1/auto-annotation/tasks/999/quality"), 404)
 
 
 def test_get_quality_empty_task(app, client, seed):
@@ -992,7 +992,7 @@ def test_list_gt_versions_empty(app, client, seed):
 
 
 def test_get_gt_version_not_found(client, seed):
-    _err(client.get("/api/v1/auto-annotation/gt-versions/999"), 404, 21024)
+    _err(client.get("/api/v1/auto-annotation/gt-versions/999"), 404)
 
 
 def test_get_gt_version_snapshot_missing(app, client, seed):
@@ -1008,7 +1008,7 @@ def test_get_gt_version_snapshot_missing(app, client, seed):
         vid_row = db.execute(
             "SELECT id FROM gt_versions WHERE video_id = ?", (vid,)
         ).fetchone()
-    _err(client.get(f"/api/v1/auto-annotation/gt-versions/{vid_row['id']}"), 404, 21023)
+    _err(client.get(f"/api/v1/auto-annotation/gt-versions/{vid_row['id']}"), 404)
 
 
 def test_get_task_json_with_version(app, client, seed):
@@ -1021,7 +1021,7 @@ def test_get_task_json_with_version(app, client, seed):
 
 def test_get_task_json_version_not_found(app, client, seed):
     tid = _insert_task(app, status="done", video_id="046-001")
-    _err(client.get(f"/api/v1/auto-annotation/tasks/{tid}/json?version=999"), 404, 21024)
+    _err(client.get(f"/api/v1/auto-annotation/tasks/{tid}/json?version=999"), 404)
 
 
 def test_get_annotation_result_tool(app, tmp_path):

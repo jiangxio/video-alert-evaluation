@@ -37,10 +37,10 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, (resp.status_code, resp.get_json())
     body = resp.get_json()
-    assert body["code"] == code, body
+    assert body["code"] == status, body
     return body
 
 
@@ -212,32 +212,32 @@ def test_create_task_set_source(client, seed):
 def test_create_task_invalid_source_type(client, seed):
     _err(client.post("/api/v1/streaming/tasks", json={
         "source_type": "xxx", "source_id": 1, "stream_name": "s",
-    }), 400, 10900)
+    }), 400)
 
 
 def test_create_task_missing_source_id(client, seed):
     _err(client.post("/api/v1/streaming/tasks", json={
         "source_type": "single", "stream_name": "s",
-    }), 400, 10901)
+    }), 400)
 
 
 def test_create_task_empty_stream_name(client, seed):
     _err(client.post("/api/v1/streaming/tasks", json={
         "source_type": "single", "source_id": 1, "stream_name": "",
-    }), 400, 10902)
+    }), 400)
 
 
 def test_create_task_bad_stream_name(client, seed):
     _err(client.post("/api/v1/streaming/tasks", json={
         "source_type": "single", "source_id": 1, "stream_name": "bad name!",
-    }), 400, 10903)
+    }), 400)
 
 
 def test_create_task_resolve_fail(client, seed):
     """source_id 指向不存在的水印视频→10900（解析失败）。"""
     _err(client.post("/api/v1/streaming/tasks", json={
         "source_type": "single", "source_id": 999, "stream_name": "s",
-    }), 400, 10900)
+    }), 400)
 
 
 # ── 快测：PATCH / DELETE ─────────────────────────────────────────────────────────
@@ -255,13 +255,13 @@ def test_update_task_running_conflict(client, app, seed):
     task_id = _insert_task(app, status="running")
     _err(client.patch(f"/api/v1/streaming/tasks/{task_id}", json={
         "source_type": "single", "source_id": 1, "stream_name": "x",
-    }), 409, 30901)
+    }), 409)
 
 
 def test_update_task_not_found(client, seed):
     _err(client.patch("/api/v1/streaming/tasks/999", json={
         "source_type": "single", "source_id": 1, "stream_name": "x",
-    }), 404, 20900)
+    }), 404)
 
 
 def test_delete_task(client, seed):
@@ -275,11 +275,11 @@ def test_delete_task(client, seed):
 
 def test_delete_task_running_conflict(client, app, seed):
     task_id = _insert_task(app, status="running")
-    _err(client.delete(f"/api/v1/streaming/tasks/{task_id}"), 409, 30902)
+    _err(client.delete(f"/api/v1/streaming/tasks/{task_id}"), 409)
 
 
 def test_delete_task_not_found(client, seed):
-    _err(client.delete("/api/v1/streaming/tasks/999"), 404, 20900)
+    _err(client.delete("/api/v1/streaming/tasks/999"), 404)
 
 
 # ── 快测：logs / progress ─────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ def test_get_logs_with_content(client, app, seed, tmp_path):
 
 
 def test_get_logs_not_found(client, seed):
-    _err(client.get("/api/v1/streaming/tasks/999/logs"), 404, 20900)
+    _err(client.get("/api/v1/streaming/tasks/999/logs"), 404)
 
 
 def test_get_progress(client, seed):
@@ -316,7 +316,7 @@ def test_get_progress(client, seed):
 
 
 def test_get_progress_not_found(client, seed):
-    _err(client.get("/api/v1/streaming/tasks/999/progress"), 404, 20900)
+    _err(client.get("/api/v1/streaming/tasks/999/progress"), 404)
 
 
 # ── 快测：preview ────────────────────────────────────────────────────────────────
@@ -342,13 +342,13 @@ def test_preview_no_stream_name_no_rtsp(client, seed):
 def test_preview_param_incomplete(client, seed):
     _err(client.post("/api/v1/streaming/tasks:preview", json={
         "source_id": 1,
-    }), 400, 10904)
+    }), 400)
 
 
 def test_preview_resolve_fail(client, seed):
     _err(client.post("/api/v1/streaming/tasks:preview", json={
         "source_type": "single", "source_id": 999, "stream_name": "x",
-    }), 400, 10900)
+    }), 400)
 
 
 # ── slow 测：start/stop（FakePopen）─────────────────────────────────────────────
@@ -470,12 +470,12 @@ def test_start_already_running(client, seed, _slow_env):
     """已 running 再 start→30900(409)。"""
     task_id = _create_task(client)
     _data(client.post(f"/api/v1/streaming/tasks/{task_id}:start", json={}))
-    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:start", json={}), 409, 30900)
+    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:start", json={}), 409)
 
 
 @pytest.mark.slow
 def test_start_not_found(client, seed, _slow_env):
-    _err(client.post("/api/v1/streaming/tasks/999:start", json={}), 404, 20900)
+    _err(client.post("/api/v1/streaming/tasks/999:start", json={}), 404)
 
 
 @pytest.mark.slow
@@ -499,12 +499,12 @@ def test_stop_success(client, seed, _slow_env):
 def test_stop_not_running(client, seed, _slow_env):
     """非 running 任务 stop→30904(409)。"""
     task_id = _create_task(client)  # status=created
-    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:stop"), 409, 30904)
+    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:stop"), 409)
 
 
 @pytest.mark.slow
 def test_stop_not_found(client, seed, _slow_env):
-    _err(client.post("/api/v1/streaming/tasks/999:stop"), 404, 20900)
+    _err(client.post("/api/v1/streaming/tasks/999:stop"), 404)
 
 
 # ── 阶段1：转码探测 + 转码命令分支（纯函数）──────────────────────────────────────
@@ -587,7 +587,7 @@ def test_start_concurrency_exceeded(client, app, seed, monkeypatch):
     _insert_task(app, status="running")
     _insert_task(app, status="running")
     task_id = _create_task(client)
-    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:start", json={}), 409, 30905)
+    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:start", json={}), 409)
 
 
 def test_start_concurrency_transcode_weight(client, app, seed, monkeypatch):
@@ -596,7 +596,7 @@ def test_start_concurrency_transcode_weight(client, app, seed, monkeypatch):
     monkeypatch.setattr(_legacy, "_probe_codec_compatible", lambda path: True)
     _insert_task(app, status="running", transcode=1)
     task_id = _create_task(client)
-    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:start", json={}), 409, 30905)
+    _err(client.post(f"/api/v1/streaming/tasks/{task_id}:start", json={}), 409)
 
 
 @pytest.mark.slow

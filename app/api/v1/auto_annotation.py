@@ -2,20 +2,19 @@
 
 委托 app/routes/auto_annotation.py 的 4 个高风险端点（start/stop/status/
 convert-to-events：起后台线程 / 操作模块级任务态 _auto_anno_lock/
-_current_task_id/_task_queue/_stop_requested），只在新端点套统一信封 + 5 位
-错误码（FF=10，见 docs/rest-api-error-codes.md）。旧视图在同一个 request
-context 内运行，request.get_json / get_db / current_app 均可用，故 start 的
-请求体由旧视图自读，新端点透传。
+_current_task_id/_task_queue/_stop_requested），只在新端点套统一信封 + 方案3
+error_code（code = HTTP 状态）。旧视图在同一个 request context 内运行，故 start
+的请求体由旧视图自读，新端点透传。
 
 纯查询/CRUD（videos-without-events / tasks 列表 / by-video / get-json /
 delete / clear）原位重写，复用 get_db。列表端点用 SQL 层 LIMIT/OFFSET +
 COUNT(*) 真分页（不 fetchall 后切片）。
 
-语义修正（新端点专属，旧不动，5 位码 H 位对齐 http_status）：
-- 尚未生成水印视频 400→404（21022，对齐 videos 族 20121）
-- 当前没有运行中的任务 400→409（31040，对齐 streaming 30904）
-- 任务尚未完成 400→409（31041，状态冲突）
-- 结果 JSON 不存在 400→404（21023，对齐同模块 get-json）
+语义修正（新端点专属，旧不动，http 状态对齐）：
+- 尚未生成水印视频 400→404（对齐 videos 族）
+- 当前没有运行中的任务 400→409（对齐 streaming）
+- 任务尚未完成 400→409（状态冲突）
+- 结果 JSON 不存在 400→404（对齐同模块 get-json）
 - DELETE→204（对齐 alerts/videos/streaming/algorithms）
 - start 成功保 200（对齐 OCR ocr:batch「200 不改 202」先例，不改交互语义）
 
@@ -29,30 +28,16 @@ import json
 import threading
 from pathlib import Path
 
-from flask import Blueprint, request, current_app
+from flask import current_app, request
 
+from app.api.v1 import v1_bp
+from app.api.v1.compat import _extract
+from app.api.v1.responses import ApiError, err, no_content, ok, paginate, parse_pagination
 from app.database import get_db
 from app.routes import auto_annotation as _legacy
-from .compat import call_old_view
-from .responses import ok, paginated, no_content, ApiError
-
-bp = Blueprint("api_v1_auto_annotation", __name__, url_prefix="/api/v1")
 
 
 # ── 分页 / 错误映射 / 文件清理 辅助 ───────────────────────────────────────────
-
-def _parse_pagination():
-    """?page & ?page_size，page≥1，page_size 1..100，默认 20。"""
-    try:
-        page = max(1, int(request.args.get("page", "1")))
-    except (TypeError, ValueError):
-        page = 1
-    try:
-        page_size = int(request.args.get("page_size", "20"))
-    except (TypeError, ValueError):
-        page_size = 20
-    return page, max(1, min(page_size, 100))
-
 
 def _paginate(db, base_sql, order_sql, params, page, page_size, mapper=dict):
     """真分页：COUNT(*) 取 total，LIMIT/OFFSET 取当页，mapper 映射每行。
@@ -63,16 +48,19 @@ def _paginate(db, base_sql, order_sql, params, page, page_size, mapper=dict):
     offset = (page - 1) * page_size
     cur.execute(f"{base_sql} {order_sql} LIMIT ? OFFSET ?",
                 (*params, page_size, offset))
-    return paginated([mapper(r) for r in cur.fetchall()], total, page, page_size)
+    return ok(paginate([mapper(r) for r in cur.fetchall()], total, page, page_size))
 
 
-def _raise_msg(body, msg_to_code, fallback=(41080, 500, "操作失败")):
-    """旧视图非 200：按 error 文案子串匹配 (code, http_status)，无匹配走 fallback。"""
-    msg = (body.get("error") if isinstance(body, dict) else None) or fallback[2]
-    for key, (code, http_status) in msg_to_code.items():
+def _raise_msg(body, msg_to_http, fallback_http=500, fallback_msg="操作失败"):
+    """旧视图非 200：按 error 文案子串匹配 (http_status, error_code)，无匹配走 500。
+
+    保留 HTTP 状态修正（如「水印视频」旧版 400→v1 404），不沿用旧视图的原始状态。
+    """
+    msg = (body.get("error") if isinstance(body, dict) else None) or fallback_msg
+    for key, (http, ec) in msg_to_http.items():
         if key in msg:
-            raise ApiError(code, msg, http_status)
-    raise ApiError(fallback[0], msg, fallback[1])
+            raise ApiError(http, msg, error_code=ec)
+    raise ApiError(fallback_http, msg)
 
 
 def _clear_frames_dir(task_id, project_root):
@@ -87,21 +75,21 @@ def _clear_frames_dir(task_id, project_root):
             pass
 
 
-# start 的 error 文案 → (5 位码, 新 http_status)
+# start 的 error 文案 → (新 http_status, error_code)
 _START_MSG_CODE = {
-    "未选择视频": (11000, 400),
-    "抽帧间隔": (11001, 400),
-    "合并间隔": (11002, 400),
-    "至少选择一个事件类型": (11003, 400),
-    "视频不存在": (21021, 404),
-    "水印视频": (21022, 404),  # "尚未生成水印视频"
+    "未选择视频": (400, "VIDEO_REQUIRED"),
+    "抽帧间隔": (400, "FRAME_INTERVAL_INVALID"),
+    "合并间隔": (400, "MERGE_INTERVAL_INVALID"),
+    "至少选择一个事件类型": (400, "EVENT_TYPE_REQUIRED"),
+    "视频不存在": (404, "VIDEO_NOT_FOUND"),
+    "水印视频": (404, "WATERMARK_NOT_FOUND"),  # "尚未生成水印视频"
 }
 
-# convert_to_events 的 error 文案 → (5 位码, 新 http_status)
+# convert_to_events 的 error 文案 → (新 http_status, error_code)
 _CONVERT_MSG_CODE = {
-    "任务不存在": (21020, 404),
-    "任务尚未完成": (31041, 409),
-    "JSON 不存在": (21023, 404),  # "结果 JSON 不存在"
+    "任务不存在": (404, "AUTO_ANNOTATION_TASK_NOT_FOUND"),
+    "任务尚未完成": (409, "TASK_NOT_DONE"),
+    "JSON 不存在": (404, "RESULT_JSON_NOT_FOUND"),
 }
 
 # 任务列表查询的统一列（auto_annotation_tasks 全列 + video_filename）
@@ -115,11 +103,11 @@ _TASK_COLS = """
 
 # ── 辅助资源：可标注视频 ───────────────────────────────────────────────────────
 
-@bp.route("/auto-annotation/videos-without-events", methods=["GET"])
-def list_videos_without_events():
+@v1_bp.route("/auto-annotation/videos-without-events", methods=["GET"])
+def v1_list_videos_without_events():
     """有水印但无事件（events 表 0 行）的视频（分页）。对齐旧 list_videos_without_events
     字段：id=水印视频 id，video_db_id=视频主键。事件过滤=LEFT JOIN events + HAVING COUNT(e.id)=0。"""
-    page, page_size = _parse_pagination()
+    page, page_size = parse_pagination(request.args)
     base = """
         SELECT v.id, v.filename, v.video_id, v.duration,
                wv.id AS wm_id, wv.thumbnail_path
@@ -147,73 +135,73 @@ def list_videos_without_events():
 
 # ── 自动标注任务 ───────────────────────────────────────────────────────────────
 
-@bp.route("/auto-annotation/tasks", methods=["POST"])
-def create_task():
+@v1_bp.route("/auto-annotation/tasks", methods=["POST"])
+def v1_create_anno_task():
     """创建并启动自动标注任务（委托旧 start_task：校验→建库→排队/起线程）。
     请求体 {video_db_id,frame_interval_sec?,merge_interval_sec?,event_types,
     api_key?,base_url?,model?,request_interval_sec?} 由旧视图自读。成功 200。"""
-    body, status = call_old_view(_legacy.start_task)
+    data, status = _extract(_legacy.start_task())
     if status == 200:
-        return ok({"task_id": body.get("task_id"), "queued": body.get("queued")})
-    _raise_msg(body, _START_MSG_CODE)
+        return ok({"task_id": data.get("task_id"), "queued": data.get("queued")})
+    _raise_msg(data, _START_MSG_CODE)
 
 
-@bp.route("/auto-annotation/tasks", methods=["GET"])
-def list_tasks():
+@v1_bp.route("/auto-annotation/tasks", methods=["GET"])
+def v1_list_anno_tasks():
     """历史任务列表（分页，对齐旧 list_tasks 字段）。"""
-    page, page_size = _parse_pagination()
+    page, page_size = parse_pagination(request.args)
     base = f"SELECT {_TASK_COLS} FROM auto_annotation_tasks t JOIN videos v ON v.id = t.video_db_id"
     return _paginate(get_db(), base, "ORDER BY t.created_at DESC",
                      (), page, page_size, dict)
 
 
-@bp.route("/auto-annotation/tasks/<int:task_id>/json", methods=["GET"])
-def get_task_json(task_id):
+@v1_bp.route("/auto-annotation/tasks/<int:task_id>/json", methods=["GET"])
+def v1_get_task_json(task_id):
     """读取任务生成的 Ground Truth JSON 内容（套信封，data=GT 内容）。
     ?version=<version_no> 取指定历史版本快照（阶段3 版本化）。
-    任务不存在→404(21020)；JSON 文件不存在→404(21023)；版本不存在→404(21024)。"""
+    任务不存在→404；JSON 文件不存在→404；版本不存在→404。"""
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT result_json_path, video_id FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     row = cur.fetchone()
     if not row:
-        raise ApiError(21020, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="AUTO_ANNOTATION_TASK_NOT_FOUND")
 
     version = request.args.get("version")
     if version:
         try:
             vno = int(version)
         except (TypeError, ValueError):
-            raise ApiError(11004, "无效版本号", 400)
+            raise ApiError(400, "无效版本号", error_code="INVALID_PARAMETER")
         cur.execute(
             "SELECT path FROM gt_versions WHERE video_id = ? AND version_no = ?",
             (row["video_id"], vno),
         )
         v = cur.fetchone()
         if not v:
-            raise ApiError(21024, "版本不存在", 404)
+            raise ApiError(404, "版本不存在", error_code="VERSION_NOT_FOUND")
         snap = Path(v["path"])
         if not snap.exists():
-            raise ApiError(21023, "版本快照文件不存在", 404)
+            raise ApiError(404, "版本快照文件不存在", error_code="RESULT_JSON_NOT_FOUND")
         try:
             return ok(json.loads(snap.read_text(encoding="utf-8")))
         except Exception as e:
-            raise ApiError(41080, str(e), 500)
+            raise ApiError(500, str(e), error_code="AUTO_ANNOTATION_FAILED")
 
     json_path = row["result_json_path"]
     if not json_path or not Path(json_path).exists():
-        raise ApiError(21023, "JSON 文件不存在", 404)
+        raise ApiError(404, "JSON 文件不存在", error_code="RESULT_JSON_NOT_FOUND")
     try:
         data = json.loads(Path(json_path).read_text(encoding="utf-8"))
         return ok(data)
     except Exception as e:
-        raise ApiError(41080, str(e), 500)
+        raise ApiError(500, str(e), error_code="AUTO_ANNOTATION_FAILED")
 
 
-@bp.route("/auto-annotation/videos/<int:video_db_id>/tasks", methods=["GET"])
-def list_tasks_by_video(video_db_id):
+@v1_bp.route("/auto-annotation/videos/<int:video_db_id>/tasks", methods=["GET"])
+def v1_list_tasks_by_video(video_db_id):
     """指定视频的已完成（done + 有结果 JSON 路径）自动标注任务（分页）。"""
-    page, page_size = _parse_pagination()
+    page, page_size = parse_pagination(request.args)
     base = (
         f"SELECT {_TASK_COLS} FROM auto_annotation_tasks t "
         "JOIN videos v ON v.id = t.video_db_id "
@@ -223,14 +211,14 @@ def list_tasks_by_video(video_db_id):
                      (video_db_id,), page, page_size, dict)
 
 
-@bp.route("/auto-annotation/tasks/<int:task_id>", methods=["DELETE"])
-def delete_task(task_id):
-    """删除任务及中间帧数据。不存在→404(21020)；成功→204。"""
+@v1_bp.route("/auto-annotation/tasks/<int:task_id>", methods=["DELETE"])
+def v1_delete_anno_task(task_id):
+    """删除任务及中间帧数据。不存在→404；成功→204。"""
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT id FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     if not cur.fetchone():
-        raise ApiError(21020, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="AUTO_ANNOTATION_TASK_NOT_FOUND")
     _clear_frames_dir(task_id, current_app.config["PROJECT_ROOT"])
     cur.execute("DELETE FROM auto_annotation_frames WHERE task_id = ?", (task_id,))
     cur.execute("DELETE FROM auto_annotation_tasks WHERE id = ?", (task_id,))
@@ -238,8 +226,8 @@ def delete_task(task_id):
     return no_content()
 
 
-@bp.route("/auto-annotation/tasks/<int:task_id>:clear", methods=["POST"])
-def clear_intermediate(task_id):
+@v1_bp.route("/auto-annotation/tasks/<int:task_id>:clear", methods=["POST"])
+def v1_clear_intermediate(task_id):
     """清空任务中间数据（帧图片 + 帧记录）。task_id 来自路径恒存在，旧「缺少 task_id」
     不可达。幂等：目录不存在也不报错（对齐旧 clear-intermediate 不校验任务存在性）。"""
     _clear_frames_dir(task_id, current_app.config["PROJECT_ROOT"])
@@ -252,45 +240,45 @@ def clear_intermediate(task_id):
 
 # ── 引擎状态 / 控制（委托：模块级任务态） ───────────────────────────────────────
 
-@bp.route("/auto-annotation/tasks:stop", methods=["POST"])
-def stop_task():
+@v1_bp.route("/auto-annotation/tasks:stop", methods=["POST"])
+def v1_stop_anno_task():
     """中断当前运行中任务（委托旧 stop_task：置 _stop_requested）。
-    无运行任务→409(31040，旧 400)。成功 200。"""
-    body, status = call_old_view(_legacy.stop_task)
+    无运行任务→409（旧 400）。成功 200。"""
+    data, status = _extract(_legacy.stop_task())
     if status == 200:
-        return ok({"task_id": body.get("task_id")})
-    _raise_msg(body, {"没有运行中的任务": (31040, 409)})
+        return ok({"task_id": data.get("task_id")})
+    _raise_msg(data, {"没有运行中的任务": (409, "NO_RUNNING_TASK")})
 
 
-@bp.route("/auto-annotation/status", methods=["GET"])
-def get_status():
+@v1_bp.route("/auto-annotation/status", methods=["GET"])
+def v1_get_status():
     """获取当前任务状态和排队信息（委托旧 get_status，旧恒 200）。"""
-    body, _ = call_old_view(_legacy.get_status)
-    return ok(body)
+    data, _ = _extract(_legacy.get_status())
+    return ok(data)
 
 
-@bp.route("/auto-annotation/tasks/<int:task_id>:convert-to-events", methods=["POST"])
-def convert_to_events(task_id):
+@v1_bp.route("/auto-annotation/tasks/<int:task_id>:convert-to-events", methods=["POST"])
+def v1_convert_to_events(task_id):
     """将自动标注 JSON 转成 DB events（委托旧 convert_to_events：插 events + 起
     _batch_capture_gt_frames 线程 + 调 generate_ground_truth_json）。成功 200。
-    任务不存在→404(21020)；任务尚未完成→409(31041)；结果 JSON 不存在→404(21023)。"""
-    body, status = call_old_view(_legacy.convert_to_events, task_id)
+    任务不存在→404；任务尚未完成→409；结果 JSON 不存在→404。"""
+    data, status = _extract(_legacy.convert_to_events(task_id))
     if status == 200:
-        return ok({"event_count": body.get("event_count")})
-    _raise_msg(body, _CONVERT_MSG_CODE)
+        return ok({"event_count": data.get("event_count")})
+    _raise_msg(data, _CONVERT_MSG_CODE)
 
 
 # ── 复核（阶段2：置信度分流后的 pending 事件人工复核）──────────────────────────
 
-@bp.route("/auto-annotation/tasks/<int:task_id>/pending-events", methods=["GET"])
-def list_pending_events(task_id):
-    """列待复核事件（review_status='pending'，分页）。任务不存在→404(21020)。"""
-    page, page_size = _parse_pagination()
+@v1_bp.route("/auto-annotation/tasks/<int:task_id>/pending-events", methods=["GET"])
+def v1_list_pending_events(task_id):
+    """列待复核事件（review_status='pending'，分页）。任务不存在→404。"""
+    page, page_size = parse_pagination(request.args)
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT id FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     if not cur.fetchone():
-        raise ApiError(21020, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="AUTO_ANNOTATION_TASK_NOT_FOUND")
     base = (
         "SELECT id, task_id, video_db_id, event_type, start_sec, end_sec, "
         "confidence, review_status FROM auto_annotation_events "
@@ -309,16 +297,16 @@ def _fetch_reviewable_event(db, event_id):
     )
     ev = cur.fetchone()
     if not ev:
-        raise ApiError(21024, "事件不存在", 404)
+        raise ApiError(404, "事件不存在", error_code="REVIEW_EVENT_NOT_FOUND")
     if ev["review_status"] not in ("pending", "auto_approved"):
-        raise ApiError(31042, "事件非待复核状态", 409)
+        raise ApiError(409, "事件非待复核状态", error_code="EVENT_NOT_REVIEWABLE")
     return ev
 
 
-@bp.route("/auto-annotation/events/<int:event_id>:review", methods=["POST"])
-def review_event(event_id):
+@v1_bp.route("/auto-annotation/events/<int:event_id>:review", methods=["POST"])
+def v1_review_event(event_id):
     """复核单个事件。body: {action: 'approve'|'reject'|'edit', type?, start?, end?}。
-    事件不存在→404(21024)；非待复核状态→409(31042)；无效 action/参数→400(11004)。
+    事件不存在→404；非待复核状态→409；无效 action/参数→400。
     approve（可带 type/start/end 编辑）：写 DB events + 起 _batch_capture_gt_frames。
     edit：仅改字段不改状态（仍 pending）。reject：标记 rejected 不入库。"""
     db = get_db()
@@ -326,7 +314,7 @@ def review_event(event_id):
     data = request.get_json() or {}
     action = (data.get("action") or "").strip()
     if action not in ("approve", "reject", "edit"):
-        raise ApiError(11004, "无效复核操作", 400)
+        raise ApiError(400, "无效复核操作", error_code="INVALID_PARAMETER")
 
     # 解析可选编辑字段
     new_type = ev["event_type"]
@@ -338,12 +326,12 @@ def review_event(event_id):
         try:
             new_start = float(data["start"])
         except (TypeError, ValueError):
-            raise ApiError(11004, "无效的事件起始时间", 400)
+            raise ApiError(400, "无效的事件起始时间", error_code="INVALID_PARAMETER")
     if data.get("end") is not None:
         try:
             new_end = float(data["end"])
         except (TypeError, ValueError):
-            raise ApiError(11004, "无效的事件结束时间", 400)
+            raise ApiError(400, "无效的事件结束时间", error_code="INVALID_PARAMETER")
 
     cur = db.cursor()
 
@@ -390,16 +378,16 @@ def review_event(event_id):
     return ok({"event_id": event_id, "review_status": "approved", "db_event_id": db_event_id})
 
 
-@bp.route("/auto-annotation/tasks/<int:task_id>:batch-approve", methods=["POST"])
-def batch_approve(task_id):
+@v1_bp.route("/auto-annotation/tasks/<int:task_id>:batch-approve", methods=["POST"])
+def v1_batch_approve(task_id):
     """批量通过待复核事件。body: {event_ids?: [int, ...]}（不传则通过该任务全部 pending）。
-    approve 的事件写 DB events + 起 _batch_capture_gt_frames。任务不存在→404(21020)。"""
+    approve 的事件写 DB events + 起 _batch_capture_gt_frames。任务不存在→404。"""
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT id, video_db_id FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     task = cur.fetchone()
     if not task:
-        raise ApiError(21020, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="AUTO_ANNOTATION_TASK_NOT_FOUND")
 
     data = request.get_json() or {}
     event_ids = data.get("event_ids")
@@ -447,9 +435,9 @@ def batch_approve(task_id):
 
 # ── 质量评估（阶段3：只读，不碰评测指标算法）──────────────────────────────────
 
-@bp.route("/auto-annotation/tasks/<int:task_id>/quality", methods=["GET"])
-def get_task_quality(task_id):
-    """标注质量评估。任务不存在→404(21020)。
+@v1_bp.route("/auto-annotation/tasks/<int:task_id>/quality", methods=["GET"])
+def v1_get_task_quality(task_id):
+    """标注质量评估。任务不存在→404。
 
     返回：置信度分布（均值/中位数/极值/分箱，来自 auto_annotation_frames.confidence）、
     覆盖率（有检测帧/总抽帧数）、复核拒绝率（rejected/(approved+rejected)）。
@@ -460,7 +448,7 @@ def get_task_quality(task_id):
     cur.execute("SELECT id, video_db_id FROM auto_annotation_tasks WHERE id = ?", (task_id,))
     task = cur.fetchone()
     if not task:
-        raise ApiError(21020, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="AUTO_ANNOTATION_TASK_NOT_FOUND")
 
     # 置信度分布（auto_annotation_frames）
     cur.execute("SELECT confidence FROM auto_annotation_frames WHERE task_id = ?", (task_id,))
@@ -527,19 +515,19 @@ def get_task_quality(task_id):
 
 # ── GT 版本管理（阶段3：历史快照回溯）──────────────────────────────────────────
 
-@bp.route("/auto-annotation/videos/<video_id>/gt-versions", methods=["GET"])
-def list_gt_versions(video_id):
+@v1_bp.route("/auto-annotation/videos/<video_id>/gt-versions", methods=["GET"])
+def v1_list_gt_versions(video_id):
     """某视频的 GT 版本列表（按 version_no 倒序分页）。video_id 为字符串（如 046-001）。"""
-    page, page_size = _parse_pagination()
+    page, page_size = parse_pagination(request.args)
     base = ("SELECT id, video_id, task_id, version_no, parent_version_no, "
             "review_status, created_at FROM gt_versions WHERE video_id = ?")
     return _paginate(get_db(), base, "ORDER BY version_no DESC",
-                      (video_id,), page, page_size, dict)
+                     (video_id,), page, page_size, dict)
 
 
-@bp.route("/auto-annotation/gt-versions/<int:version_id>", methods=["GET"])
-def get_gt_version(version_id):
-    """取某版本快照内容。版本不存在→404(21024)；快照文件缺失→404(21023)。"""
+@v1_bp.route("/auto-annotation/gt-versions/<int:version_id>", methods=["GET"])
+def v1_get_gt_version(version_id):
+    """取某版本快照内容。版本不存在→404；快照文件缺失→404。"""
     db = get_db()
     cur = db.cursor()
     cur.execute(
@@ -549,34 +537,34 @@ def get_gt_version(version_id):
     )
     v = cur.fetchone()
     if not v:
-        raise ApiError(21024, "版本不存在", 404)
+        raise ApiError(404, "版本不存在", error_code="VERSION_NOT_FOUND")
     snap = Path(v["path"])
     if not snap.exists():
-        raise ApiError(21023, "版本快照文件不存在", 404)
+        raise ApiError(404, "版本快照文件不存在", error_code="RESULT_JSON_NOT_FOUND")
     try:
         content = json.loads(snap.read_text(encoding="utf-8"))
     except Exception as e:
-        raise ApiError(41080, str(e), 500)
+        raise ApiError(500, str(e), error_code="AUTO_ANNOTATION_FAILED")
     return ok({"version": dict(v), "content": content})
 
 
-@bp.route("/auto-annotation/gt-versions/<int:version_id>:restore", methods=["POST"])
-def restore_gt_version(version_id):
+@v1_bp.route("/auto-annotation/gt-versions/<int:version_id>:restore", methods=["POST"])
+def v1_restore_gt_version(version_id):
     """回滚：把指定版本快照内容写回当前 GT（gt_dir/{video_id}.json）并记新版本。
-    版本不存在→404(21024)；快照文件缺失→404(21023)。"""
+    版本不存在→404；快照文件缺失→404。"""
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT id, video_id, version_no, path FROM gt_versions WHERE id = ?", (version_id,))
     v = cur.fetchone()
     if not v:
-        raise ApiError(21024, "版本不存在", 404)
+        raise ApiError(404, "版本不存在", error_code="VERSION_NOT_FOUND")
     snap = Path(v["path"])
     if not snap.exists():
-        raise ApiError(21023, "版本快照文件不存在", 404)
+        raise ApiError(404, "版本快照文件不存在", error_code="RESULT_JSON_NOT_FOUND")
     try:
         content = json.loads(snap.read_text(encoding="utf-8"))
     except Exception as e:
-        raise ApiError(41080, str(e), 500)
+        raise ApiError(500, str(e), error_code="AUTO_ANNOTATION_FAILED")
 
     # 写回当前生效 GT
     gt_dir = Path(current_app.config["GROUND_TRUTH_DIR"])

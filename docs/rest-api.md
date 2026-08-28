@@ -18,7 +18,7 @@
 
 - 所有端点前缀：`/api/v1`
 - 注册入口：`app/api/__init__.py` 的 `register_api(app)`，在 `app/__init__.py:create_app()` 末尾调用一次，完成三件事：
-  1. 注册各资源蓝图（清单见 `app/api/v1/__init__.py` 的 `BLUEPRINTS`）
+  1. 注册 v1 蓝图 `v1_bp`（`app/api/v1/__init__.py`）+ 导入各资源模块（导入即注册路由）
   2. 注册 app 级错误处理器（§2.3）
   3. 注册旧端点弃用 after_request 钩子（§2.8）
 
@@ -30,52 +30,29 @@
 |--------|------|--------|
 | `ok(data)` | 200 | `{"code":0,"message":"ok","data":<data>}` |
 | `created(data, location)` | 201 | `{"code":0,"message":"created","data":<data>}`，可选 `Location` header |
-| `accepted(data, location)` | 202 | `{"code":0,"message":"accepted","data":<data>}`，可选 `Location` header（异步任务已排队） |
+| `accepted(location)` | 202 | `{"code":0,"message":"accepted","data":null}`，可选 `Location` header（异步任务已排队） |
 | `no_content()` | 204 | 无 body |
-| `paginated(items,total,page,page_size)` | 200 | `data:{items,total,page,page_size,has_next}` |
+| `ok(paginate(items,total,page,page_size))` | 200 | `data:{items,total,page,page_size,has_next}` |
 
-二进制响应（文件下载、缩略图、ZIP）**不走信封**，直接 `send_file`；其错误仍 `raise ApiError` 走统一错误信封。
+二进制响应（文件下载、缩略图、ZIP）**不走信封**，直接 `send_file`/`send_file_with_cache`；其错误仍 `raise ApiError`/`return err()` 走统一错误信封。委托旧视图用 `wrap_old_view`（盲委托自动套信封）/`_extract`（peek 旧 status/body 再加工）/`paginate_old_list`（旧裸列表内存分页）；PATCH 白名单 `reject_unknown_fields`。
 
-### 2.3 错误响应与错误码体系
+### 2.3 错误响应与错误码体系（方案3）
 
-新端点内 `raise ApiError(code, message, http_status, errors=None)` 抛出业务错误，由 `app/api/v1/errors.py` 的 app 级 errorhandler 转为统一错误信封：
+新端点内 `raise ApiError(code, message, errors=None, error_code=None)` 或 `return err(code, message, errors=None, error_code=None)` 抛出/返回错误，由 `app/api/v1/errors.py` 的 app 级 errorhandler 转为统一错误信封：
 
 ```json
-{"code": <5位码>, "message": "...", "errors": [{"field":"...","reason":"..."}]}
+{"code": <HTTP 状态码>, "message": "...", "error_code": "...?", "errors": [{"field":"...","reason":"..."}]?}
 ```
 
-**分流机制**：errorhandler 按 `request.path.startswith("/api/v1/")` 判断——命中则返回统一错误信封；否则 `return e` 回退 Flask 默认行为（HTML），**不破坏旧端点与页面**。旧端点用 `return jsonify({'error':...}), <code>` 主动返回（不 raise、不 abort），故错误格式不受影响。
+- `code` = **标准 HTTP 状态码**（成功 `0`；错误 `400`/`404`/`409`/`500` 等）。
+- `error_code`（可选）= 业务码字符串（如 `"DATASET_NOT_FOUND"`、`"UNKNOWN_FIELD"`），同类 HTTP 状态需区分时传，不传则不出现。
+- `errors`（可选）= 字段级错误列表 `[{"field","reason"}]`。
 
-**错误码格式**：5 位 = `H FF SS`（详见 [`rest-api-error-codes.md`](./rest-api-error-codes.md)）：
+**分流机制**：errorhandler 按 `request.path.startswith("/api/v1/")` 判断——命中则返回统一错误信封；否则 `return e` 回退 Flask 默认行为（HTML），**不破坏旧端点与页面**。旧端点用 `return jsonify({'error':...}), <code>` 主动返回（不 raise、不 abort），故错误格式不受影响。errorhandler 仅注册 `404`/`500`/`ApiError`；405 等 HTTP 错误由端点主动 `return err()` 产生，未挂 handler 的走 Flask 默认。
 
-```
-H  FF  SS
-│  │   └─ 族内错误（2 位，按 HTTP 子类分区）
-│  └──── 资源族（2 位，全项目唯一分配）
-└─────── HTTP 错误类（1 位）
-```
+错误码完整规范（含 PATCH 白名单、分页工具）见 [`rest-api-error-codes.md`](./rest-api-error-codes.md)。
 
-| H | 含义 | 对应 HTTP |
-|---|------|-----------|
-| 1 | 客户端请求错误 | 400 / 405 |
-| 2 | 资源不存在 | 404 |
-| 3 | 状态冲突 | 409 |
-| 4 | 服务端错误 | 500 |
-| 5 | 异步任务失败 | 500 / 202 |
-
-**约束**：`H` 必须与 `http_status` 对应，三者一致，不能矛盾。`FF` 按被操作的末端主资源分配（`app/api/v1/__init__.py` 的 `BLUEPRINTS` 即对应各 FF 族）。
-
-**框架兜底码（FF=00）**：由 errorhandler 对未捕获的 404/405/500 等兜底，不归属具体资源族：
-
-| 码 | 含义 | HTTP |
-|----|------|------|
-| 10000 | 通用参数错误 | 400 |
-| 10005 | HTTP 方法不被允许 | 405 |
-| 20000 | 通用资源不存在（路由未命中兜底） | 404 |
-| 30000 | 通用状态冲突 | 409 |
-| 40000 | 通用服务端错误 | 500 |
-
-> 注：`responses.py` 顶部注释已对齐 5 位 `H FF SS` 格式，与 `rest-api-error-codes.md` 一致。
+> **已废弃（5 位 `H FF SS` 方案）**：本仓早期用 5 位业务码 + `ApiError(code, message, http_status)` 三参签名 + 每模块独立 `BLUEPRINTS` 蓝图 + `call_old_view` 委托。上游 `origin/main` 明确拒绝该方案（见 `app/api/v1/alerts_ocr.py` 注释），本仓已对齐方案3：`code` 即 HTTP 状态、单一共享 `v1_bp`（`from app.api.v1 import v1_bp`）、`wrap_old_view`/`_extract` 委托。本文 §3 各端点错误码列遗留的 5 位码仅作历史参考，以代码实际行为为准。
 
 ### 2.4 HTTP 动词
 

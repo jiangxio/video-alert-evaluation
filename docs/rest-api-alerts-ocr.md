@@ -1,5 +1,7 @@
 # /api/v1 alerts OCR 系列改造文档
 
+> ⚠️ **错误码已改为方案3**（HTTP 状态即 `code` + 可选 `error_code` 字符串）。下方 5 位 `H FF SS` 码列已废弃，以代码实际行为为准；完整规范见 [错误码文档](./rest-api-error-codes.md)。
+
 > REST API 改造第 4 模块。把 `app/routes/alerts.py` 里 5 个旧 OCR 视图资源化进 `/api/v1/alerts/*`,统一信封 + 5 位错误码。**旧 OCR 逻辑(后台线程 / `_ocr_progress` / `_ocr_lock` / 线程内独立 sqlite 连接)属 CLAUDE.md 警告的高风险区,只委托不改。**
 
 ## 1. 背景

@@ -1,5 +1,7 @@
 # /api/v1 config 改造文档
 
+> ⚠️ **错误码已改为方案3**（HTTP 状态即 `code` + 可选 `error_code` 字符串）。下方 5 位 `H FF SS` 码列已废弃，以代码实际行为为准；完整规范见 [错误码文档](./rest-api-error-codes.md)。
+
 > REST API 改造第 6 模块。把 `app/routes/api_config.py` 旧蓝图里的 3 个内联 JSON 端点资源化进 `/api/v1/config`,统一信封 + 5 位错误码(FF=08 config)。旧逻辑为**同步 DB + 文件 I/O**(密钥写 `.env`、非敏感项写 `api_config` 表),无后台线程/锁/进程 → **原位重写 handler**(与 alerts/videos/algorithms 一致),复用 `app.services.api_config_service` 的纯函数 `get_config_for_display` / `save_config` / `test_openai` / `test_claude`,不重复实现。旧端点保留并自动加弃用 header。config 是**单例资源**(`api_config` 表 `CHECK(id=1)`,全局唯一)。
 
 ## 1. 背景

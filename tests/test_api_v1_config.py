@@ -33,9 +33,9 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, resp.status_code
-    assert resp.get_json()["code"] == code
+    assert resp.get_json()["code"] == status
 
 
 def _read_env_text():
@@ -102,18 +102,18 @@ def test_update_config_failure(client, monkeypatch):
         raise OSError("disk full")
     monkeypatch.setattr(api_config_service, "_write_env", _boom)
     resp = client.patch("/api/v1/config", json={"openai_api_key": "sk-x"})
-    _err(resp, 500, 40880)
+    _err(resp, 500)
     assert "保存失败" in resp.get_json()["message"]
 
 
 # ── 测试连接（:test-connection）──────────────────────────────────────────────
 
 def test_test_connection_unknown_provider(client):
-    _err(client.post("/api/v1/config:test-connection", json={"provider": "xxx"}), 400, 10800)
+    _err(client.post("/api/v1/config:test-connection", json={"provider": "xxx"}), 400)
 
 
 def test_test_connection_missing_provider(client):
-    _err(client.post("/api/v1/config:test-connection", json={}), 400, 10800)
+    _err(client.post("/api/v1/config:test-connection", json={}), 400)
 
 
 def test_test_connection_openai(client, monkeypatch):

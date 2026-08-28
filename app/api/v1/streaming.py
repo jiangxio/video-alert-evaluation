@@ -1,7 +1,7 @@
 """/api/v1/streaming 资源族端点（推流任务 CRUD + start/stop + logs/progress/preview）。
 
-原位重写 app/routes/streaming.py 的 11 个 JSON 端点为 /api/v1/streaming/*，统一信封 +
-5 位错误码（FF=09 stream-tasks，见 docs/rest-api-error-codes.md）。
+原位重写 app/routes/streaming.py 的 11 个 JSON 端点，统一信封 + 方案3 error_code
+（code = HTTP 状态）。
 
 streaming 是高风险模块：start 用 subprocess.Popen 起 ffmpeg + _monitor_video_process
 后台 daemon 线程；list_tasks 调 _sync_running_status 可能起 _delayed_play_video 重连
@@ -10,15 +10,14 @@ streaming 是高风险模块：start 用 subprocess.Popen 起 ffmpeg + _monitor_
 故**原位重写 handler 但函数级复用旧逻辑**（不重写 _play_video/_build_ffmpeg_cmd/
 _monitor_video_process/_sync_running_status 等高风险函数）：
 - start 直接调旧 _start_task_internal(task_id, use_resume)（其内 _play_video 起子进程+
-  监控线程，原样复用），按其返回的 status_code/error 映射到 5 位码 + 400→409 修正。
+  监控线程，原样复用），按其返回的 status_code/error 映射到 http 状态 + 400→409 修正。
 - stop 复用 _stream_processes/_stream_lock/_is_pid_alive/_cleanup_resume_file 原语
   （同步 terminate，不起线程/子进程，非高风险），原样保留 os.kill 兜底分支。
 - 查询/CRUD 复用 _resolve_watermarked_videos/_ensure_duration/_get_suggested_algorithms/
   _calc_progress/_calc_elapsed_seconds/_parse_started_at/_get_local_ips/_sync_running_status。
 
-语义修正（新端点专属，旧不动）：DELETE→204（对齐 alerts/videos/algorithms）；
-运行态冲突 400→409（30900 start 已运行 / 30901 PATCH 运行中 / 30902 DELETE 运行中 /
-30904 stop 非运行 / 30903 状态不可启动，5 位码 H 位对齐 http_status）。
+语义修正（新端点专属，旧不动）：DELETE→204；运行态冲突 400→409
+（start 已运行 / PATCH 运行中 / DELETE 运行中 / stop 非运行 / 状态不可启动）。
 旧端点保留并自动加弃用 header（deprecation.py 的 /streaming/api/ → /api/v1/streaming）。
 """
 import json
@@ -27,28 +26,14 @@ import signal
 import time
 from pathlib import Path
 
-from flask import Blueprint, request, current_app
+from flask import current_app, request
 
+from app.api.v1 import v1_bp
+from app.api.v1.responses import ApiError, created, no_content, ok, paginate, parse_pagination
 from app.database import get_db
 from app.routes import streaming as _legacy
-from .responses import ok, created, paginated, no_content, ApiError
-
-bp = Blueprint("api_v1_streaming", __name__, url_prefix="/api/v1")
 
 MEDIAMTX_PORT = _legacy.MEDIAMTX_PORT
-
-
-def _parse_pagination():
-    """?page & ?page_size，page≥1，page_size 1..100，默认 20。"""
-    try:
-        page = max(1, int(request.args.get("page", "1")))
-    except (TypeError, ValueError):
-        page = 1
-    try:
-        page_size = int(request.args.get("page_size", "20"))
-    except (TypeError, ValueError):
-        page_size = 20
-    return page, max(1, min(page_size, 100))
 
 
 def _slice_page(rows, page, page_size):
@@ -60,21 +45,21 @@ def _slice_page(rows, page, page_size):
 def _validate_task_fields(source_type, source_id, stream_name):
     """create/update/preview 共用的字段校验。返回 (source_id:int, stream_name) 或 raise。"""
     if source_type not in ("single", "set"):
-        raise ApiError(10900, "来源类型无效", 400)
+        raise ApiError(400, "来源类型无效", error_code="STREAM_INVALID_SOURCE")
     if not source_id:
-        raise ApiError(10901, "请选择视频或视频集", 400)
+        raise ApiError(400, "请选择视频或视频集", error_code="STREAM_SOURCE_REQUIRED")
     if not stream_name:
-        raise ApiError(10902, "流名称不能为空", 400)
+        raise ApiError(400, "流名称不能为空", error_code="STREAM_NAME_REQUIRED")
     if not all(c.isalnum() or c in "-_" for c in stream_name):
-        raise ApiError(10903, "流名称只能包含字母、数字、连字符和下划线", 400)
+        raise ApiError(400, "流名称只能包含字母、数字、连字符和下划线", error_code="STREAM_NAME_INVALID")
     return int(source_id), stream_name
 
 
 def _resolve_or_raise(source_type, source_id):
-    """解析打水印视频列表；失败 raise 10900。"""
+    """解析打水印视频列表；失败 raise 400。"""
     videos, err = _legacy._resolve_watermarked_videos(source_type, source_id)
     if err:
-        raise ApiError(10900, err, 400)
+        raise ApiError(400, err, error_code="STREAM_RESOLVE_FAILED")
     return videos
 
 
@@ -97,10 +82,10 @@ def _suggested_algorithms(videos):
 
 # ── 辅助资源：可推流视频 / 视频集 ───────────────────────────────────────────────
 
-@bp.route("/streaming/videos", methods=["GET"])
-def list_streamable_videos():
+@v1_bp.route("/streaming/videos", methods=["GET"])
+def v1_list_streamable_videos():
     """所有已打水印视频（分页）。"""
-    page, page_size = _parse_pagination()
+    page, page_size = parse_pagination(request.args)
     db = get_db()
     cur = db.cursor()
     cur.execute(
@@ -110,13 +95,13 @@ def list_streamable_videos():
     )
     rows = [dict(r) for r in cur.fetchall()]
     page_rows, total = _slice_page(rows, page, page_size)
-    return paginated(page_rows, total, page, page_size)
+    return ok(paginate(page_rows, total, page, page_size))
 
 
-@bp.route("/streaming/video-sets", methods=["GET"])
-def list_video_sets():
+@v1_bp.route("/streaming/video-sets", methods=["GET"])
+def v1_list_video_sets():
     """所有评测视频集（分页），用 video_count 替代 video_ids。"""
-    page, page_size = _parse_pagination()
+    page, page_size = parse_pagination(request.args)
     db = get_db()
     cur = db.cursor()
     cur.execute(
@@ -133,16 +118,16 @@ def list_video_sets():
         d.pop("video_ids", None)
         result.append(d)
     page_rows, total = _slice_page(result, page, page_size)
-    return paginated(page_rows, total, page, page_size)
+    return ok(paginate(page_rows, total, page, page_size))
 
 
 # ── 推流任务 ────────────────────────────────────────────────────────────────────
 
-@bp.route("/streaming/tasks", methods=["GET"])
-def list_tasks():
+@v1_bp.route("/streaming/tasks", methods=["GET"])
+def v1_list_stream_tasks():
     """推流任务列表（分页）。先 _sync_running_status 同步假死任务（可能起重连线程，
     复用不改），再每行算 rtsp_urls/elapsed_seconds/estimated_end_ts。对齐旧 list_tasks。"""
-    page, page_size = _parse_pagination()
+    page, page_size = parse_pagination(request.args)
     db = get_db()
     cur = db.cursor()
     app = current_app._get_current_object()
@@ -217,11 +202,11 @@ def list_tasks():
         r["estimated_end_ts"] = estimated_end_ts
 
     page_rows, total = _slice_page(rows, page, page_size)
-    return paginated(page_rows, total, page, page_size)
+    return ok(paginate(page_rows, total, page, page_size))
 
 
-@bp.route("/streaming/tasks", methods=["POST"])
-def create_task():
+@v1_bp.route("/streaming/tasks", methods=["POST"])
+def v1_create_stream_task():
     """创建推流任务（不启动）。body: source_type/source_id/stream_name/loop_count?/name?"""
     data = request.get_json() or {}
     source_type = (data.get("source_type") or "").strip()
@@ -270,10 +255,10 @@ def create_task():
     )
 
 
-@bp.route("/streaming/tasks/<int:task_id>:start", methods=["POST"])
-def start_task(task_id):
+@v1_bp.route("/streaming/tasks/<int:task_id>:start", methods=["POST"])
+def v1_start_task(task_id):
     """启动推流（起 ffmpeg 子进程 + 监控线程，由旧 _start_task_internal 处理，不重写）。
-    body: {resume?: bool}。运行态冲突 400→409（30900/30903）。"""
+    body: {resume?: bool}。运行态冲突 400→409。"""
     data = request.get_json() or {}
     use_resume = data.get("resume", False)
 
@@ -282,20 +267,20 @@ def start_task(task_id):
         status_code = result.get("status_code", 500)
         error = result.get("error", "启动失败")
         if status_code == 404:
-            raise ApiError(20900, error, 404)
+            raise ApiError(404, error, error_code="STREAM_TASK_NOT_FOUND")
         if status_code == 409:
             # 超出并发推流上限（_start_task_internal 探测+计数后返回 409）
-            raise ApiError(30905, error, 409)
+            raise ApiError(409, error, error_code="STREAM_CONCURRENCY_LIMIT")
         if status_code == 400:
             # _start_task_internal 的 400 按消息分流到 409 修正或 400 参数码
             if error == "任务已在运行中":
-                raise ApiError(30900, error, 409)
+                raise ApiError(409, error, error_code="STREAM_ALREADY_RUNNING")
             if error.endswith("不可启动"):
-                raise ApiError(30903, error, 409)
+                raise ApiError(409, error, error_code="STREAM_NOT_STARTABLE")
             if error.startswith("视频文件不存在"):
-                raise ApiError(10905, error, 400)
-            raise ApiError(10900, error, 400)
-        raise ApiError(40900, error, 500)
+                raise ApiError(400, error, error_code="STREAM_FILE_MISSING")
+            raise ApiError(400, error, error_code="STREAM_INVALID_SOURCE")
+        raise ApiError(500, error, error_code="STREAM_START_FAILED")
     return ok({
         "status": result["status"],
         "pid": result.get("pid"),
@@ -303,10 +288,10 @@ def start_task(task_id):
     })
 
 
-@bp.route("/streaming/tasks/<int:task_id>:stop", methods=["POST"])
-def stop_task(task_id):
+@v1_bp.route("/streaming/tasks/<int:task_id>:stop", methods=["POST"])
+def v1_stop_stream_task(task_id):
     """停止推流（同步 terminate，复用 _stream_processes/_is_pid_alive 原语，不起线程）。
-    任务非 running→409（30904，旧 400）。"""
+    任务非 running→409（旧 400）。"""
     db = get_db()
     cur = db.cursor()
     cur.execute(
@@ -316,9 +301,9 @@ def stop_task(task_id):
     )
     task = cur.fetchone()
     if not task:
-        raise ApiError(20900, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="STREAM_TASK_NOT_FOUND")
     if task["status"] != "running":
-        raise ApiError(30904, "任务未在运行中", 409)
+        raise ApiError(409, "任务未在运行中", error_code="STREAM_NOT_RUNNING")
 
     # 用当前播放位置作为续播点
     resume_index = task["current_video_index"] if task["current_video_index"] is not None else 0
@@ -361,15 +346,15 @@ def stop_task(task_id):
     return ok({"status": new_status})
 
 
-@bp.route("/streaming/tasks/<int:task_id>/logs", methods=["GET"])
-def get_task_logs(task_id):
+@v1_bp.route("/streaming/tasks/<int:task_id>/logs", methods=["GET"])
+def v1_get_task_logs(task_id):
     """获取推流任务的 FFmpeg 日志内容（限 100KB）。"""
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT log_path FROM stream_tasks WHERE id = ?", (task_id,))
     row = cur.fetchone()
     if not row:
-        raise ApiError(20900, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="STREAM_TASK_NOT_FOUND")
 
     log_path = row["log_path"]
     if not log_path or not Path(log_path).exists():
@@ -383,11 +368,11 @@ def get_task_logs(task_id):
         lines = content.count("\n")
         return ok({"content": content, "lines": lines})
     except Exception as e:
-        raise ApiError(40901, str(e), 500)
+        raise ApiError(500, str(e), error_code="STREAM_LOG_READ_FAILED")
 
 
-@bp.route("/streaming/tasks/<int:task_id>/progress", methods=["GET"])
-def get_task_progress(task_id):
+@v1_bp.route("/streaming/tasks/<int:task_id>/progress", methods=["GET"])
+def v1_get_task_progress(task_id):
     """获取播放进度（视频列表、当前第几个/第几轮等）。"""
     db = get_db()
     cur = db.cursor()
@@ -399,7 +384,7 @@ def get_task_progress(task_id):
     )
     task = cur.fetchone()
     if not task:
-        raise ApiError(20900, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="STREAM_TASK_NOT_FOUND")
 
     videos = _resolve_or_raise(task["source_type"], task["source_id"])
     video_list = []
@@ -444,8 +429,8 @@ def get_task_progress(task_id):
     })
 
 
-@bp.route("/streaming/tasks/<int:task_id>", methods=["PATCH"])
-def update_task(task_id):
+@v1_bp.route("/streaming/tasks/<int:task_id>", methods=["PATCH"])
+def v1_update_stream_task(task_id):
     """编辑任务参数（仅非运行中可编辑；运行中→409）。body 同 create，全字段校验后
     重置为 created。对齐旧 update_task（非部分更新，全量重校验）。"""
     db = get_db()
@@ -457,9 +442,9 @@ def update_task(task_id):
     )
     task = cur.fetchone()
     if not task:
-        raise ApiError(20900, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="STREAM_TASK_NOT_FOUND")
     if task["status"] == "running":
-        raise ApiError(30901, "任务运行中，无法编辑", 409)
+        raise ApiError(409, "任务运行中，无法编辑", error_code="STREAM_RUNNING_CONFLICT")
 
     data = request.get_json() or {}
     source_type = (data.get("source_type") or "").strip()
@@ -498,17 +483,17 @@ def update_task(task_id):
     return ok({"id": task_id, "status": "created"})
 
 
-@bp.route("/streaming/tasks/<int:task_id>", methods=["DELETE"])
-def delete_task(task_id):
+@v1_bp.route("/streaming/tasks/<int:task_id>", methods=["DELETE"])
+def v1_delete_stream_task(task_id):
     """删除任务（运行中拒绝→409）。删除时清理续播临时文件。"""
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT id, status FROM stream_tasks WHERE id = ?", (task_id,))
     task = cur.fetchone()
     if not task:
-        raise ApiError(20900, "任务不存在", 404)
+        raise ApiError(404, "任务不存在", error_code="STREAM_TASK_NOT_FOUND")
     if task["status"] == "running":
-        raise ApiError(30902, "请先停止任务再删除", 409)
+        raise ApiError(409, "请先停止任务再删除", error_code="STREAM_DELETE_RUNNING")
 
     cur.execute("DELETE FROM stream_tasks WHERE id = ?", (task_id,))
     db.commit()
@@ -516,10 +501,10 @@ def delete_task(task_id):
     return no_content()
 
 
-@bp.route("/streaming/tasks:preview", methods=["POST"])
-def preview_task():
+@v1_bp.route("/streaming/tasks:preview", methods=["POST"])
+def v1_preview_task():
     """预览未创建的任务信息（RTSP 地址/时长/算法建议/视频数）。body: source_type/source_id/
-    stream_name?/loop_count?。参数不完整→10904。"""
+    stream_name?/loop_count?。参数不完整→400。"""
     data = request.get_json() or {}
     source_type = (data.get("source_type") or "").strip()
     source_id = data.get("source_id")
@@ -527,7 +512,7 @@ def preview_task():
     loop_count = int(data.get("loop_count") or 1)
 
     if not source_type or not source_id:
-        raise ApiError(10904, "参数不完整", 400)
+        raise ApiError(400, "参数不完整", error_code="STREAM_PARAM_REQUIRED")
 
     videos = _resolve_or_raise(source_type, int(source_id))
     total_duration = _compute_total_duration(videos)

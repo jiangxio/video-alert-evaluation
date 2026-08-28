@@ -30,10 +30,10 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, (resp.status_code, resp.get_json())
     body = resp.get_json()
-    assert body["code"] == code, body
+    assert body["code"] == status, body
     return body
 
 
@@ -104,7 +104,7 @@ def test_list_tasks_pagination(app, client):
 # ── 3. tasks/<id>（原位重写）──────────────────────────────────────────────────
 
 def test_get_task_not_found(client):
-    _err(client.get("/api/v1/assistant/tasks/999"), 404, 21200)
+    _err(client.get("/api/v1/assistant/tasks/999"), 404)
 
 
 def test_get_task_success(app, client):
@@ -118,7 +118,7 @@ def test_get_task_success(app, client):
 # ── 4. chat（委托）────────────────────────────────────────────────────────────
 
 def test_chat_empty_message(client):
-    _err(client.post("/api/v1/assistant/chat", json={"message": ""}), 400, 11200)
+    _err(client.post("/api/v1/assistant/chat", json={"message": ""}), 400)
 
 
 def test_chat_not_configured(client, monkeypatch):
@@ -142,7 +142,7 @@ def test_chat_success(client, monkeypatch):
 # ── 5. confirm（委托）──────────────────────────────────────────────────────────
 
 def test_confirm_missing_id(client):
-    _err(client.post("/api/v1/assistant/pending-confirmations:confirm", json={}), 400, 11201)
+    _err(client.post("/api/v1/assistant/pending-confirmations:confirm", json={}), 400)
 
 
 def test_confirm_success(client, monkeypatch):
@@ -156,7 +156,7 @@ def test_confirm_success(client, monkeypatch):
 # ── 6. cancel（委托）────────────────────────────────────────────────────────────
 
 def test_cancel_missing_id(client):
-    _err(client.post("/api/v1/assistant/pending-confirmations:cancel", json={}), 400, 11202)
+    _err(client.post("/api/v1/assistant/pending-confirmations:cancel", json={}), 400)
 
 
 def test_cancel_success(client, monkeypatch):

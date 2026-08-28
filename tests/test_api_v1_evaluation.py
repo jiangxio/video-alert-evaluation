@@ -31,10 +31,10 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, (resp.status_code, resp.get_json())
     body = resp.get_json()
-    assert body["code"] == code, body
+    assert body["code"] == status, body
     return body
 
 
@@ -170,7 +170,7 @@ def test_list_tasks_pagination(app, client, seed):
 
 
 def test_get_task_not_found(client):
-    _err(client.get("/api/v1/evaluation/tasks/999"), 404, 21300)
+    _err(client.get("/api/v1/evaluation/tasks/999"), 404)
 
 
 def test_get_task_success(client, seed):
@@ -180,7 +180,7 @@ def test_get_task_success(client, seed):
 
 def test_get_task_status_delegate(app, client, seed):
     """eval_status 委托：无运行→404(21311)。"""
-    _err(client.get("/api/v1/evaluation/tasks/1/status"), 404, 21311)
+    _err(client.get("/api/v1/evaluation/tasks/1/status"), 404)
 
 
 def test_get_task_status_running(app, client, seed):
@@ -205,11 +205,11 @@ def test_check_updates_no_evaluated_at(app, client, seed):
 # ── 2. 任务 CRUD（重写）────────────────────────────────────────────────────────
 
 def test_create_task_no_name(client, seed):
-    _err(client.post("/api/v1/evaluation/tasks", json={}), 400, 11300)
+    _err(client.post("/api/v1/evaluation/tasks", json={}), 400)
 
 
 def test_create_task_no_dataset(app, client):
-    _err(client.post("/api/v1/evaluation/tasks", json={"name": "x"}), 400, 11301)
+    _err(client.post("/api/v1/evaluation/tasks", json={"name": "x"}), 400)
 
 
 def test_create_task_success(app, client, seed):
@@ -228,11 +228,11 @@ def test_create_task_success(app, client, seed):
 
 
 def test_create_task_eval_set_not_found(app, client, seed):
-    _err(client.post("/api/v1/evaluation/tasks", json={"name": "x", "dataset_id": 1}), 404, 21301)
+    _err(client.post("/api/v1/evaluation/tasks", json={"name": "x", "dataset_id": 1}), 404)
 
 
 def test_clone_task_not_found(client, seed):
-    _err(client.post("/api/v1/evaluation/tasks/999:clone", json={}), 404, 21304)
+    _err(client.post("/api/v1/evaluation/tasks/999:clone", json={}), 404)
 
 
 def test_clone_task_success(app, client, seed):
@@ -248,7 +248,7 @@ def test_update_task_patch(app, client, seed):
 
 
 def test_update_task_not_found(client, seed):
-    _err(client.patch("/api/v1/evaluation/tasks/999", json={"trigger_rate": 0.7}), 404, 21300)
+    _err(client.patch("/api/v1/evaluation/tasks/999", json={"trigger_rate": 0.7}), 404)
 
 
 def test_delete_task_success(app, client, seed):
@@ -261,11 +261,11 @@ def test_delete_task_success(app, client, seed):
 
 
 def test_delete_task_not_found(client, seed):
-    _err(client.delete("/api/v1/evaluation/tasks/999"), 404, 21300)
+    _err(client.delete("/api/v1/evaluation/tasks/999"), 404)
 
 
 def test_analyze_not_found(client, seed):
-    _err(client.post("/api/v1/evaluation/tasks/999:analyze"), 404, 21300)
+    _err(client.post("/api/v1/evaluation/tasks/999:analyze"), 404)
 
 
 def test_analyze_success(app, client, seed, monkeypatch):
@@ -280,7 +280,7 @@ def test_analyze_success(app, client, seed, monkeypatch):
 
 def test_update_manual_status_invalid(app, client, seed):
     _err(client.patch("/api/v1/evaluation/tasks/1/merged-events/1/status",
-                       json={"manual_status": "bad"}), 400, 11303)
+                       json={"manual_status": "bad"}), 400)
 
 
 def test_update_manual_status_success(app, client, seed):
@@ -292,17 +292,17 @@ def test_update_manual_status_success(app, client, seed):
 
 def test_update_manual_status_record_not_found(app, client, seed):
     _err(client.patch("/api/v1/evaluation/tasks/1/merged-events/999/status",
-                      json={"manual_status": "correct"}), 404, 21306)
+                      json={"manual_status": "correct"}), 404)
 
 
 def test_batch_status_invalid(app, client, seed):
     _err(client.patch("/api/v1/evaluation/tasks/1/merged-events:batch-status",
-                      json={"manual_status": "bad", "merged_ids": [1]}), 400, 11303)
+                      json={"manual_status": "bad", "merged_ids": [1]}), 400)
 
 
 def test_batch_status_no_ids(app, client, seed):
     _err(client.patch("/api/v1/evaluation/tasks/1/merged-events:batch-status",
-                      json={"manual_status": "correct", "merged_ids": []}), 400, 11304)
+                      json={"manual_status": "correct", "merged_ids": []}), 400)
 
 
 def test_batch_status_success(app, client, seed):
@@ -313,7 +313,7 @@ def test_batch_status_success(app, client, seed):
 
 
 def test_update_gt_counts_no_fields(app, client, seed):
-    _err(client.patch("/api/v1/evaluation/tasks/1/gt-events/1", json={}), 400, 11305)
+    _err(client.patch("/api/v1/evaluation/tasks/1/gt-events/1", json={}), 400)
 
 
 def test_update_gt_counts_success(app, client, seed):
@@ -325,7 +325,7 @@ def test_update_gt_counts_success(app, client, seed):
 
 def test_update_gt_counts_record_not_found(app, client, seed):
     _err(client.patch("/api/v1/evaluation/tasks/1/gt-events/999",
-                      json={"confirmed_count": 2}), 404, 21306)
+                      json={"confirmed_count": 2}), 404)
 
 
 # ── 4. 状态变更（委托）──────────────────────────────────────────────────────
@@ -344,16 +344,16 @@ def test_execute_success(app, client, seed, _fake_thread):
 
 def test_execute_conflict(app, client, seed, _fake_thread):
     _legacy._eval_progress[1] = {"running": True, "total": 0, "done": 0}
-    _err(client.post("/api/v1/evaluation/tasks/1:execute"), 409, 31300)
+    _err(client.post("/api/v1/evaluation/tasks/1:execute"), 409)
 
 
 def test_execute_not_found(client, seed, _fake_thread):
-    _err(client.post("/api/v1/evaluation/tasks/999:execute"), 404, 21300)
+    _err(client.post("/api/v1/evaluation/tasks/999:execute"), 404)
 
 
 def test_finalize_not_done(app, client, seed, _stub_metrics):
     """status≠done→409(31301)。"""
-    _err(client.post("/api/v1/evaluation/tasks/1:finalize"), 409, 31301)
+    _err(client.post("/api/v1/evaluation/tasks/1:finalize"), 409)
 
 
 def test_finalize_success(app, client, seed, _stub_metrics):
@@ -368,7 +368,7 @@ def test_finalize_success(app, client, seed, _stub_metrics):
 
 
 def test_unconfirm_not_finalized(app, client, seed):
-    _err(client.post("/api/v1/evaluation/tasks/1:unconfirm"), 409, 31302)
+    _err(client.post("/api/v1/evaluation/tasks/1:unconfirm"), 409)
 
 
 def test_unconfirm_success(app, client, seed):
@@ -398,7 +398,7 @@ def test_confirm_success(app, client, seed):
 # ── 5. 结果/指标（委托，stub metrics）────────────────────────────────────────
 
 def test_get_results_not_found(client, seed):
-    _err(client.get("/api/v1/evaluation/tasks/999/results"), 404, 21300)
+    _err(client.get("/api/v1/evaluation/tasks/999/results"), 404)
 
 
 def test_get_results_success(app, client, seed, _stub_metrics):
@@ -417,16 +417,16 @@ def test_get_event_metrics_success(app, client, seed, _stub_metrics):
 # ── 6. 报告（委托）────────────────────────────────────────────────────────────
 
 def test_report_image_not_found(client, seed):
-    _err(client.get("/api/v1/evaluation/tasks/999/report/image"), 404, 21300)
+    _err(client.get("/api/v1/evaluation/tasks/999/report/image"), 404)
 
 
 def test_report_not_done(app, client, seed):
     """detailed-report：status 非 done/finalized→409(31303)。POST 须带 json={} 否则 get_json 抛 415。"""
-    _err(client.post("/api/v1/evaluation/tasks/1/report", json={}), 409, 31303)
+    _err(client.post("/api/v1/evaluation/tasks/1/report", json={}), 409)
 
 
 def test_report_pdf_not_done(app, client, seed):
-    _err(client.post("/api/v1/evaluation/tasks/1/report/pdf", json={}), 409, 31303)
+    _err(client.post("/api/v1/evaluation/tasks/1/report/pdf", json={}), 409)
 
 
 def test_report_preview_success(app, client, seed, _stub_claude, _stub_metrics):
@@ -440,7 +440,7 @@ def test_report_preview_no_api_key(app, client, seed, monkeypatch):
     """无 creds 且 body 无 api_key→400(11310)。"""
     monkeypatch.setattr("app.services.api_config_service.get_claude_creds",
                         lambda: {"auth_token": None, "base_url": None})
-    _err(client.post("/api/v1/evaluation/tasks/1/report:preview", json={}), 400, 11310)
+    _err(client.post("/api/v1/evaluation/tasks/1/report:preview", json={}), 400)
 
 
 def test_report_chat_success(app, client, seed, _stub_claude, _stub_metrics):
@@ -453,7 +453,7 @@ def test_report_chat_success(app, client, seed, _stub_claude, _stub_metrics):
 # ── 7. GT 帧 / GT 同步（重写/委托）────────────────────────────────────────────
 
 def test_serve_gt_frame_not_found(client, seed):
-    _err(client.get("/api/v1/evaluation/gt-frames/999/file"), 404, 21300)
+    _err(client.get("/api/v1/evaluation/gt-frames/999/file"), 404)
 
 
 def test_serve_gt_frame_success(app, client, seed, tmp_path):
@@ -470,15 +470,15 @@ def test_serve_gt_frame_success(app, client, seed, tmp_path):
 
 
 def test_sync_gt_no_video_id(client, seed):
-    _err(client.post("/api/v1/evaluation/gt:sync", json={"direction": "db_to_gt"}), 400, 11306)
+    _err(client.post("/api/v1/evaluation/gt:sync", json={"direction": "db_to_gt"}), 400)
 
 
 def test_sync_gt_bad_direction(app, client, seed):
-    _err(client.post("/api/v1/evaluation/gt:sync", json={"video_db_id": 1, "direction": "bad"}), 400, 11307)
+    _err(client.post("/api/v1/evaluation/gt:sync", json={"video_db_id": 1, "direction": "bad"}), 400)
 
 
 def test_sync_gt_video_not_found(client, seed):
-    _err(client.post("/api/v1/evaluation/gt:sync", json={"video_db_id": 999, "direction": "db_to_gt"}), 404, 21309)
+    _err(client.post("/api/v1/evaluation/gt:sync", json={"video_db_id": 999, "direction": "db_to_gt"}), 404)
 
 
 def test_sync_gt_db_to_gt_success(app, client, seed):
@@ -495,7 +495,7 @@ def test_sync_gt_db_to_gt_success(app, client, seed):
 # ── 8. 测前分析（重写 CRUD）────────────────────────────────────────────────────
 
 def test_create_pre_analysis_no_set(client, seed):
-    _err(client.post("/api/v1/evaluation/pre-analysis", json={}), 400, 11309)
+    _err(client.post("/api/v1/evaluation/pre-analysis", json={}), 400)
 
 
 def test_create_pre_analysis_success(app, client, seed, monkeypatch):
@@ -528,7 +528,7 @@ def test_list_pre_analysis_success(app, client, seed):
 
 
 def test_get_pre_analysis_not_found(client, seed):
-    _err(client.get("/api/v1/evaluation/pre-analysis/999"), 404, 21307)
+    _err(client.get("/api/v1/evaluation/pre-analysis/999"), 404)
 
 
 def test_get_pre_analysis_success(app, client, seed):
@@ -571,7 +571,7 @@ def test_delete_pre_analysis_success(app, client, seed):
 
 
 def test_delete_pre_analysis_not_found(client, seed):
-    _err(client.delete("/api/v1/evaluation/pre-analysis/999"), 404, 21307)
+    _err(client.delete("/api/v1/evaluation/pre-analysis/999"), 404)
 
 
 # ── 9. 评测视频集（重写）──────────────────────────────────────────────────────
@@ -591,7 +591,7 @@ def test_list_eval_sets_with_analysis_count(client, seed):
 # ── 10. Chat 会话（重写 CRUD）──────────────────────────────────────────────────
 
 def test_list_chat_sessions_task_not_found(client, seed):
-    _err(client.get("/api/v1/evaluation/tasks/999/chat-sessions"), 404, 21300)
+    _err(client.get("/api/v1/evaluation/tasks/999/chat-sessions"), 404)
 
 
 def test_list_chat_sessions_empty(client, seed):
@@ -620,7 +620,7 @@ def test_save_chat_session_update(app, client, seed):
 
 def test_save_chat_session_update_not_found(app, client, seed):
     _err(client.post("/api/v1/evaluation/tasks/1/chat-sessions",
-                     json={"session_id": 999, "name": "x"}), 404, 21308)
+                     json={"session_id": 999, "name": "x"}), 404)
 
 
 def test_get_chat_session_success(app, client, seed):
@@ -635,7 +635,7 @@ def test_get_chat_session_success(app, client, seed):
 
 
 def test_get_chat_session_not_found(client, seed):
-    _err(client.get("/api/v1/evaluation/tasks/1/chat-sessions/999"), 404, 21308)
+    _err(client.get("/api/v1/evaluation/tasks/1/chat-sessions/999"), 404)
 
 
 def test_delete_chat_session_success(app, client, seed):
@@ -648,4 +648,4 @@ def test_delete_chat_session_success(app, client, seed):
 
 
 def test_delete_chat_session_not_found(client, seed):
-    _err(client.delete("/api/v1/evaluation/tasks/1/chat-sessions/999"), 404, 21308)
+    _err(client.delete("/api/v1/evaluation/tasks/1/chat-sessions/999"), 404)

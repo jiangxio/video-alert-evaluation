@@ -15,9 +15,9 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, resp.status_code
-    assert resp.get_json()["code"] == code
+    assert resp.get_json()["code"] == status
 
 
 def _create_et(client, key="new_type", name="新类型", **extra):
@@ -56,7 +56,7 @@ def test_create_event_type(client):
 
 def test_create_event_type_duplicate_key(client):
     """key=rat 已播种 → 409 / 30700。"""
-    _err(client.post("/api/v1/event-types", json={"key": "rat", "name": "鼠"}), 409, 30700)
+    _err(client.post("/api/v1/event-types", json={"key": "rat", "name": "鼠"}), 409)
 
 
 def test_create_event_type_duplicate_id(client):
@@ -66,27 +66,26 @@ def test_create_event_type_duplicate_id(client):
         "/api/v1/event-types",
         json={"key": "uniq_key_for_id_test", "name": "x", "id": existing_id},
     )
-    _err(resp, 409, 30701)
+    _err(resp, 409)
 
 
 def test_create_event_type_missing_key(client):
-    _err(client.post("/api/v1/event-types", json={"name": "n"}), 400, 10700)
+    _err(client.post("/api/v1/event-types", json={"name": "n"}), 400)
 
 
 def test_create_event_type_missing_name(client):
-    _err(client.post("/api/v1/event-types", json={"key": "k_only"}), 400, 10701)
+    _err(client.post("/api/v1/event-types", json={"key": "k_only"}), 400)
 
 
 def test_create_event_type_invalid_key(client):
     # 含 "-" 非法（只允许字母/数字/下划线）
-    _err(client.post("/api/v1/event-types", json={"key": "bad-key", "name": "n"}), 400, 10702)
+    _err(client.post("/api/v1/event-types", json={"key": "bad-key", "name": "n"}), 400)
 
 
 def test_create_event_type_tags_not_array(client):
     _err(
         client.post("/api/v1/event-types", json={"key": "tagbad", "name": "n", "tags": "notlist"}),
         400,
-        10703,
     )
 
 
@@ -106,12 +105,12 @@ def test_update_event_type(client):
 
 
 def test_update_event_type_not_found(client):
-    _err(client.patch("/api/v1/event-types/999999", json={"name": "x"}), 404, 20700)
+    _err(client.patch("/api/v1/event-types/999999", json={"name": "x"}), 404)
 
 
 def test_update_event_type_no_fields(client):
     et = _create_et(client, key="no_update", name="n")
-    _err(client.patch(f"/api/v1/event-types/{et['id']}", json={}), 400, 10706)
+    _err(client.patch(f"/api/v1/event-types/{et['id']}", json={}), 400)
 
 
 # ── 引用计数 ───────────────────────────────────────────────────────────────────
@@ -136,7 +135,7 @@ def test_get_references(client):
 
 
 def test_get_references_not_found(client):
-    _err(client.get("/api/v1/event-types/999999/references"), 404, 20700)
+    _err(client.get("/api/v1/event-types/999999/references"), 404)
 
 
 # ── 删除 ───────────────────────────────────────────────────────────────────────
@@ -150,7 +149,7 @@ def test_delete_event_type(client):
 
 
 def test_delete_event_type_not_found(client):
-    _err(client.delete("/api/v1/event-types/999999"), 404, 20700)
+    _err(client.delete("/api/v1/event-types/999999"), 404)
 
 
 def test_delete_event_type_with_refs(client):
@@ -166,4 +165,4 @@ def test_delete_event_type_with_refs(client):
         },
         content_type="multipart/form-data",
     )
-    _err(client.delete(f"/api/v1/event-types/{et['id']}"), 409, 30702)
+    _err(client.delete(f"/api/v1/event-types/{et['id']}"), 409)

@@ -31,10 +31,10 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, (resp.status_code, resp.get_json())
     body = resp.get_json()
-    assert body["code"] == code, body
+    assert body["code"] == status, body
     return body
 
 
@@ -101,7 +101,7 @@ def _insert_merged(cur, **fields):
 # ── 1. alerts（原位重写）──────────────────────────────────────────────────────
 
 def test_alerts_not_found(client, seed):
-    _err(client.get("/api/v1/review/tasks/999/alerts"), 404, 21400)
+    _err(client.get("/api/v1/review/tasks/999/alerts"), 404)
 
 
 def test_alerts_success(client, seed):
@@ -127,7 +127,7 @@ def test_alerts_empty(app, client, seed):
 # ── 2. gt-context（原位重写）──────────────────────────────────────────────────
 
 def test_gt_context_missing_video_id(client, seed):
-    _err(client.get("/api/v1/review/tasks/1/gt-context"), 400, 11401)
+    _err(client.get("/api/v1/review/tasks/1/gt-context"), 400)
 
 
 def test_gt_context_success(client, seed):
@@ -148,11 +148,11 @@ def test_gt_context_task_not_exists_returns_empty(client, seed):
 # ── 3. ai-check（委托）──────────────────────────────────────────────────────
 
 def test_ai_check_no_merged_ids(client, seed, _creds):
-    _err(client.post("/api/v1/review/tasks/1/ai-check", json={}), 400, 11400)
+    _err(client.post("/api/v1/review/tasks/1/ai-check", json={}), 400)
 
 
 def test_ai_check_task_not_found(client, seed, _creds):
-    _err(client.post("/api/v1/review/tasks/999/ai-check", json={"merged_ids": [1]}), 404, 21400)
+    _err(client.post("/api/v1/review/tasks/999/ai-check", json={"merged_ids": [1]}), 404)
 
 
 def test_ai_check_no_creds(client, seed, monkeypatch):
@@ -160,12 +160,12 @@ def test_ai_check_no_creds(client, seed, monkeypatch):
     （真实 get_openai_creds 可能读到 os.environ/api_config 表的值，故显式置空以确定性。）"""
     monkeypatch.setattr("app.services.api_config_service.get_openai_creds",
                         lambda: {"api_key": None, "base_url": "", "model": ""})
-    _err(client.post("/api/v1/review/tasks/1/ai-check", json={"merged_ids": [1]}), 400, 11402)
+    _err(client.post("/api/v1/review/tasks/1/ai-check", json={"merged_ids": [1]}), 400)
 
 
 def test_ai_check_merged_not_found(client, seed, _creds):
     """merged_ids 指向不存在记录→21401。"""
-    _err(client.post("/api/v1/review/tasks/1/ai-check", json={"merged_ids": [999]}), 404, 21401)
+    _err(client.post("/api/v1/review/tasks/1/ai-check", json={"merged_ids": [999]}), 404)
 
 
 def test_ai_check_success(client, seed, _creds):
@@ -181,18 +181,18 @@ def test_ai_check_success(client, seed, _creds):
 # ── 4. ai-check/status（委托）────────────────────────────────────────────────
 
 def test_ai_status_missing_batch_id(client, seed):
-    _err(client.get("/api/v1/review/tasks/1/ai-check/status"), 400, 11403)
+    _err(client.get("/api/v1/review/tasks/1/ai-check/status"), 400)
 
 
 def test_ai_status_batch_not_found(client, seed):
-    _err(client.get("/api/v1/review/tasks/1/ai-check/status?batch_id=nope"), 404, 21402)
+    _err(client.get("/api/v1/review/tasks/1/ai-check/status?batch_id=nope"), 404)
 
 
 def test_ai_status_batch_other_task(client, seed):
     """batch 属于别的 task→21402。"""
     _legacy._ai_batches["b1"] = {"task_id": 999, "status": "running", "total": 1,
                                 "done": 0, "current_id": None, "results": [], "error": None}
-    _err(client.get("/api/v1/review/tasks/1/ai-check/status?batch_id=b1"), 404, 21402)
+    _err(client.get("/api/v1/review/tasks/1/ai-check/status?batch_id=b1"), 404)
 
 
 def test_ai_status_success(client, seed):

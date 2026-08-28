@@ -16,9 +16,9 @@ def _data(resp):
     return body["data"]
 
 
-def _err(resp, status, code):
+def _err(resp, status):
     assert resp.status_code == status, resp.status_code
-    assert resp.get_json()["code"] == code
+    assert resp.get_json()["code"] == status
 
 
 def _create_version(client, algorithm_type="rat", name="rat_v1", filename="test_algo.txt"):
@@ -62,7 +62,7 @@ def test_create_version_invalid_type(client):
         },
         content_type="multipart/form-data",
     )
-    _err(resp, 400, 10600)
+    _err(resp, 400)
 
 
 def test_create_version_missing_name(client):
@@ -71,7 +71,7 @@ def test_create_version_missing_name(client):
         data={"algorithm_type": "rat", "version_date": "2026-01-01"},
         content_type="multipart/form-data",
     )
-    _err(resp, 400, 10601)
+    _err(resp, 400)
 
 
 def test_create_version_missing_date(client):
@@ -80,7 +80,7 @@ def test_create_version_missing_date(client):
         data={"algorithm_type": "rat", "name": "x"},
         content_type="multipart/form-data",
     )
-    _err(resp, 400, 10602)
+    _err(resp, 400)
 
 
 def test_list_versions(client):
@@ -101,7 +101,7 @@ def test_get_version_detail(client):
 
 
 def test_get_version_not_found(client):
-    _err(client.get("/api/v1/algorithms/versions/999999"), 404, 20600)
+    _err(client.get("/api/v1/algorithms/versions/999999"), 404)
 
 
 def test_update_version(client):
@@ -123,7 +123,7 @@ def test_update_version_not_found(client):
         data={"name": "x"},
         content_type="multipart/form-data",
     )
-    _err(resp, 404, 20600)
+    _err(resp, 404)
 
 
 def test_update_version_no_fields(client):
@@ -134,7 +134,7 @@ def test_update_version_no_fields(client):
         data={},
         content_type="multipart/form-data",
     )
-    _err(resp, 400, 10603)
+    _err(resp, 400)
 
 
 def test_update_version_description_not_blanked(client):
@@ -155,18 +155,18 @@ def test_delete_version(client):
     vid = _create_version(client)
     resp = client.delete(f"/api/v1/algorithms/versions/{vid}")
     assert resp.status_code == 204
-    _err(client.get(f"/api/v1/algorithms/versions/{vid}"), 404, 20600)
+    _err(client.get(f"/api/v1/algorithms/versions/{vid}"), 404)
 
 
 def test_delete_version_in_use(client):
     """版本被数据集引用（is_active=1）→ 409 / 30600。"""
     vid = _create_version(client)
-    did = client.post("/api/v1/alerts/datasets", json={"name": "ds"}).get_json()["data"]["id"]
+    did = client.post("/api/v1/alerts/datasets", json={"name": "ds"}).get_json()["data"]["dataset"]["id"]
     client.post(
         f"/api/v1/alerts/datasets/{did}/algorithm-versions",
         json={"algorithm_version_ids": [vid]},
     )
-    _err(client.delete(f"/api/v1/algorithms/versions/{vid}"), 409, 30600)
+    _err(client.delete(f"/api/v1/algorithms/versions/{vid}"), 409)
 
 
 # ── 文件下载 ───────────────────────────────────────────────────────────────────
@@ -181,7 +181,7 @@ def test_download_file(client, tmp_path):
 
 
 def test_download_missing_path(client):
-    _err(client.get("/api/v1/algorithms/download"), 400, 10604)
+    _err(client.get("/api/v1/algorithms/download"), 400)
 
 
 def test_download_illegal_path(client, tmp_path):
@@ -189,7 +189,6 @@ def test_download_illegal_path(client, tmp_path):
     _err(
         client.get("/api/v1/algorithms/download", query_string={"path": str(tmp_path / "evil.txt")}),
         400,
-        10605,
     )
 
 
@@ -200,7 +199,6 @@ def test_download_not_exist(client, tmp_path):
     _err(
         client.get("/api/v1/algorithms/download", query_string={"path": str(uploads_algo / "nope.txt")}),
         404,
-        20601,
     )
 
 
@@ -221,5 +219,4 @@ def test_batch_download_no_ids(client):
     _err(
         client.post("/api/v1/algorithms/versions:batch-download", json={"ids": [], "type": "all"}),
         400,
-        10606,
     )

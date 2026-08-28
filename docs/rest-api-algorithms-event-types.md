@@ -1,5 +1,7 @@
 # /api/v1 algorithms + event-types 改造文档
 
+> ⚠️ **错误码已改为方案3**（HTTP 状态即 `code` + 可选 `error_code` 字符串）。下方 5 位 `H FF SS` 码列已废弃，以代码实际行为为准；完整规范见 [错误码文档](./rest-api-error-codes.md)。
+
 > REST API 改造第 5 模块。把 `app/routes/algorithms.py` 一个旧蓝图里的**算法版本 CRUD + 算法类型列表 + 事件类型 CRUD** 三组端点资源化进 `/api/v1`,统一信封 + 5 位错误码(FF=06 algorithm-versions / FF=07 event-types)。旧逻辑为**同步 CRUD + 文件 I/O**,无后台线程/锁/进程(与 OCR 高风险区不同)→ **原位重写 handler**(与 alerts/videos 一致),复用 `app.event_types` 的 `get_event_types`/`_sync_alert_types_json`、`app.routes.send_file_with_cache`、`app.services.config_parser.parse_config`,不重复实现。旧端点保留并自动加弃用 header。
 
 ## 1. 背景

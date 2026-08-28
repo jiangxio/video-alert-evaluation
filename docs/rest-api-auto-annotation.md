@@ -1,5 +1,7 @@
 # /api/v1 auto-annotation 改造文档
 
+> ⚠️ **错误码已改为方案3**（HTTP 状态即 `code` + 可选 `error_code` 字符串）。下方 5 位 `H FF SS` 码列已废弃，以代码实际行为为准；完整规范见 [错误码文档](./rest-api-error-codes.md)。
+
 > REST API 改造第 8 模块。把 `app/routes/auto_annotation.py` 的 10 个 JSON 端点资源化进 `/api/v1/auto-annotation/*`，统一信封 + 5 位错误码（FF=10 auto-annotation-tasks）。auto-annotation 是高风险模块（`start_task` 内联起 `_do_auto_annotation` daemon 线程跑真 ffmpeg 抽帧 + 多模态模型 API；`convert_to_events` 起 `_batch_capture_gt_frames` 抓帧线程；模块级 `_auto_anno_tasks`/`_auto_anno_lock`/`_stop_requested`/`_current_task_id`/`_task_queue` 状态），但与 streaming 不同，**它的 `start_task` 没有干净的模块级启动函数**（校验/建库/排队/起线程全内联在路由），无法函数级复用 → 走 OCR 那套**路由级 `call_old_view` 委托**（4 个端点），纯查询/CRUD（6 个）原位重写。旧端点保留并自动加弃用 header。
 
 ## 变更总览（TL;DR）

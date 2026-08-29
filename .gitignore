@@ -49,6 +49,9 @@ __pycache__/
 demo/
 docs/评分自评.md
 jianyi.png
+# 参赛/申报文档（docs 下，不入库）
+docs/视频流AI算法评测工具.docx
+docs/评测指标体系.md
 
 # Node（playwright 测试用）
 node_modules/

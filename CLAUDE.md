@@ -72,14 +72,14 @@ The CLI and web platform both call the same underlying scripts via subprocess. T
 
 ### Verification Pipeline
 
-Alert image filename → extract alert type ID → look up event type in `report/config.json` → run OCR on watermark → load `ground_truth/{video_id}.json` → check if OCR timestamp ±5s overlaps any matching event → verdict: `correct` / `incorrect` / `unknown`
+Alert image filename → extract alert type ID → look up event type in `config/alert_types.json` → run OCR on watermark → load `ground_truth/{video_id}.json` → check if OCR timestamp ±5s overlaps any matching event → verdict: `correct` / `incorrect` / `unknown`
 
 The timestamp tolerance is 5 seconds. Alert filenames follow `{prefix}_{unix_ts}_{alert_type_id}.png`.
 
 ### OCR Image Preprocessing
 
 Both `ocr_easy.py` and `final_ocr.py` apply the same preprocessing before OCR:
-1. Crop top-left 380×100px (watermark location)
+1. Crop top-left `min(540, w) × min(50, h)`px (watermark location)
 2. Convert to grayscale
 3. Enhance contrast (2.5×)
 4. Invert colors (white text on black → black on white)
@@ -95,14 +95,14 @@ The DB schema tracks the full lifecycle: `videos` → `watermarked_videos`, `ale
 
 ### Watermark Format
 
-FFmpeg `drawtext` filter adds `{VIDEO_ID} | {HH:MM:SS}` at position (20, 20) in 32px DejaVuSans-Bold white text with a semi-transparent black background. Settings are in `scripts/process_single.py`.
+FFmpeg `drawtext` filter adds `{VIDEO_ID} {HH:MM:SS}` at position (20, 20) in 32px DejaVuSans-Bold white text with a black background. Settings are in `scripts/process_single.py`.
 
 ## Configuration Files
 
 | File | Purpose |
 |------|---------|
 | `scripts/process_single.py` | FFmpeg/font settings for watermarking (font candidates, size, position, codec) |
-| `report/config.json` | Alert type ID → event type name mapping (format: `"id name"` per line) |
+| `config/alert_types.json` | Alert type ID → event type key mapping (format: `"id key"` per line) |
 | `ground_truth/{video_id}.json` | Ground truth events with type, start, end timestamps |
 | `app/config.py` | Flask config: upload paths, size limits, allowed extensions |
 
@@ -184,12 +184,12 @@ assets_path = "/userdata/nvr_warn_assets/"
 
 ### 2. 确认阶段（finalize_task）—— 指标计算
 
-**有效状态（`_get_effective_status`）**
+**有效状态（`get_effective_status`）**
 
 - `manual_status` 优先级高于 `is_false_positive`：
   - `'correct'` / `'false_positive'` / `'ignored'` → 直接生效
   - `'auto'` 或未设置 → 以 `is_false_positive` 为准
-- **所有统计指标都必须通过 `_get_effective_status` 获取最终状态**，不能直接读 `is_false_positive`。
+- **所有统计指标都必须通过 `get_effective_status` 获取最终状态**，不能直接读 `is_false_positive`。
 
 **精确率（Precision）**
 
@@ -234,7 +234,7 @@ avg_fp_per_hour = average(各事件类型的 avg_fp_per_hour)   # 算术平均�
 
 ### 3. 前端重算（eval_task.html）
 
-- `recalcMetrics()` 函数与后端 `finalize_task` 逻辑保持一致
+- `recomputeMetrics()` 函数与后端 `finalize_task` 逻辑保持一致
 - 修改 `confirmed_count` 后前端实时重算召回率，但不重算精确率
 - 前端过滤逻辑（miss/hit）也使用相同的 confirmed/actual 规则
 
@@ -243,5 +243,5 @@ avg_fp_per_hour = average(各事件类型的 avg_fp_per_hour)   # 算术平均�
 1. **不要把召回率的封顶逻辑放到命中判定里**。命中判定只看时间重叠，召回率才用 `min(actual, confirmed)` 封顶。`cc16cc5` 曾错误地把超出 confirmed_count 的告警改判为误检，已修复（见 `evaluation.py:613-617`）。
 2. **`confirmed_count == 0` 不是"预期0次触发"**。它的语义是"不主动预期，但如果实际触发了，`gt_count` 和 `hit_count` 都按1算"。
 3. **整体召回率是算术平均**。各事件类型的召回率简单相加后除以类型数，不按GT事件数量加权。
-4. **所有指标统计必须走 `_get_effective_status`**。直接读 `is_false_positive` 会漏掉用户手动覆盖的状态。
+4. **所有指标统计必须走 `get_effective_status`**。直接读 `is_false_positive` 会漏掉用户手动覆盖的状态。
 5. **修改 `confirmed_count` 只影响召回率，不影响精确率**。精确率取决于单张告警的有效状态（命中/误检），而这个状态在评测执行阶段就已确定。

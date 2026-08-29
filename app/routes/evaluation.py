@@ -567,34 +567,15 @@ def execute_task(task_id):
             'running': True,
         }
 
+    conn_ref = [None]
+
     def _worker():
         import sqlite3
-        import logging
-        import traceback
         conn = sqlite3.connect(str(DATABASE_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
+        conn_ref[0] = conn
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        try:
-            _worker_body(cur, conn)
-        except Exception:
-            # 异常时必须：记日志、置 failed、关连接、清除 running 标志，
-            # 否则 status 永远 'evaluating'、_eval_progress.running 恒 True（409 阻塞重跑、finalize 被锁）。
-            logging.getLogger(__name__).exception(f'评测任务 {task_id} 执行失败')
-            try:
-                cur.execute('UPDATE eval_tasks SET status = ? WHERE id = ?', ('failed', task_id))
-                conn.commit()
-            except Exception:
-                pass
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            with _eval_lock:
-                if task_id in _eval_progress:
-                    _eval_progress[task_id]['running'] = False
 
-    def _worker_body(cur, conn):
         # 判断是否为实时模式
         is_realtime = _is_realtime_task(cur, task_id)
 
@@ -723,8 +704,48 @@ def execute_task(task_id):
                 WHERE id = ?
             ''', ('done', accuracy, recall, avg_fp_per_hour, event_metrics_json, task_id))
         conn.commit()
+        conn.close()
+        conn_ref[0] = None
+        with _eval_lock:
+            _eval_progress[task_id]['running'] = False
 
-    thread = threading.Thread(target=_worker, daemon=True)
+    def _worker_safe():
+        """_worker 的安全包装：异常时把任务标为 failed，确保连接关闭与进度复位。"""
+        try:
+            _worker()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            # 关闭 _worker 中可能未关闭的连接
+            if conn_ref[0] is not None:
+                try:
+                    conn_ref[0].close()
+                except Exception:
+                    pass
+                conn_ref[0] = None
+            # 标记任务失败（error_message 列不存在时回退到仅置 failed）
+            try:
+                import sqlite3 as _sqlite3
+                _conn = _sqlite3.connect(str(DATABASE_PATH))
+                _c = _conn.cursor()
+                try:
+                    _c.execute(
+                        "UPDATE eval_tasks SET status = 'failed', error_message = ? WHERE id = ?",
+                        (f"评测执行异常: {e}", task_id),
+                    )
+                except Exception:
+                    _c.execute(
+                        "UPDATE eval_tasks SET status = 'failed' WHERE id = ?",
+                        (task_id,),
+                    )
+                _conn.commit()
+                _conn.close()
+            except Exception:
+                pass
+            with _eval_lock:
+                _eval_progress[task_id]['running'] = False
+
+    thread = threading.Thread(target=_worker_safe, daemon=True)
     thread.start()
 
     cursor.execute('UPDATE eval_tasks SET status = ? WHERE id = ?', ('evaluating', task_id))
@@ -820,8 +841,9 @@ def get_results(task_id):
 
         total_count = sum(total_count_by_type.values())
         fp_count = sum(fp_by_type.values())
-        # 整体平均误检数/小时 = 全类型误检总数 / duration_hours（不是各类型速率的算术平均）
-        avg_fp_per_hour = round(fp_count / duration_hours, 2) if duration_hours else 0
+        all_alert_types = set(list(fp_by_type.keys()) + list(total_count_by_type.keys()))
+        avg_fp_values = [round(fp_by_type.get(et, 0) / duration_hours, 2) for et in all_alert_types] if duration_hours else []
+        avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
         accuracy = (total_count - fp_count) / total_count if total_count > 0 else None
         recall = None
 
@@ -1891,24 +1913,19 @@ def detailed_report_pdf(task_id):
             f.write(html)
             tmp_html = f.name
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                page = browser.new_page()
-                page.goto(f'file://{tmp_html}')
-                page.wait_for_load_state('networkidle')
-                pdf_bytes = page.pdf(
-                    format='A4',
-                    print_background=True,
-                    margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
-                )
-                browser.close()
-        finally:
-            # 无论渲染是否成功都清理临时 HTML，避免文件泄漏
-            try:
-                os.unlink(tmp_html)
-            except OSError:
-                pass
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f'file://{tmp_html}')
+            page.wait_for_load_state('networkidle')
+            pdf_bytes = page.pdf(
+                format='A4',
+                print_background=True,
+                margin={'top': '15mm', 'bottom': '15mm', 'left': '15mm', 'right': '15mm'},
+            )
+            browser.close()
+
+        os.unlink(tmp_html)
     except Exception as e:
         import traceback
         current_app.logger.error(f'PDF 生成失败: {e}\n{traceback.format_exc()}')
@@ -1939,9 +1956,9 @@ def detailed_report_preview(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     from app.services import api_config_service
-    claude_creds = api_config_service.get_claude_creds()
-    api_key = data.get('api_key') or claude_creds.get('auth_token')
-    api_base_url = data.get('api_base_url', '').strip() or claude_creds.get('base_url') or None
+    text_creds = api_config_service.get_text_creds()
+    api_key = data.get('api_key') or text_creds.get('api_key')
+    api_base_url = data.get('api_base_url', '').strip() or text_creds.get('base_url') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key，请在 /api-config/ 页面配置 Claude 组'}), 400
 
@@ -1964,7 +1981,7 @@ def detailed_report_preview(task_id):
         except Exception:
             pass
 
-    # 整体平均误检数/小时 = 各事件类型误检速率之和（= 总误检数 / 时长，非算术平均）
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
     avg_fp_per_hour = compute_overall_avg_fp(event_metrics)
 
     metrics_json = json.dumps({
@@ -2042,9 +2059,9 @@ def detailed_report_chat(task_id):
         return jsonify({'error': '任务不存在'}), 404
 
     from app.services import api_config_service
-    claude_creds = api_config_service.get_claude_creds()
-    api_key = data.get('api_key') or claude_creds.get('auth_token')
-    api_base_url = data.get('api_base_url', '').strip() or claude_creds.get('base_url') or None
+    text_creds = api_config_service.get_text_creds()
+    api_key = data.get('api_key') or text_creds.get('api_key')
+    api_base_url = data.get('api_base_url', '').strip() or text_creds.get('base_url') or None
     if not api_key:
         return jsonify({'error': '缺少 API Key，请在 /api-config/ 页面配置 Claude 组'}), 400
 
@@ -2071,7 +2088,7 @@ def detailed_report_chat(task_id):
         except Exception:
             pass
 
-    # 整体平均误检数/小时 = 各事件类型误检速率之和（= 总误检数 / 时长，非算术平均）
+    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
     avg_fp_per_hour = compute_overall_avg_fp(event_metrics)
 
     metrics_json = json.dumps({

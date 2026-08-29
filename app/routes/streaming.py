@@ -36,22 +36,31 @@ MEDIAMTX_PORT = 8554
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """检查指定 PID 的进程是否仍在运行（跨平台）"""
+    """检查指定 PID 的进程是否仍在运行（跨平台，且不会误杀进程）。
+
+    注意：Windows 上 ``os.kill(pid, 0)`` 会调用 ``TerminateProcess`` 直接杀掉目标
+    进程，用于轮询推流状态时会杀光所有 FFmpeg。这里在 Windows 上改用
+    ``OpenProcess`` + ``GetExitCodeProcess`` 探测，不产生副作用；POSIX 上仍用
+    ``os.kill(pid, 0)``。
+    """
     if not pid:
         return False
-    if os.name == 'nt':
-        # Windows 下 os.kill(pid, 0) 会抛 ValueError，改用 OpenProcess 探测
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if not handle:
-                return False
-            kernel32.CloseHandle(handle)
-            return True
-        except Exception:
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
             return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            STILL_ACTIVE = 259
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
@@ -63,14 +72,14 @@ def _sync_running_status(db: sqlite3.Connection, app=None, allow_restart: bool =
     """
     扫描数据库中 status='running' 的任务，校验对应 pid 是否还活着。
     若进程已消失：
-      - 错误可重试（broken pipe 等）且允许重连 → 触发自动重连
+      - 错误可重试（broken pipe 等）且允许重连 → 从任务开头重新推流
       - 否则 → 标记为 failed
     应在 list_tasks() 返回前、以及应用启动时调用。
     应用启动时 allow_restart=False，因为此时没有 app context，也不适合自动恢复。
     """
     cur = db.cursor()
     cur.execute(
-        "SELECT id, pid, log_path, loop_count, current_video_index, current_loop, restart_count, max_restarts "
+        "SELECT id, pid, log_path, loop_count, restart_count, max_restarts, started_at "
         "FROM stream_tasks WHERE status = 'running'"
     )
     dead_tasks = [dict(row) for row in cur.fetchall() if not _is_pid_alive(row["pid"])]
@@ -78,12 +87,12 @@ def _sync_running_status(db: sqlite3.Connection, app=None, allow_restart: bool =
         task_id = task["id"]
         with _reconnect_lock:
             if task_id in _reconnecting_tasks:
-                # 已经有监控线程在处理重连/切换，避免重复起 FFmpeg
+                # 已经有监控线程在处理重连，避免重复起 FFmpeg
                 continue
             _reconnecting_tasks.add(task_id)
 
         pid = task["pid"]
-        log_path = task.get("log_path")
+        log_path = task["log_path"] if "log_path" in task else None
 
         stderr_output = ""
         if log_path:
@@ -95,22 +104,22 @@ def _sync_running_status(db: sqlite3.Connection, app=None, allow_restart: bool =
         retryable = _is_retryable_error(stderr_output)
         restart_count = int(task["restart_count"] or 0)
         max_restarts = int(task["max_restarts"] or 3)
-        video_index = task["current_video_index"] if task["current_video_index"] is not None else 0
-        current_loop = task["current_loop"] if task["current_loop"] is not None else 1
         total_loops = task["loop_count"] or 1
         error_msg = stderr_output[-500:] if stderr_output else f"FFmpeg 进程 (pid={pid}) 已退出"
 
         if retryable and restart_count < max_restarts and allow_restart and app is not None:
+            # 断流重连保留进度：从任务 started_at 算整轮偏移作为续播点
+            resume_offset = _compute_resume_offset(task_id, task["started_at"])
             cur.execute(
                 "UPDATE stream_tasks SET restart_count = restart_count + 1, last_error = ?, "
-                "resume_video_index = ?, resume_offset = ?, resume_loop = ?, resume_at = CURRENT_TIMESTAMP "
-                "WHERE id = ?",
-                (error_msg, video_index, 0.0, current_loop, task_id),
+                "resume_video_index = 0, resume_offset = ?, resume_loop = 1, "
+                "resume_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (error_msg, resume_offset, task_id),
             )
             db.commit()
             threading.Thread(
                 target=_delayed_play_video,
-                args=(task_id, video_index, current_loop, total_loops, app),
+                args=(task_id, total_loops, app, resume_offset),
                 daemon=True,
             ).start()
         else:
@@ -118,29 +127,22 @@ def _sync_running_status(db: sqlite3.Connection, app=None, allow_restart: bool =
                 _reconnecting_tasks.discard(task_id)
             cur.execute(
                 "UPDATE stream_tasks SET status = 'failed', error_message = ?, restart_count = 0, "
-                "resume_video_index = ?, resume_offset = ?, resume_loop = ?, resume_at = CURRENT_TIMESTAMP, "
-                "ended_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (error_msg, video_index, 0.0, current_loop, task_id),
-            )
-            db.commit()
-            cur.execute(
-                "UPDATE stream_tasks SET status = 'failed', error_message = ?, restart_count = 0, "
-                "resume_video_index = ?, resume_offset = ?, resume_loop = ?, resume_at = CURRENT_TIMESTAMP, "
-                "ended_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (error_msg, video_index, 0.0, current_loop, task_id),
+                "resume_video_index = 0, resume_offset = 0, resume_loop = 1, "
+                "resume_at = CURRENT_TIMESTAMP, ended_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (error_msg, task_id),
             )
             db.commit()
 
 
-def _delayed_play_video(task_id: int, video_index: int, current_loop: int, total_loops: int, app=None):
-    """等待几秒后重试播放指定视频；函数退出时释放重连锁"""
+def _delayed_play_video(task_id: int, total_loops: int, app=None, resume_offset: float = 0.0):
+    """等待几秒后重新推流（resume_offset 保留断流进度，0=从头）；函数退出时释放重连锁"""
     try:
         time.sleep(5)
         if app is not None and not has_app_context():
             with app.app_context():
-                _play_video(task_id, video_index, current_loop, total_loops, app=app)
+                _play_video(task_id, total_loops, resume_offset=resume_offset, app=app)
         else:
-            _play_video(task_id, video_index, current_loop, total_loops, app=app)
+            _play_video(task_id, total_loops, resume_offset=resume_offset, app=app)
     finally:
         with _reconnect_lock:
             _reconnecting_tasks.discard(task_id)
@@ -159,14 +161,19 @@ def init_streaming_cleanup():
 
 
 def _get_local_ips() -> list:
-    """获取所有真实网卡的 IPv4 地址（排除 loopback、docker、虚拟网卡）"""
-    import fcntl
-    import struct
-    import array
+    """获取所有真实网卡的 IPv4 地址（排除 loopback、docker、虚拟网卡）
 
-    SIOCGIFCONF = 0x8912
+    跨平台实现：Windows 走 socket.gethostbyname_ex，Linux 走 fcntl.ioctl，
+    二者均失败时回退到 UDP 连接法。fcntl 是 Linux 专属模块，必须延迟导入
+    并包裹在 try 内，否则在 Windows 上会直接 ModuleNotFoundError。
+    """
     results = []
     try:
+        import fcntl
+        import struct
+        import array
+
+        SIOCGIFCONF = 0x8912
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         buf = array.array("B", b"\0" * 4096)
         ifreq = struct.pack("iL", 4096, buf.buffer_info()[0])
@@ -185,7 +192,19 @@ def _get_local_ips() -> list:
                 continue
             results.append({"iface": iface, "ip": addr})
     except Exception:
-        pass
+        # Windows 或无 fcntl 的平台：用 gethostbyname_ex 枚举本机地址
+        try:
+            hostname = socket.gethostname()
+            try:
+                _, _, ip_list = socket.gethostbyname_ex(hostname)
+            except Exception:
+                ip_list = [socket.gethostbyname(hostname)]
+            for ip in ip_list:
+                if ip.startswith("127."):
+                    continue
+                results.append({"iface": "default", "ip": ip})
+        except Exception:
+            pass
 
     if not results:
         try:
@@ -294,11 +313,14 @@ def _calc_elapsed_seconds(
     current_video_index: int | None,
     video_started_at,
     ref_ts: float | None = None,
+    total_duration: float | None = None,
 ) -> float:
     """
-    根据当前所在视频/轮次以及该视频的开始时间，计算任务总已播放秒数。
-    逐视频推流模式下，started_at 记录的是“当前视频”的开始时间，因此需要把
-    前面已经完整播放的视频/轮次累加进来。
+    计算任务总已播放秒数。
+
+    单进程推流模式下，started_at 是整个任务的开始时间（全程不再重置），
+    因此 elapsed = now - started_at，并用 total_duration 封顶。
+    保留 current_loop/current_video_index 参数仅为向后兼容，不再参与计算。
     """
     if not video_list:
         return 0.0
@@ -306,24 +328,20 @@ def _calc_elapsed_seconds(
     if round_duration <= 0:
         return 0.0
 
-    loop = current_loop or 1
-    idx = current_video_index or 0
-    idx = max(0, min(idx, len(video_list) - 1))
+    if not video_started_at:
+        return 0.0
 
-    prior_seconds = (loop - 1) * round_duration + sum(
-        (video_list[i].get("duration") or 0) for i in range(idx)
-    )
+    started = _parse_started_at(video_started_at)
+    if not started:
+        return 0.0
 
-    current_video_duration = video_list[idx].get("duration") or 0
-    current_played = 0.0
-    if video_started_at:
-        started = _parse_started_at(video_started_at)
-        if started:
-            ref = ref_ts if ref_ts is not None else time.time()
-            current_played = ref - started.timestamp()
-            current_played = max(0.0, min(current_played, current_video_duration))
+    ref = ref_ts if ref_ts is not None else time.time()
+    elapsed = ref - started.timestamp()
+    elapsed = max(0.0, elapsed)
 
-    return prior_seconds + current_played
+    # 用 total_duration 封顶（任务总时长 = 单轮时长 × 循环数）
+    cap = total_duration if total_duration and total_duration > 0 else round_duration
+    return min(elapsed, cap)
 
 
 # ── 工具函数 ────────────────────────────────────────────────────────────────
@@ -376,6 +394,54 @@ def _ensure_duration(wm_id: int, video_path: str) -> float | None:
         return duration
     finally:
         conn.close()
+
+
+def _probe_codecs(video_path: str) -> tuple[str | None, str | None]:
+    """用 ffprobe 探测视频/音频编码，返回 (video_codec, audio_codec)。
+
+    无音频流时 acodec=None；探测失败（ffprobe 不在/超时/非视频文件）返回 (None, None)。
+    纯探测函数，便于单测（monkeypatch streaming.subprocess.run 喂 canned 输出）。
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "stream=codec_name,codec_type",
+                "-of", "csv=p=0",
+                str(video_path),
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return None, None
+        vcodec = acodec = None
+        for line in result.stdout.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            cname, ctype = parts[0], parts[1]
+            if ctype == "video":
+                vcodec = cname
+            elif ctype == "audio":
+                acodec = cname
+        return vcodec, acodec
+    except Exception:
+        return None, None
+
+
+def _probe_codec_compatible(video_path: str) -> bool:
+    """探测源编码是否对 RTSP/MediaMTX 友好（可直接 -c copy）。
+
+    判定：视频编码为 h264/hevc/h265 且（无音频 或 音频为 aac）→ True（可 copy）；
+    其余 → False（需转码兜底）。探测失败按 True 处理（保留旧的 copy 默认行为，
+    若 copy 失败由断流重连兜底），避免 ffprobe 不可用时一律走昂贵的转码。
+    """
+    vcodec, acodec = _probe_codecs(video_path)
+    if vcodec is None:
+        return True
+    video_ok = vcodec in ("h264", "hevc", "h265")
+    audio_ok = acodec is None or acodec == "aac"
+    return video_ok and audio_ok
 
 
 def _get_suggested_algorithms(video_db_ids: list[int], config_path: str) -> list[str]:
@@ -469,49 +535,10 @@ def _resolve_watermarked_videos(source_type: str, source_id: int) -> tuple[list[
         conn.close()
 
 
-def _build_ffmpeg_cmd(
-    video_path: str,
-    stream_name: str,
-    resume_offset: float = 0,
-    task_id: int | None = None,
-) -> list[str]:
-    """
-    构建单个视频的 FFmpeg 推流命令。
-    支持 resume_offset：从指定偏移处截取后推流。
-    返回 FFmpeg 命令列表。
-    """
-    rtsp_url = f"rtsp://localhost:{MEDIAMTX_PORT}/{stream_name}"
-    resume_offset = float(resume_offset or 0)
-
-    input_path = video_path
-    if resume_offset > 0:
-        resume_path = _get_resume_video_path(task_id)
-        resume_path.parent.mkdir(parents=True, exist_ok=True)
-        if resume_path.exists():
-            try:
-                resume_path.unlink()
-            except Exception:
-                pass
-
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y", "-ss", str(resume_offset),
-                "-i", video_path,
-                "-c", "copy", "-avoid_negative_ts", "make_zero",
-                str(resume_path),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"截取续播视频失败：{video_path} @ {resume_offset}s")
-        input_path = str(resume_path)
-
-    return [
-        "ffmpeg", "-re", "-i", input_path,
-        "-c", "copy", "-rtsp_transport", "tcp", "-f", "rtsp", rtsp_url,
-    ]
+def _get_concat_list_path(task_id: int | None) -> Path:
+    """获取任务 concat 列表文件路径（单进程推流用）"""
+    base = Path(__file__).resolve().parent.parent.parent / "tmp" / "stream_concat"
+    return base / f"task_{task_id}.txt"
 
 
 def _get_resume_video_path(task_id: int | None) -> Path:
@@ -524,12 +551,95 @@ def _cleanup_resume_file(task_id: int | None):
     """清理任务的续播临时视频文件"""
     if not task_id:
         return
-    path = _get_resume_video_path(task_id)
-    if path.exists():
-        try:
-            path.unlink()
-        except Exception:
-            pass
+    for p in (_get_resume_video_path(task_id), _get_concat_list_path(task_id)):
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
+
+def _build_ffmpeg_cmd(
+    video_paths: list[str],
+    stream_name: str,
+    total_loops: int,
+    task_id: int | None = None,
+    resume_offset: float = 0,
+    transcode: bool = False,
+) -> list[str]:
+    """
+    构建单进程 FFmpeg 推流命令：用 concat demuxer 把整轮视频拼成一个输入，
+    再用 -stream_loop 循环整轮，全程只开一个 ffmpeg、一个 RTSP publisher，
+    避免每轮循环重建 mediamtx path 导致 reader 被踢。
+
+    video_paths: 一轮内的视频文件路径列表（按播放顺序）。
+    total_loops: 总循环次数。
+    resume_offset: 续播偏移（秒），从该偏移处开始推流（作用于拼接后的整轮输入）。
+    transcode: 源编码不兼容时走转码兜底（-c:v libx264 -preset veryfast -c:a aac），
+        默认 False 走 -c copy。
+    """
+    rtsp_url = f"rtsp://localhost:{MEDIAMTX_PORT}/{stream_name}"
+    resume_offset = float(resume_offset or 0)
+
+    # 生成 concat 列表文件
+    concat_path = _get_concat_list_path(task_id)
+    concat_path.parent.mkdir(parents=True, exist_ok=True)
+    # concat demuxer 要求路径用正斜杠或转义，且文件需存在
+    lines = []
+    for vp in video_paths:
+        # Windows 路径反斜杠在 concat 文件里需转义为正斜杠
+        safe = vp.replace("\\", "/")
+        lines.append(f"file '{safe}'")
+    concat_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    input_path = str(concat_path)
+
+    # 续播：从指定偏移截取整轮输入后再循环推流
+    if resume_offset > 0:
+        resume_path = _get_resume_video_path(task_id)
+        resume_path.parent.mkdir(parents=True, exist_ok=True)
+        if resume_path.exists():
+            try:
+                resume_path.unlink()
+            except Exception:
+                pass
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-ss", str(resume_offset),
+                "-i", concat_path,
+                *(["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac"]
+                  if transcode else ["-c", "copy"]),
+                "-avoid_negative_ts", "make_zero",
+                str(resume_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"截取续播视频失败：{concat_path} @ {resume_offset}s")
+        input_path = str(resume_path)
+        input_is_concat = False
+    else:
+        input_is_concat = True
+
+    # -stream_loop N：输入循环 N 次（N=0 表示不循环即播 1 次）
+    loop_count = max(0, total_loops - 1)
+    cmd = ["ffmpeg", "-re"]
+    if loop_count > 0:
+        cmd += ["-stream_loop", str(loop_count)]
+    if input_is_concat:
+        # concat demuxer 需显式声明格式；-safe 0 允许任意路径
+        cmd += ["-f", "concat", "-safe", "0"]
+    if transcode:
+        # 源编码不兼容 RTSP/MediaMTX：转码兜底，-maxrate/-bufsize 稳定码率
+        out_codec = ["-c:v", "libx264", "-preset", "veryfast",
+                     "-maxrate", "2M", "-bufsize", "4M", "-c:a", "aac"]
+    else:
+        out_codec = ["-c", "copy"]
+    cmd += ["-i", input_path, *out_codec, "-rtsp_transport", "tcp", "-f", "rtsp", rtsp_url]
+    return cmd
 
 
 def _is_retryable_error(stderr_output: str) -> bool:
@@ -551,13 +661,18 @@ def _is_retryable_error(stderr_output: str) -> bool:
     return any(k in lower for k in retryable_keywords)
 
 
-def _compute_resume_position(task_id: int, started_at) -> tuple[int | None, float | None, int | None]:
-    """根据任务开始时间计算当前播放位置，用于续播"""
+def _compute_resume_position(task_id: int, started_at) -> tuple[int | None, float | None, int | None, float | None]:
+    """根据任务开始时间计算当前播放位置，用于断流续播。
+
+    返回 (current_video_index, current_video_offset, current_loop, round_offset)。
+    round_offset 是整轮输入内的偏移秒数（= loop_progress_seconds），正是单进程
+    _build_ffmpeg_cmd 的 resume_offset 所需。任务未开始/已结束/无法计算时全 None。
+    """
     if not started_at:
-        return None, None, None
+        return None, None, None, None
     started = _parse_started_at(started_at)
     if not started:
-        return None, None, None
+        return None, None, None, None
 
     conn = sqlite3.connect(str(DATABASE_PATH))
     conn.row_factory = sqlite3.Row
@@ -569,12 +684,12 @@ def _compute_resume_position(task_id: int, started_at) -> tuple[int | None, floa
         )
         task = cur.fetchone()
         if not task:
-            return None, None, None
+            return None, None, None, None
 
         elapsed = time.time() - started.timestamp()
         videos, err = _resolve_watermarked_videos(task["source_type"], task["source_id"])
         if err:
-            return None, None, None
+            return None, None, None, None
 
         video_list = []
         for v in videos:
@@ -583,10 +698,17 @@ def _compute_resume_position(task_id: int, started_at) -> tuple[int | None, floa
 
         progress = _calc_progress(elapsed, video_list, task["loop_count"] or 1)
         if progress["is_finished"]:
-            return None, None, None
-        return progress["current_video_index"], progress["current_video_offset"], progress["current_loop"]
+            return None, None, None, None
+        return (progress["current_video_index"], progress["current_video_offset"],
+                progress["current_loop"], progress["loop_progress_seconds"])
     finally:
         conn.close()
+
+
+def _compute_resume_offset(task_id: int, started_at) -> float:
+    """整轮输入内的续播偏移秒数（断流重连保留进度用）。无法计算返 0.0。"""
+    *_unused, round_offset = _compute_resume_position(task_id, started_at)
+    return float(round_offset or 0.0)
 
 
 def _set_task_failed(task_id: int, error_msg: str):
@@ -607,14 +729,15 @@ def _set_task_failed(task_id: int, error_msg: str):
 
 def _play_video(
     task_id: int,
-    video_index: int,
-    current_loop: int,
     total_loops: int,
     resume_offset: float = 0,
     app=None,
 ) -> tuple[bool, dict]:
     """
-    播放队列中的指定视频。处理视频索引越界、循环结束、启动失败等情况。
+    启动整个推流任务的单个 FFmpeg 进程：用 concat + -stream_loop 把所有视频、
+    所有循环一次性推完。全程只有一个 RTSP publisher，mediamtx path 不会因
+    循环边界而重建，reader 不会被踢。
+
     返回 (success, result)：
       - success=True 时 result 包含 status, pid, rtsp_urls
       - success=False 时 result 包含 error
@@ -630,7 +753,7 @@ def _play_video(
         db = get_db()
         cur = db.cursor()
         cur.execute(
-            "SELECT id, source_type, source_id, stream_name, loop_count, status "
+            "SELECT id, source_type, source_id, stream_name, loop_count, status, transcode "
             "FROM stream_tasks WHERE id = ?",
             (task_id,),
         )
@@ -648,31 +771,22 @@ def _play_video(
             _set_task_failed(task_id, "视频列表为空")
             return False, {"error": "视频列表为空"}
 
-        # 处理视频索引越界：进入下一轮
-        while video_index >= video_count:
-            video_index -= video_count
-            current_loop += 1
-
-        # 超过总循环次数，任务完成
-        if current_loop > total_loops:
-            cur.execute(
-                "UPDATE stream_tasks SET status = 'done', error_message = NULL, restart_count = 0, "
-                "resume_video_index = NULL, resume_offset = NULL, resume_loop = NULL, resume_at = NULL, "
-                "ended_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (task_id,),
-            )
-            db.commit()
-            return True, {"status": "done"}
-
-        video = videos[video_index]
-        video_path = video["output_path"]
-        if not Path(video_path).exists():
-            err = f"视频文件不存在：{video_path}"
-            _set_task_failed(task_id, err)
-            return False, {"error": err}
+        # 校验所有视频文件存在
+        video_paths = []
+        for v in videos:
+            vp = v["output_path"]
+            if not Path(vp).exists():
+                err = f"视频文件不存在：{vp}"
+                _set_task_failed(task_id, err)
+                return False, {"error": err}
+            video_paths.append(vp)
 
         try:
-            cmd = _build_ffmpeg_cmd(video_path, task["stream_name"], resume_offset=resume_offset, task_id=task_id)
+            cmd = _build_ffmpeg_cmd(
+                video_paths, task["stream_name"], total_loops,
+                task_id=task_id, resume_offset=resume_offset,
+                transcode=bool(task["transcode"] or 0),
+            )
         except RuntimeError as e:
             _set_task_failed(task_id, str(e))
             return False, {"error": str(e)}
@@ -683,23 +797,31 @@ def _play_video(
 
         try:
             log_fp = open(log_path, "w", encoding="utf-8")
-            process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=log_fp)
+            # Windows: 子进程需脱离父进程控制台进程组，否则 Ctrl+C / 控制台事件
+            # 会同时发给 run.py 和 ffmpeg，导致 web 服务随 ffmpeg 一起被信号杀掉。
+            # CREATE_NEW_PROCESS_GROUP 让 ffmpeg 独立，CREATE_NO_WINDOW 避免弹窗。
+            popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=log_fp)
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+                )
+            process = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError:
             log_fp.close()
             err = "ffmpeg 未安装或不在 PATH 中"
             _set_task_failed(task_id, err)
             return False, {"error": err}
 
-        # 立即记录启动时间和位置（started_at 表示当前视频的实际开始时间）
+        # 单进程模式：started_at 表示整个任务的开始时间，全程不再重置
         with _stream_lock:
             _stream_processes[task_id] = (process, log_fp)
 
         cur.execute(
             "UPDATE stream_tasks SET status = 'running', pid = ?, log_path = ?, "
-            "current_video_index = ?, current_loop = ?, "
+            "current_video_index = 0, current_loop = 1, "
             "resume_video_index = NULL, resume_offset = NULL, resume_loop = NULL, resume_at = NULL, "
             "started_at = CURRENT_TIMESTAMP, error_message = NULL, ended_at = NULL WHERE id = ?",
-            (process.pid, str(log_path), video_index, current_loop, task_id),
+            (process.pid, str(log_path), task_id),
         )
         db.commit()
 
@@ -724,7 +846,7 @@ def _play_video(
 
         threading.Thread(
             target=_monitor_video_process,
-            args=(task_id, process, log_fp, log_path, video_index, current_loop, total_loops, app),
+            args=(task_id, process, log_fp, log_path, total_loops, app),
             daemon=True,
         ).start()
 
@@ -743,12 +865,14 @@ def _monitor_video_process(
     process: subprocess.Popen,
     log_fp,
     log_path: Path,
-    video_index: int,
-    current_loop: int,
     total_loops: int,
     app=None,
 ):
-    """后台线程：单个视频推流结束后，决定播放下一个、重试当前视频还是失败"""
+    """后台线程：单进程推流结束后，决定任务完成、重试还是失败。
+
+    单进程模式下 ffmpeg 推完所有循环才会退出，因此 returncode==0 即代表
+    整个任务正常完成，标记 done；无需再递归播放下一个视频。
+    """
     try:
         process.wait()
     except Exception:
@@ -759,8 +883,6 @@ def _monitor_video_process(
         log_fp.close()
     except Exception:
         pass
-
-    _cleanup_resume_file(task_id)
 
     with _stream_lock:
         _stream_processes.pop(task_id, None)
@@ -776,29 +898,23 @@ def _monitor_video_process(
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT status, restart_count, max_restarts FROM stream_tasks WHERE id = ?",
+            "SELECT status, restart_count, max_restarts, started_at FROM stream_tasks WHERE id = ?",
             (task_id,),
         )
         row = cur.fetchone()
         if not row or row["status"] != "running":
             return
 
-        def _play_with_ctx(**kwargs):
-            if app is not None and not has_app_context():
-                with app.app_context():
-                    _play_video(task_id, app=app, **kwargs)
-            else:
-                _play_video(task_id, app=app, **kwargs)
-
         if returncode == 0:
-            # 当前视频正常结束，播放下一个
-            with _reconnect_lock:
-                _reconnecting_tasks.add(task_id)
-            try:
-                _play_with_ctx(video_index=video_index + 1, current_loop=current_loop, total_loops=total_loops)
-            finally:
-                with _reconnect_lock:
-                    _reconnecting_tasks.discard(task_id)
+            # 整个任务所有循环正常推完
+            cur.execute(
+                "UPDATE stream_tasks SET status = 'done', error_message = NULL, restart_count = 0, "
+                "resume_video_index = NULL, resume_offset = NULL, resume_loop = NULL, resume_at = NULL, "
+                "ended_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (task_id,),
+            )
+            conn.commit()
+            _cleanup_resume_file(task_id)
             return
 
         error_msg = stderr_output[-500:] if stderr_output else f"FFmpeg 退出码 {returncode}"
@@ -807,33 +923,41 @@ def _monitor_video_process(
         max_restarts = int(row["max_restarts"] or 3)
 
         if retryable and restart_count < max_restarts:
-            # 记录失败位置并从当前视频开头重试
+            # 可重试错误：从断流处续播（保留整轮进度）
             with _reconnect_lock:
                 _reconnecting_tasks.add(task_id)
             try:
+                resume_offset = _compute_resume_offset(task_id, row["started_at"])
                 cur.execute(
                     "UPDATE stream_tasks SET restart_count = restart_count + 1, last_error = ?, "
-                    "resume_video_index = ?, resume_offset = ?, resume_loop = ?, resume_at = CURRENT_TIMESTAMP "
-                    "WHERE id = ?",
-                    (error_msg, video_index, 0.0, current_loop, task_id),
+                    "resume_video_index = 0, resume_offset = ?, resume_loop = 1, "
+                    "resume_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (error_msg, resume_offset, task_id),
                 )
                 conn.commit()
 
                 time.sleep(5)
-                _play_with_ctx(video_index=video_index, current_loop=current_loop, total_loops=total_loops)
+                if app is not None and not has_app_context():
+                    with app.app_context():
+                        _play_video(task_id, total_loops, resume_offset=resume_offset, app=app)
+                else:
+                    _play_video(task_id, total_loops, resume_offset=resume_offset, app=app)
             finally:
                 with _reconnect_lock:
                     _reconnecting_tasks.discard(task_id)
             return
 
-        # 不可重试或重试次数用尽，保留失败位置
+        # 不可重试或重试次数用尽
         cur.execute(
             "UPDATE stream_tasks SET status = 'failed', error_message = ?, restart_count = 0, "
-            "resume_video_index = ?, resume_offset = ?, resume_loop = ?, resume_at = CURRENT_TIMESTAMP, "
-            "ended_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (error_msg, video_index, 0.0, current_loop, task_id),
+            "resume_video_index = 0, resume_offset = 0, resume_loop = 1, "
+            "resume_at = CURRENT_TIMESTAMP, ended_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (error_msg, task_id),
         )
         conn.commit()
+    except Exception:
+        # DB 不可用（应用关闭 / 测试 teardown 删库）→ daemon 监控线程不崩，静默退出
+        return
     finally:
         conn.close()
 
@@ -903,6 +1027,23 @@ def list_tasks():
     local_ips = _get_local_ips()
     now_ts = time.time()
 
+    # 校验 running 状态的任务：进程若已消失则自动修正状态
+    for r in rows:
+        if r.get("status") == "running" and r.get("pid"):
+            # 正在重连的任务交由 _delayed_play_video 线程处理（其 DB pid 仍为旧值），
+            # 这里不能据旧 pid 把它误标 done，否则会破坏自动重连（单请求内必现竞态）。
+            with _reconnect_lock:
+                if r["id"] in _reconnecting_tasks:
+                    continue
+            if not _is_pid_alive(r["pid"]):
+                cur.execute(
+                    "UPDATE stream_tasks SET status = 'done', ended_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (r["id"],),
+                )
+                db.commit()
+                r["status"] = "done"
+                r["ended_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
     for r in rows:
         if r.get("suggested_algorithms"):
             try:
@@ -914,7 +1055,7 @@ def list_tasks():
             for entry in local_ips
         ]
 
-        # 运行时长和预计结束时间（逐视频模式下用 current_video_index/current_loop 累加）
+        # 运行时长和预计结束时间（单进程模式下 started_at 为任务开始时间）
         elapsed = None
         estimated_end_ts = None
         total_duration = r.get("total_duration") or 0
@@ -935,6 +1076,7 @@ def list_tasks():
                 r.get("current_video_index"),
                 r.get("started_at"),
                 ref_ts=ref_ts,
+                total_duration=total_duration,
             )
             elapsed = max(0, min(elapsed, total_duration))
             if r.get("status") == "running":
@@ -965,6 +1107,8 @@ def create_task():
         return jsonify({"error": "流名称只能包含字母、数字、连字符和下划线"}), 400
     if loop_count < 1:
         loop_count = 1
+    if loop_count > 100:
+        loop_count = 100
 
     # 解析视频列表，检查是否都已打水印
     videos, err = _resolve_watermarked_videos(source_type, int(source_id))
@@ -1014,7 +1158,7 @@ def create_task():
 def _start_task_internal(task_id: int, use_resume: bool, is_restart: bool = False) -> tuple[bool, dict]:
     """
     启动推流任务的内部逻辑。
-    逐个视频推流：根据 resume 数据确定起始视频，然后调用 _play_video。
+    单进程推流：用 concat + -stream_loop 一次性推完所有视频和循环。
     返回 (success, result)：
       - success=True 时 result 包含 status, pid, rtsp_urls
       - success=False 时 result 包含 error, status_code
@@ -1024,7 +1168,7 @@ def _start_task_internal(task_id: int, use_resume: bool, is_restart: bool = Fals
     cur = db.cursor()
     cur.execute(
         "SELECT id, source_type, source_id, stream_name, loop_count, status, "
-        "resume_video_index, resume_offset, resume_loop "
+        "resume_offset, resume_loop "
         "FROM stream_tasks WHERE id = ?",
         (task_id,),
     )
@@ -1044,30 +1188,36 @@ def _start_task_internal(task_id: int, use_resume: bool, is_restart: bool = Fals
         if not Path(v["output_path"]).exists():
             return False, {"error": f"视频文件不存在：{v['output_path']}", "status_code": 400}
 
+    # 探测源编码是否需要转码兜底（concat 单进程下任一视频不兼容则整轮转码）
+    needs_transcode = not all(_probe_codec_compatible(v["output_path"]) for v in videos)
+
+    # 并发上限：转码任务按 2 倍占并发配额（STREAM_MAX_CONCURRENT，默认 2）
+    max_concurrent = int(os.environ.get("STREAM_MAX_CONCURRENT", "2"))
+    cur.execute(
+        "SELECT COALESCE(SUM(CASE WHEN transcode=1 THEN 2 ELSE 1 END), 0) AS used "
+        "FROM stream_tasks WHERE status='running'"
+    )
+    used = cur.fetchone()["used"]
+    cost = 2 if needs_transcode else 1
+    if used + cost > max_concurrent:
+        return False, {"error": "超出并发推流上限，请先停止其他任务", "status_code": 409}
+
     total_loops = task["loop_count"] or 1
-    video_index = 0
-    current_loop = 1
     resume_offset = 0.0
 
     if use_resume:
-        has_resume = (
-            task["resume_video_index"] is not None
-            and task["resume_loop"] is not None
-        )
-        if has_resume:
-            video_index = int(task["resume_video_index"])
-            current_loop = int(task["resume_loop"])
-            resume_offset = float(task["resume_offset"] or 0)
+        # 单进程续播：从整轮输入的指定偏移开始推流
+        resume_offset = float(task["resume_offset"] or 0)
 
-    # 设置任务为 running，由 _play_video 管理具体视频
+    # 设置任务为 running，由 _play_video 启动单进程 ffmpeg（同时落 transcode 标记）
     cur.execute(
         "UPDATE stream_tasks SET status = 'running', pid = NULL, error_message = NULL, "
-        "ended_at = NULL WHERE id = ?",
-        (task_id,),
+        "ended_at = NULL, transcode = ? WHERE id = ?",
+        (1 if needs_transcode else 0, task_id),
     )
     db.commit()
 
-    success, result = _play_video(task_id, video_index, current_loop, total_loops, resume_offset=resume_offset, app=app)
+    success, result = _play_video(task_id, total_loops, resume_offset=resume_offset, app=app)
     if not success:
         return False, {"error": result.get("error", "启动失败"), "status_code": 500}
     return True, result
@@ -1199,7 +1349,7 @@ def get_task_progress(task_id):
     total_duration = task["total_duration"] or 0
     status = task["status"]
 
-    # 计算已播放秒数（逐视频模式下 started_at 是当前视频的开始时间）
+    # 计算已播放秒数（单进程模式下 started_at 是任务开始时间）
     ref_ts = None
     if status in ("done", "stopped", "failed") and task["ended_at"]:
         ended = _parse_started_at(task["ended_at"])
@@ -1211,6 +1361,7 @@ def get_task_progress(task_id):
         task["current_video_index"],
         task["started_at"],
         ref_ts=ref_ts,
+        total_duration=total_duration,
     )
     elapsed = max(0, min(elapsed, total_duration))
     progress = _calc_progress(elapsed, video_list, loop_count)
@@ -1261,6 +1412,8 @@ def update_task(task_id):
         return jsonify({"error": "流名称只能包含字母、数字、连字符和下划线"}), 400
     if loop_count < 1:
         loop_count = 1
+    if loop_count > 100:
+        loop_count = 100
 
     # 解析视频列表，检查是否都已打水印
     videos, err = _resolve_watermarked_videos(source_type, int(source_id))

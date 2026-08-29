@@ -29,7 +29,7 @@ def create_app(config_class=Config):
     app.register_blueprint(review.bp)
     app.register_blueprint(extract.bp)
 
-    # 注册 REST API v1 命名空间（/api/v1/*，与旧端点并行，旧端点保留）
+    # 注册 /api/v1 REST API（独立命名空间，与上述旧蓝图并行）
     from app.api import register_api
     register_api(app)
 

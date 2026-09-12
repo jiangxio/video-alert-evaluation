@@ -271,6 +271,10 @@
 
   <!-- 阶段2：二次确认 -->
   <div class="stage" id="stage-confirm">
+    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
+      <button class="btn btn-secondary" onclick="goToStage('params')">返回</button>
+      <button class="btn btn-success btn-confirm" onclick="doConfirm()">确认并执行</button>
+    </div>
     <div class="confirm-cols">
       <!-- 左：合并告警说明 -->
       <div class="help-box" style="margin-bottom:0.8rem;">
@@ -302,7 +306,7 @@
     </div>
     <div style="margin-top:1.2rem;display:flex;gap:0.5rem;">
       <button class="btn btn-secondary" onclick="goToStage('params')">返回</button>
-      <button class="btn btn-success" id="btn-confirm" onclick="doConfirm()">确认并执行</button>
+      <button class="btn btn-success btn-confirm" id="btn-confirm" onclick="doConfirm()">确认并执行</button>
     </div>
   </div>
 
@@ -973,7 +977,7 @@ function updateGtCount(idx, value) {
 
 // ── 确认并执行 ────────────────────────────────────────────────────────────────
 async function doConfirm() {
-  const btn = document.getElementById('btn-confirm');
+  const btns = document.querySelectorAll('.btn-confirm');
 
   if (mergedAlertsData.length === 0 && gtEventsData.length === 0) {
     alert('没有可评测的告警或 GT 事件！');
@@ -1003,7 +1007,7 @@ async function doConfirm() {
     }
   }
 
-  btn.disabled = true; btn.textContent = '保存中…';
+  btns.forEach(b => { b.disabled = true; b.textContent = '保存中…'; });
   try {
     const res = await fetch('/evaluation/api/tasks/' + TASK_ID + '/confirm', {
       method: 'POST',
@@ -1014,7 +1018,7 @@ async function doConfirm() {
     if (!res.ok) { alert('保存失败: ' + (data.error || '未知')); return; }
     await doExecute();
   } finally {
-    btn.disabled = false; btn.textContent = '确认并执行';
+    btns.forEach(b => { b.disabled = false; b.textContent = '确认并执行'; });
   }
 }
 

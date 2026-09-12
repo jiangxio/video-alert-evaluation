@@ -140,6 +140,7 @@
         <p>拖拽压缩文件到这里，或点击选择</p>
         <input type="file" id="zip-input" accept=".zip,.tar,.tar.gz,.tgz" class="hidden" onchange="onZipSelected(this)">
       </div>
+      <p style="font-size:0.8rem;color:#888;margin:0.5rem 0 0;line-height:1.5;">命名提示：图片需命名为 <code>…_<类型ID>.png</code>，末尾数字作为告警类型 ID 识别（视频 ID 与时间由 OCR 水印识别，不依赖文件名）。</p>
       <div class="zip-selected" id="zip-selected"></div>
     </div>
     <div class="import-progress" id="import-progress">

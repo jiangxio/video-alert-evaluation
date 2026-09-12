@@ -95,6 +95,9 @@ def test_update_config_writes_env_key(client):
 
 
 def test_update_config_blank_key_no_change(client):
+    """空 openai_api_key=不改：先写 key，再传空串，.env 不被清空。"""
+    _data(client.patch("/api/v1/config", json={"openai_api_key": "sk-first"}))
+    _data(client.patch("/api/v1/config", json={"openai_api_key": ""}))
     """空 text_api_key=不改：先写 key，再传空串，.env 不被清空。"""
     _data(client.patch("/api/v1/config", json={"text_api_key": "sk-first"}))
     _data(client.patch("/api/v1/config", json={"text_api_key": ""}))

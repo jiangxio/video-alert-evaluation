@@ -149,12 +149,12 @@ function renderGrid() {
             if (e.ctrlKey || e.metaKey) {
                 if (selectedImageNames.has(item.name)) selectedImageNames.delete(item.name);
                 else selectedImageNames.add(item.name);
+                selectedImageName = item.name;
+                renderGrid();
             } else {
-                selectedImageNames.clear();
-                selectedImageNames.add(item.name);
+                selectedImageName = item.name;
+                openLightbox(item.name);
             }
-            selectedImageName = item.name;
-            renderGrid();
         });
         imageGrid.appendChild(div);
     });
@@ -370,6 +370,146 @@ document.getElementById('btn-delete-selected').addEventListener('click', () => {
 });
 
 document.getElementById('btn-refresh').addEventListener('click', reloadImageList);
+
+// ── Dir browser (for export/import path selection) ───────
+let _dirCallback = null;
+let _dirCurrent = '';
+
+function openDirBrowser(callback, startPath) {
+    _dirCallback = callback;
+    loadDirBrowser(startPath || BASE_DIR);
+    document.getElementById('dir-browser-modal').style.display = 'flex';
+}
+
+function loadDirBrowser(path) {
+    fetch('/api/browse_dir?path=' + encodeURIComponent(path))
+        .then(r => r.json()).then(data => {
+            if (data.error) { showMessage(data.error, true); return; }
+            _dirCurrent = data.path;
+            document.getElementById('dir-browser-path').textContent = data.path;
+            const list = document.getElementById('dir-browser-list');
+            list.innerHTML = '';
+            if (data.parent !== data.path) {
+                const li = document.createElement('li');
+                li.className = 'dir-entry dir-up';
+                li.textContent = '.. (上级目录)';
+                li.addEventListener('click', () => loadDirBrowser(data.parent));
+                list.appendChild(li);
+            }
+            data.entries.forEach(entry => {
+                const li = document.createElement('li');
+                li.className = 'dir-entry';
+                li.textContent = '📁 ' + entry.name;
+                li.addEventListener('click', () => loadDirBrowser(entry.path));
+                list.appendChild(li);
+            });
+        }).catch(() => showMessage('无法加载目录', true));
+}
+
+function closeDirBrowser() {
+    document.getElementById('dir-browser-modal').style.display = 'none';
+}
+
+document.getElementById('dir-browser-select').addEventListener('click', () => {
+    if (_dirCallback) _dirCallback(_dirCurrent);
+    closeDirBrowser();
+});
+document.getElementById('dir-browser-cancel').addEventListener('click', closeDirBrowser);
+document.getElementById('dir-browser-close').addEventListener('click', closeDirBrowser);
+
+// ── CSV export / import ───────────────────────────────────
+document.getElementById('btn-browse-classify-import').addEventListener('click', () => {
+    openDirBrowser(path => { document.getElementById('classify-import-dir').value = path; },
+                   document.getElementById('classify-import-dir').value || BASE_DIR);
+});
+
+document.getElementById('btn-import-csv').addEventListener('click', () => {
+    const dir = document.getElementById('classify-import-dir').value.trim();
+    if (!dir) { showMessage('请先选择 CSV 所在目录', true); return; }
+    fetch(qp('/api/import/classify_csv'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version_id: VERSION_ID, src_dir: dir})
+    }).then(r => r.json()).then(data => {
+        if (data.success) {
+            showMessage(`导入 ${data.imported} 条（跳过：未知类 ${data.skipped_unknown}，未找到 ${data.skipped_not_found}）← ${data.csv_file}`);
+            reloadImageList();
+        } else {
+            showMessage(data.error || '导入失败', true);
+        }
+    }).catch(err => { showMessage('导入接口出错', true); console.error(err); });
+});
+
+document.getElementById('btn-browse-classify-export').addEventListener('click', () => {
+    openDirBrowser(path => { document.getElementById('classify-export-dir').value = path; },
+                   document.getElementById('classify-export-dir').value || BASE_DIR);
+});
+
+document.getElementById('btn-export-csv').addEventListener('click', () => {
+    const dir = document.getElementById('classify-export-dir').value.trim();
+    if (!dir) { showMessage('请先选择输出目录', true); return; }
+    fetch(qp('/api/export/classify_csv'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version_id: VERSION_ID, output_dir: dir})
+    }).then(r => r.json()).then(data => {
+        if (data.success) showMessage(`已导出 ${data.exported_count} 条 → ${data.output_dir}`);
+        else showMessage(data.error || '导出失败', true);
+    }).catch(err => { showMessage('导出接口出错', true); console.error(err); });
+});
+
+// ── Lightbox (large image preview) ─────────────────────────
+const lightboxModal = document.getElementById('lightbox-modal');
+const lightboxImage = document.getElementById('lightbox-image');
+const lightboxTitle = document.getElementById('lightbox-title');
+const lightboxCounter = document.getElementById('lightbox-counter');
+let lightboxName = null;
+
+function openLightbox(name) {
+    lightboxName = name;
+    const filtered = getFilteredImages();
+    const idx = filtered.findIndex(i => i.name === name);
+    lightboxImage.src = qp(`/image/${name}`);
+    lightboxTitle.textContent = filtered[idx]?.filename || name;
+    lightboxCounter.textContent = `${idx + 1} / ${filtered.length}`;
+    lightboxModal.style.display = 'flex';
+}
+
+function closeLightbox() {
+    lightboxModal.style.display = 'none';
+    lightboxName = null;
+}
+
+function lightboxNavigate(delta) {
+    if (!lightboxName) return;
+    const filtered = getFilteredImages();
+    let idx = filtered.findIndex(i => i.name === lightboxName);
+    if (idx < 0) return;
+    idx = idx + delta;
+    if (idx < 0) idx = filtered.length - 1;
+    if (idx >= filtered.length) idx = 0;
+    const item = filtered[idx];
+    lightboxName = item.name;
+    lightboxImage.src = qp(`/image/${item.name}`);
+    lightboxTitle.textContent = item.filename;
+    lightboxCounter.textContent = `${idx + 1} / ${filtered.length}`;
+}
+
+document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+document.getElementById('lightbox-prev').addEventListener('click', () => lightboxNavigate(-1));
+document.getElementById('lightbox-next').addEventListener('click', () => lightboxNavigate(1));
+document.getElementById('lightbox-annotate').addEventListener('click', () => {
+    if (!lightboxName) return;
+    selectedImageName = lightboxName;
+    closeLightbox();
+    gridView.style.display = 'none';
+    viewer.style.display = 'block';
+    document.querySelector('.toolbar').style.display = 'none';
+    loadImage(selectedImageName);
+});
+lightboxModal.addEventListener('click', (e) => {
+    if (e.target === lightboxModal) closeLightbox();
+});
 
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {

@@ -2903,6 +2903,106 @@ def api_evaluate_classify():
     return jsonify({'images': images_out, 'metrics': metrics, 'classes': classes})
 
 
+@app.route('/api/export/classify_csv', methods=['POST'])
+def api_export_classify_csv():
+    """Export whole-image classification GT to a CSV (image_name, class_label).
+    Format mirrors the prediction CSV consumed by /api/evaluate_classify, so the
+    exported GT file can be reused directly as an answer key."""
+    _, _, classes, project, version_id, _v = resolve_context()
+    if not project or project.get('mode') != 'classification':
+        return jsonify({"error": "classification project required"}), 400
+    if not version_id:
+        return jsonify({"error": "version_id required"}), 400
+
+    payload = request.get_json(force=True) or {}
+    out_dir = payload.get('output_dir', os.path.join(config.BASE_DIR, 'classify_export'))
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    csv_path = Path(out_dir) / 'labels.csv'
+
+    images = db_list_images(version_id)
+    rows = [['image_name', 'class_label']]
+    for item in images:
+        rows.append([item['name'], item.get('class_label') or ''])
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        csv.writer(f).writerows(rows)
+
+    return jsonify({"success": True, "output_dir": str(csv_path), "exported_count": len(images)})
+
+
+@app.route('/api/import/classify_csv', methods=['POST'])
+def api_import_classify_csv():
+    """Import classification labels from a CSV (image_name, class_label[, confidence])
+    found in src_dir. Mirrors /api/import/yolo_dir: pick the directory's first .csv,
+    parse rows, write class_label per image. A third confidence column is accepted
+    but ignored. Rows whose class is not in project classes are skipped
+    (skipped_unknown); rows whose image is not in the version are skipped
+    (skipped_not_found)."""
+    _, _, classes, project, version_id, _v = resolve_context()
+    if not project or project.get('mode') != 'classification':
+        return jsonify({"error": "classification project required"}), 400
+    if not version_id:
+        return jsonify({"error": "version_id required"}), 400
+    payload = request.get_json(force=True) or {}
+    src_dir = (payload.get('src_dir') or '').strip()
+    if not src_dir or not os.path.isdir(src_dir):
+        return jsonify({"error": "src_dir required and must exist"}), 400
+
+    # Pick the first .csv in the directory (mirrors evaluate_classify)
+    csv_path = None
+    for f in sorted(os.listdir(src_dir)):
+        if f.lower().endswith('.csv'):
+            csv_path = os.path.join(src_dir, f)
+            break
+    if not csv_path:
+        return jsonify({"error": "no .csv file found in src_dir"}), 400
+
+    class_set = set(classes)
+    imported = 0
+    skipped_unknown = 0
+    skipped_not_found = 0
+    header_seen = False
+
+    with open(csv_path, newline='', encoding='utf-8') as fh:
+        for row in csv.reader(fh):
+            if len(row) < 1:
+                continue
+            raw_name = (row[0] or '').strip()
+            cls = (row[1] or '').strip() if len(row) >= 2 else ''
+            if not raw_name:
+                continue
+            # Skip header row
+            if not header_seen and raw_name.lower() == 'image_name':
+                header_seen = True
+                continue
+            header_seen = True
+
+            # Validate class (empty = unlabeled, allowed)
+            if cls and cls not in class_set:
+                skipped_unknown += 1
+                continue
+
+            base = os.path.splitext(os.path.basename(raw_name))[0]
+            img = db_get_image(version_id, base)
+            if not img:
+                skipped_not_found += 1
+                continue
+
+            db_save_class_label(version_id, base, cls or None,
+                                image_path=img['filename'],
+                                image_width=img['image_width'],
+                                image_height=img['image_height'])
+            imported += 1
+
+    return jsonify({
+        "success": True,
+        "csv_file": csv_path,
+        "imported": imported,
+        "skipped_unknown": skipped_unknown,
+        "skipped_not_found": skipped_not_found,
+    })
+
+
 if __name__ == '__main__':
     init_db()
     os.makedirs(config.IMAGES_DIR, exist_ok=True)

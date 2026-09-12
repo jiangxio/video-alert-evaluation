@@ -37,6 +37,20 @@
                     <button id="btn-delete-selected">删除选中</button>
                 </div>
             </div>
+            <div class="io-section">
+                <div class="export-row">
+                    <span class="io-label">导入：</span>
+                    <input type="text" id="classify-import-dir" class="export-path" readonly placeholder="选择 CSV 所在目录…" />
+                    <button class="btn-browse" id="btn-browse-classify-import">浏览</button>
+                    <button id="btn-import-csv">导入</button>
+                </div>
+                <div class="export-row">
+                    <span class="io-label">导出：</span>
+                    <input type="text" id="classify-export-dir" class="export-path" readonly placeholder="选择输出目录…" />
+                    <button class="btn-browse" id="btn-browse-classify-export">浏览</button>
+                    <button id="btn-export-csv">导出</button>
+                </div>
+            </div>
             <div id="grid-view">
                 <div id="grid-controls">
                     <button id="btn-prev-page">上一页</button>
@@ -82,6 +96,41 @@
             <div class="modal-footer">
                 <button class="btn-primary" id="upload-confirm">确认上传</button>
                 <button class="btn-edit" id="upload-cancel">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Lightbox Modal (large image preview) -->
+    <div id="lightbox-modal" class="modal-overlay" style="display:none;">
+        <div id="lightbox-box">
+            <div id="lightbox-header">
+                <span id="lightbox-title"></span>
+                <button class="modal-close" id="lightbox-close">×</button>
+            </div>
+            <div id="lightbox-body">
+                <img id="lightbox-image" src="" alt="" />
+            </div>
+            <div id="lightbox-footer">
+                <button id="lightbox-prev">上一张</button>
+                <span id="lightbox-counter"></span>
+                <button id="lightbox-next">下一张</button>
+                <button id="lightbox-annotate">进入标注</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dir Browser Modal (used by export/import path selection) -->
+    <div id="dir-browser-modal" class="modal-overlay" style="display:none;">
+        <div id="dir-browser-box">
+            <div id="dir-browser-header">
+                <strong>选择目录</strong>
+                <button id="dir-browser-close">×</button>
+            </div>
+            <div id="dir-browser-path"></div>
+            <ul id="dir-browser-list"></ul>
+            <div id="dir-browser-footer">
+                <button id="dir-browser-select">选择此目录</button>
+                <button id="dir-browser-cancel">取消</button>
             </div>
         </div>
     </div>

@@ -23,6 +23,12 @@ result/
 yolo_export/
 eval_configs/
 
+# 样例包图片（太大，不入库；标注/预测/README 仍提交）
+sample-pack/images/
+
+# 评估导出副产物（运行时生成）
+classify_export/
+
 # Python 缓存
 __pycache__/
 *.py[cod]

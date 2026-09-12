@@ -223,14 +223,15 @@ recall = average(event_recall for all types with gt_count > 0)
 **平均误检数/小时**
 
 ```
-avg_fp_per_hour = average(各事件类型的 avg_fp_per_hour)   # 算术平均（宏平均）
-各事件类型 avg_fp_per_hour = 该类型误检数 / total_duration_hours
+avg_fp_per_hour = total_fp / total_duration_hours   # 合计口径（非算术平均）
+各事件类型 avg_fp_per_hour = 该类型误检数 / total_duration_hours（各类型共用同一 total_duration）
 ```
 
 - `fp_count`：有效状态 = `false_positive` 的告警总数（所有事件类型合计，仅用于整体精确率分母）
 - `total_duration_hours`：评测涉及的视频总时长（小时）
-- **口径与召回率一致**：各事件类型分别算误检/小时，再算术平均（不是合计/总时长）。这与 realtime 模式、验收报告口径统一。
-- 代码实现见 `eval_service.py` 的 `compute_overall_avg_fp()`，普通模式与 realtime 模式均走此逻辑。
+- **口径**：各类型 `fp_count_et / total_duration_hours` 求和 = `total_fp / total_duration_hours`（因各类型共用同一 total_duration，求和即合计），**不是**各类型速率的算术平均。算术平均（`sum/len`）会把结果缩小 N 倍（N=事件类型数），是早期已修复的 bug。这与 realtime 模式、验收报告口径统一。
+- 召回率是各类型召回率的算术平均，而 avg_fp 是合计口径——两者口径**不同**（有意为之：avg_fp 是单位时间误检数，召回率是各类型命中率的均值）。
+- 代码实现见 `eval_service.py` 的 `compute_overall_avg_fp()`（返回各类型 avg_fp 之和）与 `compute_task_metrics()`，普通模式与 realtime 模式均走此逻辑；`evaluation.py` 的 `get_results` realtime 分支也用同一合计口径。
 
 ### 3. 前端重算（eval_task.html）
 

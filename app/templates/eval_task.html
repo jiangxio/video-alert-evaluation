@@ -984,6 +984,14 @@ async function doConfirm() {
     return;
   }
 
+  // 执行前持久化勾选的事件类型（防止用户跳过"保存参数"导致 selected 丢失，结果仍全量）
+  const _selectedCbs = document.querySelectorAll('#event-type-select input[type=checkbox]:checked');
+  if (_selectedCbs.length) {
+    try {
+      await fetch('/evaluation/api/tasks/' + TASK_ID, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({selected_event_types: Array.from(_selectedCbs).map(cb => cb.value)})});
+    } catch(e) { /* 保存失败不阻塞执行 */ }
+  }
+
   // 处理合并告警：已确认的多图片组保持合并，未确认的多图片组拆开成单张
   const finalMergedAlerts = [];
   for (let i = 0; i < mergedAlertsData.length; i++) {

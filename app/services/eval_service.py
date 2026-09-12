@@ -1412,14 +1412,13 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
         total_duration = 0
 
         # 按事件类型计算精确率和误检数
-        all_event_types = get_all_event_types_fn() if get_all_event_types_fn else []
-        if not all_event_types:
-            cursor.execute('''
-                SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
-            ''', (task_id,))
-            all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
         if selected is not None:
-            all_event_types = [et for et in all_event_types if et in selected]
+            # 用户勾选：只显示勾选类型（即使无数据也显示，因用户主动选择）
+            all_event_types = sorted(selected)
+        else:
+            # 未勾选（NULL=全量兼容）：只显示任务实际涉及的类型，不含全 0 冗余类型
+            cursor.execute('SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?', (task_id,))
+            all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
 
         event_metrics = []
         for etype in all_event_types:
@@ -1499,16 +1498,18 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
     avg_fp_per_hour = round(fp_count / total_duration_hours, 2) if total_duration_hours else 0
 
     # 按事件类型计算指标
-    all_event_types = get_all_event_types_fn() if get_all_event_types_fn else []
-    if not all_event_types:
+    if selected is not None:
+        # 用户勾选：只显示勾选类型（即使无数据也显示，因用户主动选择）
+        all_event_types = sorted(selected)
+    else:
+        # 未勾选（NULL=全量兼容）：只显示任务实际涉及的类型（有告警或有 GT），
+        # 不含全 0 冗余类型（指标数值不受影响，全 0 类型本就不参与 precision/recall/avg_fp 计算）
         cursor.execute('''
             SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
             UNION
             SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
         ''', (task_id, task_id))
         all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
-    if selected is not None:
-        all_event_types = [et for et in all_event_types if et in selected]
 
     event_metrics = []
     for etype in all_event_types:

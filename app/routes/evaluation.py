@@ -1237,7 +1237,7 @@ def get_event_metrics(task_id):
     """获取事件级别的详细指标"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at, selected_event_types FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -1246,13 +1246,19 @@ def get_event_metrics(task_id):
     if task['finalized'] and task['event_metrics']:
         try:
             event_metrics = json.loads(task['event_metrics'])
+            # 过滤全 0 冗余类型（无告警无GT无命中无误检），与现算分支"只显示涉及类型"一致
+            event_metrics = [em for em in event_metrics if not (
+                (em.get('alert_count') or 0) == 0 and (em.get('gt_count') or 0) == 0
+                and (em.get('correct_pred_count') or 0) == 0 and (em.get('false_positive_count') or 0) == 0
+                and (em.get('hit_count') or 0) == 0 and (em.get('missed_gt_count') or 0) == 0
+            )]
             return jsonify({'success': True, 'event_metrics': event_metrics})
         except Exception:
             pass
 
     # 否则实时计算
     accuracy, recall, avg_fp_per_hour, event_metrics, total_duration = compute_task_metrics(
-        task_id, cursor, task['eval_set_id'], _get_all_event_types
+        task_id, cursor, task['eval_set_id'], _get_all_event_types, task['selected_event_types']
     )
 
     overall = {

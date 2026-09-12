@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 import json
 
 from app.database import get_db
-from app.services.verification_service import run_ocr, verify_alert
+from app.services.verification_service import verify_alert, ocr_and_save
 
 bp = Blueprint('verification', __name__)
 
@@ -19,30 +19,14 @@ def ocr_alert(alert_id):
     if not alert:
         return jsonify({'error': '告警图片不存在'}), 404
 
-    result = run_ocr(alert['file_path'])
+    result, ocr_result_id = ocr_and_save(db, alert_id, alert['file_path'])
 
-    if 'error' in result:
+    if ocr_result_id is None:
         return jsonify({'error': result['error']}), 500
-
-    # 保存OCR结果
-    cursor.execute('''
-        INSERT INTO ocr_results
-        (alert_image_id, raw_ocr_text, video_id, timestamp, timestamp_seconds, success, full_result)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        alert_id,
-        result.get('raw_ocr_text', ''),
-        result.get('video_id'),
-        result.get('timestamp'),
-        result.get('timestamp_seconds'),
-        result.get('success', False),
-        json.dumps(result, ensure_ascii=False)
-    ))
-    db.commit()
 
     return jsonify({
         'success': True,
-        'ocr_result_id': cursor.lastrowid,
+        'ocr_result_id': ocr_result_id,
         'ocr_result': result
     })
 

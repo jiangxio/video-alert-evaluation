@@ -31,6 +31,7 @@ MAX_HISTORY_ROUNDS = 10
 SYSTEM_PROMPT = '''你是视频告警评估平台的 AI 助手。你拥有以下工具，可以直接调用执行，不要说自己不能做。
 
 你的可用工具（直接调用，不要拒绝）：
+【查询类（只读）】
 1. list_videos - 查询视频列表
 2. get_video_details - 查询视频详情
 3. list_event_types - 查询事件类型
@@ -40,33 +41,53 @@ SYSTEM_PROMPT = '''你是视频告警评估平台的 AI 助手。你拥有以下
 7. get_task_status - 查询异步任务状态
 8. list_assistant_tasks - 列出所有异步任务及进度
 9. search_platform_docs - 查询平台文档用法
-9. update_video_tags - 给视频添加/修改事件标注（时间段 + 事件类型）
-10. delete_video - 删除视频
-11. run_evaluation_task - 创建并启动评测任务
-12. batch_run_ocr - 批量 OCR 告警图片
-13. update_alert_status - 修改告警图片复核状态
-14. export_report - 导出评测报告
-15. add_watermark - 给视频添加水印（生成带视频ID和时间戳的水印视频）
+10. list_stream_tasks - 查询推流任务列表
+11. get_stream_progress - 查询单个推流任务状态
+12. get_annotation_status - 查询自动标注引擎状态（当前任务+排队）
+13. get_annotation_result - 查询自动标注任务的结果（事件列表，含中文名/起止秒）
+【写入类（会返回确认卡片，用户确认后才执行）】
+14. update_video_tags - 给视频添加/修改事件标注（时间段 + 事件类型）
+15. delete_video - 删除视频
+16. run_evaluation_task - 创建并启动评测任务
+17. batch_run_ocr - 批量 OCR 告警图片
+18. update_alert_status - 修改告警图片复核状态
+19. export_report - 导出评测报告
+20. add_watermark - 给视频添加水印（生成带视频ID和时间戳的水印视频）
+21. concat_videos - 拼接多个水印视频（2-10个）
+22. package_videos - 打包多个水印视频为 zip（1-10个）
+23. extract_frames - 对视频抽帧生成图片
+24. manage_eval_set - 管理评测视频集（创建/重命名/添加/移出/删除）
+25. start_stream - 创建并启动推流任务（需先有水印视频，参数 video_id/stream_name）
+26. stop_stream - 停止运行中的推流任务
+27. start_auto_annotation - 启动自动标注任务（抽帧+多模态分析+生成 GT）
+28. review_annotation - 复核自动标注的待确认事件（approve/reject/edit）
 
 平台核心概念：
 - 视频（videos）：上传的原始视频，有 video_id、文件名、时长、事件标注。
 - 事件类型（event_types）：如 rat（老鼠）、fight（打架）等。
 - 告警图片（alert_images）：从算法告警中采集的图片。
 - 评测任务（eval_tasks）：将告警图片与 Ground Truth 对比，计算精确率、召回率、误检数/小时。
+- 推流（streaming）：把水印视频推到 MediaMTX（RTSP），需先打水印。
+- 自动标注（auto_annotation）：对视频抽帧+多模态分析生成 Ground Truth；低置信事件需人工复核。
 
 重要规则：
 1. 当用户请求查询时，直接调用对应工具获取数据，然后总结回答。
-2. 当用户请求写入操作（打标签、删除、启动任务、批量 OCR、添加水印、导出报告）时，**直接调用对应工具**，不要先问"是否确认"。工具会自动返回确认卡片给用户，由用户点击确认后才能真正执行。
-3. 如果用户问"你能做什么"，直接列出你拥有的工具，不要说"你只能查询"或"你不能执行操作"。
+2. 当用户请求写入操作（打标签、删除、启动任务、批量 OCR、添加水印、导出报告、推流、标注、复核）时，**直接调用对应工具**，不要先问"是否确认"。工具会自动返回确认卡片给用户，由用户点击确认后才能真正执行。
+3. 如果用户问"你能做什么"，用自然语言列出能力（如"查询视频/告警/评测""打标签/删除/打水印""推流/自动标注/复核""导出报告/批量OCR"），不要罗列内部工具名。
 4. 不要假设用户意图，参数不明确时应该询问。
 5. 回答平台用法时，可以调用 search_platform_docs 查询文档。
 6. 每次回复尽量简洁，用中文。
+7. 绝不向用户暴露内部工具名/函数名/API 路径（如 get_task_status、start_stream、review_annotation、/api/v1/…）。引导用户用自然语言继续，例如说"你可以问我'查看任务进度'或'标注状态'"，而不是"可调用 get_task_status(1)"。
 
 示例：
 - 用户说"删除视频 046" → 调用 delete_video
 - 用户说"给视频 046 添加老鼠标签 10-20 秒" → 调用 update_video_tags
 - 用户说"给视频 046 打水印" → 调用 add_watermark
 - 用户说"跑个评测" → 询问数据集和评测视频集，或调用 run_evaluation_task
+- 用户说"把视频 046 推到流 demo" → 调用 start_stream(video_id='046', stream_name='demo')（视频须已有水印）
+- 用户说"自动标注视频 046" → 先 get_video_details 拿 video_db_id，再 start_auto_annotation(video_db_id, event_types)
+- 用户说"复核待确认的标注事件 5" → 调用 review_annotation(event_id=5, action='approve'/'reject')
+- 用户说"视频 046 的标注结果怎样"/"标注了什么" → 调用 get_annotation_result(video_id='046')，用事件的中文名（如「人员聚集」）转述，不要只报 key
 '''
 
 
@@ -449,12 +470,19 @@ def confirm(confirmation_id: str, session_id: str) -> dict:
 
     _increment_write_count()
 
-    # 把执行结果告知 LLM，让它生成自然语言回复
+    # 把执行结果告知 LLM，让它生成自然语言回复。
+    # 必须用 role=system 注入这条「确认+执行结果」上下文，绝不能用 role=user：
+    # api_history 只过滤掉非 user/assistant 角色，若用 role=user，这条内部指令（含
+    # 内部工具名 add_watermark/start_stream… 和「请用中文简要告知用户结果」）会被
+    # 前端当成用户气泡渲染，直接泄露给用户（违反规则7）。system 角色不向前端展示，
+    # 仅作 LLM 上下文，下一轮 _get_history 仍会带回。
     settings = get_assistant_settings()
     messages = _get_history()
     messages.append({
-        'role': 'user',
-        'content': f'用户已确认执行操作：{pending["action"]}。执行结果：{json.dumps(result["result"], ensure_ascii=False, default=str)}。请用中文简要告知用户结果。',
+        'role': 'system',
+        'content': f'用户已确认执行操作：{pending["action"]}。执行结果：'
+                   f'{json.dumps(result["result"], ensure_ascii=False, default=str)}。'
+                   f'请用中文向用户简要告知结果，不要提及内部工具名或 API 路径。',
     })
 
     try:

@@ -26,7 +26,7 @@ from app.api.v1.compat import (
     paginate_old_list,
     wrap_old_view,
 )
-from app.api.v1.responses import err, ok, reject_unknown_fields
+from app.api.v1.responses import err, ok, paginate, parse_pagination, reject_unknown_fields
 from app.database import get_db
 from app.routes.alerts import (
     _parse_id_list,
@@ -135,11 +135,18 @@ def v1_list_dataset_images(dataset_id):
     data, status = _extract(list_dataset_images(dataset_id))
     if status >= 400:
         return err(status, _extract_message(data), error_code="DATASET_NOT_FOUND")
-    data = data or {}
-    items = data.get("images", [])
-    total = data.get("total", 0)
-    page = data.get("page", 1)
-    page_size = data.get("per_page", 20)
+    if isinstance(data, list):
+        # fork legacy returns bare list → memory paginate
+        page, page_size = parse_pagination(request.args)
+        total = len(data)
+        start = (page - 1) * page_size
+        items = data[start:start + page_size]
+    else:
+        data = data or {}
+        items = data.get("images", [])
+        total = data.get("total", 0)
+        page = data.get("page", 1)
+        page_size = data.get("per_page", 20)
     has_next = page * page_size < total
     return ok({
         "items": items,
@@ -278,7 +285,7 @@ def v1_alert_eval_set_batch_add(set_id):
         (json.dumps(current), set_id),
     )
     db.commit()
-    return ok({"added_count": added_count})
+    return ok({"added_count": added_count, "dataset_ids": current})
 
 
 @v1_bp.route("/alerts/eval-sets/<int:set_id>/datasets:batch-remove", methods=["POST"])
@@ -307,4 +314,4 @@ def v1_alert_eval_set_batch_remove(set_id):
         (json.dumps(current), set_id),
     )
     db.commit()
-    return ok({"removed_count": removed_count})
+    return ok({"removed_count": removed_count, "dataset_ids": current})

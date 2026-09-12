@@ -31,10 +31,8 @@ def inline(s: str) -> str:
     # 行内代码 `code`
     s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
     # 加粗 **text**
-    # 使用正则替换，将 `code` 形式的行内代码转换为 <code>code</code>。
     s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
     # 链接 [text](url)
-    # 使用正则替换，将 **text** 形式的加粗文本转换为 <strong>text</strong>
     s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
     return s
 
@@ -51,7 +49,6 @@ def md_to_html(md: str) -> str:
         if line.strip().startswith("```"):
             if in_code:
                 out.append('<pre><code>' + escape_html("\n".join(code_buf)) + "</code></pre>")
-                # 缓冲区列表，用于暂存代码块内的行。
                 code_buf = []
                 in_code = False
             else:

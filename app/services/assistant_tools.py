@@ -12,6 +12,31 @@ from typing import Any, Optional
 from flask import current_app
 
 from app.database import get_db
+from app.services.assistant_tasks import get_assistant_task, get_task_progress
+
+
+def _localize_ts(s):
+    """SQLite CURRENT_TIMESTAMP 存的是 UTC，转系统本地时区显示串（如北京时间 UTC+8）。"""
+    if not s:
+        return s
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.strptime(str(s), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return s
+
+
+def _run_in_app_context(app, func, *args, **kwargs):
+    """在后台线程中运行 func，确保其内 get_db() 等依赖 Flask 上下文的调用可用。
+
+    后台线程默认不在 application context 中，直接调用 get_db()（依赖 g）会抛
+    RuntimeError 并被上层 except 静默吞掉，导致批量 OCR / 加水印任务永远卡在
+    pending。这里显式推入 app context；退出时由 teardown_appcontext(close_db)
+    自动关闭数据库连接。
+    """
+    with app.app_context():
+        return func(*args, **kwargs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -343,6 +368,129 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_stream_tasks",
+            "description": "查询推流任务列表（状态/流名称/来源）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "最多返回条数，默认 20"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_stream_progress",
+            "description": "查询单个推流任务的状态与进度",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "推流任务 ID"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_annotation_status",
+            "description": "查询自动标注引擎状态（当前任务 + 排队）",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_annotation_result",
+            "description": "查询自动标注任务的结果（GT 事件列表，含事件类型/中文名/起止秒）。传 task_id 或 video_id",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "标注任务 ID"},
+                    "video_id": {"type": "string", "description": "视频 ID（查该视频最新完成的标注任务）"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_stream",
+            "description": "创建并启动推流任务（把视频推到 MediaMTX RTSP 流）。视频须已有水印版本",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_id": {"type": "string", "description": "要推流的视频 ID（原视频 video_id，非水印视频 id）"},
+                    "stream_name": {"type": "string", "description": "流名称（字母/数字/连字符/下划线）"},
+                    "loop_count": {"type": "integer", "description": "循环次数，默认 1，上限 100"},
+                },
+                "required": ["video_id", "stream_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_stream",
+            "description": "停止一个运行中的推流任务",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "推流任务 ID"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_auto_annotation",
+            "description": "启动自动标注任务（抽帧+多模态分析+生成 GT）。可用 event_descriptions 动态注入每个事件类型的标注描述，指导 LLM 按用户描述标注",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "video_db_id": {"type": "integer", "description": "视频主键 ID"},
+                    "event_types": {"type": "array", "items": {"type": "string"}, "description": "要标注的事件类型列表（key）"},
+                    "frame_interval_sec": {"type": "integer", "description": "抽帧间隔（秒），默认 1"},
+                    "merge_interval_sec": {"type": "integer", "description": "事件合并间隔（秒），默认 5"},
+                    "confidence_threshold": {"type": "number", "description": "复核分流置信度阈值，默认 0.6"},
+                    "event_descriptions": {"type": "object", "additionalProperties": {"type": "string"}, "description": "可选：{事件类型key: 标注描述}，动态注入 prompt 指导 LLM（优先于内置描述）。例 {\"fight\": \"画面中有多个人物聚集停留\"}"},
+                },
+                "required": ["video_db_id", "event_types"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "review_annotation",
+            "description": "复核自动标注的待确认事件（approve/reject/edit）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "integer", "description": "auto_annotation_events 事件 ID"},
+                    "action": {"type": "string", "enum": ["approve", "reject", "edit"],
+                               "description": "approve=通过(写 DB events)、reject=驳回、edit=编辑字段"},
+                    "type": {"type": "string", "description": "edit/approve 时可改事件类型"},
+                    "start": {"type": "number", "description": "edit/approve 时可改起始秒"},
+                    "end": {"type": "number", "description": "edit/approve 时可改结束秒"},
+                },
+                "required": ["event_id", "action"],
+            },
+        },
+    },
 ]
 
 
@@ -555,6 +703,8 @@ def get_task_status(task_id: int) -> dict:
     if not task:
         return {'error': f'任务 {task_id} 不存在'}
     progress = get_task_progress(task_id)
+    task['created_at'] = _localize_ts(task.get('created_at'))
+    task['updated_at'] = _localize_ts(task.get('updated_at'))
     return {
         'task': task,
         'progress': progress,
@@ -580,6 +730,8 @@ def list_assistant_tasks(limit: int = 20) -> dict:
             t['params'] = {}
         # 补充内存进度
         t['progress'] = get_task_progress(t['id'])
+        t['created_at'] = _localize_ts(t.get('created_at'))
+        t['updated_at'] = _localize_ts(t.get('updated_at'))
         tasks.append(t)
     return {'tasks': tasks, 'count': len(tasks)}
 
@@ -600,6 +752,10 @@ WRITE_TOOLS = {
     'package_videos',
     'extract_frames',
     'manage_eval_set',
+    'start_stream',
+    'stop_stream',
+    'start_auto_annotation',
+    'review_annotation',
 }
 
 
@@ -819,6 +975,7 @@ def execute_batch_run_ocr(params: dict) -> dict:
     from app.database import get_db
 
     task_id = create_assistant_task('batch_ocr', params)
+    app = current_app._get_current_object()  # 后台线程需显式推入 app context
 
     def _worker(assistant_task_id: int):
         db = get_db()
@@ -881,7 +1038,9 @@ def execute_batch_run_ocr(params: dict) -> dict:
             result_summary=f'成功 {success_count} 张，失败 {fail_count} 张',
         )
 
-    thread = threading.Thread(target=_worker, args=(task_id,), daemon=True)
+    thread = threading.Thread(
+        target=_run_in_app_context, args=(app, _worker, task_id), daemon=True
+    )
     thread.start()
 
     return {'success': True, 'assistant_task_id': task_id, 'message': '批量 OCR 任务已启动'}
@@ -975,6 +1134,7 @@ def execute_add_watermark(params: dict) -> dict:
     output_dir = current_app.config['OUTPUT_DIR']
 
     task_id = create_assistant_task('add_watermark', params)
+    app = current_app._get_current_object()  # 后台线程需显式推入 app context
 
     def _worker(assistant_task_id: int):
         update_assistant_task(assistant_task_id, 'running')
@@ -1015,7 +1175,9 @@ def execute_add_watermark(params: dict) -> dict:
 
         set_task_progress(assistant_task_id, 100, 100)
 
-    thread = threading.Thread(target=_worker, args=(task_id,), daemon=True)
+    thread = threading.Thread(
+        target=_run_in_app_context, args=(app, _worker, task_id), daemon=True
+    )
     thread.start()
 
     return {
@@ -1301,6 +1463,321 @@ def execute_manage_eval_set(params: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 推流/自动标注 工具（阶段4：接入助手对话）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def list_stream_tasks(limit: int = 20) -> dict:
+    """推流任务列表（只读）。"""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT id, name, stream_name, status, source_type, source_id, "
+        "loop_count, created_at FROM stream_tasks ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:
+        r["created_at"] = _localize_ts(r.get("created_at"))
+    return {"tasks": rows, "count": len(rows)}
+
+
+def get_stream_progress(task_id: int) -> dict:
+    """单个推流任务状态（只读）。"""
+    if not task_id:
+        return {"error": "缺少 task_id"}
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT id, name, stream_name, status, pid, source_type, source_id, "
+        "loop_count, total_duration, started_at, ended_at, error_message "
+        "FROM stream_tasks WHERE id = ?",
+        (task_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"error": f"推流任务 {task_id} 不存在"}
+    task = dict(row)
+    for k in ("started_at", "ended_at", "created_at"):
+        task[k] = _localize_ts(task.get(k))
+    return {"task": task}
+
+
+def get_annotation_status() -> dict:
+    """自动标注引擎状态（当前任务 + 排队，只读，读 auto_annotation 模块态）。"""
+    from app.routes import auto_annotation as _aa
+    with _aa._auto_anno_lock:
+        has_running = _aa._current_task_id is not None
+        current = _aa._auto_anno_tasks.get(_aa._current_task_id) if has_running else None
+        queue = [{"task_id": tid, "video_id": _aa._auto_anno_tasks.get(tid, {}).get("video_id", "")}
+                 for tid in _aa._task_queue]
+    current_out = None
+    if current:
+        current_out = {"task_id": current.get("task_id"), "video_id": current.get("video_id"),
+                        "status": current.get("status"), "phase": current.get("phase"),
+                        "phase_progress": current.get("phase_progress", 0)}
+    return {"has_running_task": has_running, "current_task": current_out,
+            "queue_count": len(queue), "queue": queue}
+
+
+def get_annotation_result(task_id: int = None, video_id: str = None) -> dict:
+    """查自动标注任务的结果（GT 事件列表，含 type/name/start/end）。
+    传 task_id 查指定任务；传 video_id 查该视频最新完成的标注任务。"""
+    if not task_id and not video_id:
+        return {"error": "需要 task_id 或 video_id"}
+    db = get_db()
+    cur = db.cursor()
+    if task_id:
+        cur.execute("SELECT id, video_id, status, result_json_path FROM auto_annotation_tasks WHERE id = ?",
+                    (task_id,))
+    else:
+        cur.execute(
+            "SELECT id, video_id, status, result_json_path FROM auto_annotation_tasks "
+            "WHERE video_id = ? AND status = 'done' AND result_json_path IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1", (video_id,))
+    t = cur.fetchone()
+    if not t:
+        return {"error": "未找到标注任务"}
+    if not t["result_json_path"] or not Path(t["result_json_path"]).exists():
+        return {"task_id": t["id"], "video_id": t["video_id"], "status": t["status"],
+                "events": [], "message": "结果 JSON 不存在"}
+    try:
+        gt = json.loads(Path(t["result_json_path"]).read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"读取结果失败: {e}"}
+    from app.event_types import get_type_names
+    names = get_type_names()
+    for ev in gt.get("events", []):
+        ev.setdefault("name", names.get(ev.get("type"), ev.get("type")))
+    return {"task_id": t["id"], "video_id": t["video_id"], "status": t["status"],
+            "events": gt.get("events", [])}
+
+
+# ── 推流写入工具 ────────────────────────────────────────────────────────────────
+
+def analyze_start_stream(video_id: str, stream_name: str, loop_count: int = 1) -> dict:
+    db = get_db()
+    cur = db.cursor()
+    if not stream_name:
+        return {"error": "流名称不能为空"}
+    # video_id（原视频）→ 水印视频 wm_id（推流 source_type='single', source_id=wm_id）
+    cur.execute("SELECT wv.id AS wm_id FROM watermarked_videos wv "
+                "JOIN videos v ON v.id = wv.original_video_id WHERE v.video_id = ? "
+                "ORDER BY wv.id DESC LIMIT 1", (str(video_id),))
+    row = cur.fetchone()
+    if not row:
+        return {"error": f"视频 {video_id} 无水印视频，请先打水印"}
+    lc = max(1, min(int(loop_count or 1), 100))
+    return {
+        "video_id": str(video_id),
+        "wm_id": row["wm_id"],
+        "stream_name": stream_name,
+        "loop_count": lc,
+        "summary": f"创建并启动推流任务：视频 {video_id}，流名称 {stream_name}，循环 {lc} 次",
+    }
+
+
+def execute_start_stream(params: dict) -> dict:
+    """创建推流任务行 + 启动（复用 streaming._start_task_internal，函数级不重写起进程逻辑）。"""
+    from flask import current_app
+    from app.routes import streaming as _st
+    analysis = analyze_start_stream(params["video_id"], params["stream_name"],
+                                     params.get("loop_count", 1))
+    if "error" in analysis:
+        raise ValueError(analysis["error"])
+
+    wm_id = analysis["wm_id"]
+    videos, _ = _st._resolve_watermarked_videos("single", wm_id)
+    total_duration = 0.0
+    for v in videos:
+        dur = _st._ensure_duration(v["id"], v["output_path"])
+        if dur:
+            total_duration += dur
+    video_db_ids = [v["video_db_id"] for v in videos]
+    config_path = current_app.config.get("ALERT_TYPES_CONFIG", "config/alert_types.json")
+    suggested = _st._get_suggested_algorithms(video_db_ids, config_path)
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "INSERT INTO stream_tasks (name, source_type, source_id, stream_name, loop_count, "
+        "status, total_duration, suggested_algorithms) VALUES (?, 'single', ?, ?, ?, 'created', ?, ?)",
+        (f"推流-{analysis['stream_name']}", wm_id, analysis["stream_name"],
+         analysis["loop_count"],
+         total_duration * analysis["loop_count"] if total_duration else None,
+         json.dumps(suggested, ensure_ascii=False)),
+    )
+    db.commit()
+    task_id = cur.lastrowid
+
+    success, result = _st._start_task_internal(task_id, use_resume=False)
+    if not success:
+        raise RuntimeError(result.get("error", "启动推流失败"))
+    return {"success": True, "task_id": task_id, "pid": result.get("pid"),
+            "rtsp_urls": result.get("rtsp_urls"), "message": "推流任务已创建并启动"}
+
+
+def analyze_stop_stream(task_id: int) -> dict:
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, status, stream_name FROM stream_tasks WHERE id = ?", (task_id,))
+    row = cur.fetchone()
+    if not row:
+        return {"error": f"推流任务 {task_id} 不存在"}
+    if row["status"] != "running":
+        return {"error": f"任务状态 {row['status']}，非运行中，无法停止"}
+    return {"task_id": task_id, "stream_name": row["stream_name"],
+            "summary": f"停止推流任务 {task_id}（流 {row['stream_name']}）"}
+
+
+def execute_stop_stream(params: dict) -> dict:
+    """停止推流（复用 _stream_processes/_is_pid_alive 原语，同步 terminate 不重写）。"""
+    import os
+    import signal
+    from app.routes import streaming as _st
+    task_id = params["task_id"]
+    analysis = analyze_stop_stream(task_id)
+    if "error" in analysis:
+        raise ValueError(analysis["error"])
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT pid FROM stream_tasks WHERE id = ?", (task_id,))
+    row = cur.fetchone()
+
+    killed = False
+    with _st._stream_lock:
+        entry = _st._stream_processes.pop(task_id, None)
+    if entry:
+        process, log_fp = entry
+        try:
+            process.terminate()
+            killed = True
+        except Exception:
+            pass
+        try:
+            log_fp.close()
+        except Exception:
+            pass
+    elif row and row["pid"] and _st._is_pid_alive(row["pid"]):
+        try:
+            os.kill(row["pid"], signal.SIGTERM)
+            killed = True
+        except Exception:
+            pass
+
+    new_status = "stopped" if killed else "failed"
+    cur.execute("UPDATE stream_tasks SET status = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (new_status, task_id))
+    db.commit()
+    return {"success": True, "task_id": task_id, "status": new_status}
+
+
+# ── 自动标注写入工具 ────────────────────────────────────────────────────────────
+
+def analyze_start_auto_annotation(video_db_id: int, event_types: list, **_extra) -> dict:
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, filename, video_id FROM videos WHERE id = ?", (video_db_id,))
+    video = cur.fetchone()
+    if not video:
+        return {"error": f"视频 {video_db_id} 不存在"}
+    if not event_types:
+        return {"error": "至少选择一个事件类型"}
+    cur.execute("SELECT id FROM watermarked_videos WHERE original_video_id = ? "
+                "ORDER BY created_at DESC LIMIT 1", (video_db_id,))
+    if not cur.fetchone():
+        return {"error": "尚未生成水印视频"}
+    return {"video_db_id": video_db_id, "video_id": video["video_id"],
+            "filename": video["filename"], "event_types": event_types,
+            "summary": f"对视频 {video['video_id']}（{video['filename']}）启动自动标注，事件类型 {','.join(event_types)}"}
+
+
+def execute_start_auto_annotation(params: dict) -> dict:
+    """启动自动标注（委托旧 start_task 视图：在 app context 内推 request context 传 JSON 体）。"""
+    from flask import current_app
+    from app.api.v1.compat import _extract
+    from app.routes import auto_annotation as _aa
+    analysis = analyze_start_auto_annotation(params["video_db_id"], params["event_types"])
+    if "error" in analysis:
+        raise ValueError(analysis["error"])
+    app = current_app._get_current_object()
+    with app.test_request_context(json=params):
+        body, status = _extract(_aa.start_task())
+    if status != 200:
+        raise RuntimeError((body.get("error") if isinstance(body, dict) else None) or "启动标注失败")
+    return {"success": True, "task_id": body.get("task_id"),
+            "queued": body.get("queued", False), "message": "自动标注任务已启动"}
+
+
+def analyze_review_annotation(event_id: int, action: str, **_extra) -> dict:
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, task_id, event_type, start_sec, end_sec, review_status "
+                "FROM auto_annotation_events WHERE id = ?", (event_id,))
+    ev = cur.fetchone()
+    if not ev:
+        return {"error": f"事件 {event_id} 不存在"}
+    if ev["review_status"] not in ("pending", "auto_approved"):
+        return {"error": f"事件状态 {ev['review_status']}，非待复核"}
+    if action not in ("approve", "reject", "edit"):
+        return {"error": "无效复核操作"}
+    return {"event_id": event_id, "action": action, "event_type": ev["event_type"],
+            "summary": f"复核事件 {event_id}（{ev['event_type']}）：{action}"}
+
+
+def execute_review_annotation(params: dict) -> dict:
+    """复核事件（复用 v1 review 逻辑：approve 写 DB events + 起 _batch_capture_gt_frames；
+    reject 标记；edit 改字段不改状态）。"""
+    import threading
+    from flask import current_app
+    from app.routes import auto_annotation as _aa
+    analysis = analyze_review_annotation(params["event_id"], params["action"])
+    if "error" in analysis:
+        raise ValueError(analysis["error"])
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, video_db_id, event_type, start_sec, end_sec, review_status "
+                 "FROM auto_annotation_events WHERE id = ?", (params["event_id"],))
+    ev = cur.fetchone()
+    new_type = params.get("type") or ev["event_type"]
+    try:
+        new_start = float(params["start"]) if params.get("start") is not None else ev["start_sec"]
+        new_end = float(params["end"]) if params.get("end") is not None else ev["end_sec"]
+    except (TypeError, ValueError):
+        raise ValueError("无效的事件起止时间")
+
+    action = params["action"]
+    if action == "reject":
+        cur.execute("UPDATE auto_annotation_events SET review_status='rejected', "
+                    "reviewed_at=CURRENT_TIMESTAMP WHERE id=?", (params["event_id"],))
+        db.commit()
+        return {"success": True, "event_id": params["event_id"], "review_status": "rejected"}
+
+    if action == "edit":
+        cur.execute("UPDATE auto_annotation_events SET event_type=?, start_sec=?, end_sec=? "
+                    "WHERE id=?", (new_type, new_start, new_end, params["event_id"]))
+        db.commit()
+        return {"success": True, "event_id": params["event_id"], "review_status": ev["review_status"]}
+
+    # approve：写 DB events + 起 GT 帧捕获
+    cur.execute("INSERT INTO events (video_db_id, event_type, start_seconds, end_seconds, "
+                "gt_frames_status) VALUES (?, ?, ?, ?, 'pending')",
+                (ev["video_db_id"], new_type, new_start, new_end))
+    db_event_id = cur.lastrowid
+    cur.execute("UPDATE auto_annotation_events SET review_status='approved', "
+                "reviewed_at=CURRENT_TIMESTAMP, event_type=?, start_sec=?, end_sec=? WHERE id=?",
+                (new_type, new_start, new_end, params["event_id"]))
+    db.commit()
+    project_root = current_app.config["PROJECT_ROOT"]
+    threading.Thread(target=_aa._batch_capture_gt_frames,
+                     args=(ev["video_db_id"], [(db_event_id, new_type, new_start, new_end)],
+                           project_root), daemon=True).start()
+    return {"success": True, "event_id": params["event_id"],
+            "review_status": "approved", "db_event_id": db_event_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 工具分发
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1314,6 +1791,10 @@ READ_TOOL_FUNCTIONS = {
     'search_platform_docs': search_platform_docs,
     'get_task_status': get_task_status,
     'list_assistant_tasks': list_assistant_tasks,
+    'list_stream_tasks': list_stream_tasks,
+    'get_stream_progress': get_stream_progress,
+    'get_annotation_status': get_annotation_status,
+    'get_annotation_result': get_annotation_result,
 }
 
 
@@ -1343,6 +1824,15 @@ def analyze_write_tool(tool_name: str, params: dict) -> dict:
     if tool_name == 'manage_eval_set':
         return analyze_manage_eval_set(params['action'], params.get('name'), params.get('notes'),
                                        params.get('set_id'), params.get('video_ids'))
+    if tool_name == 'start_stream':
+        return analyze_start_stream(params['video_id'], params['stream_name'],
+                                    params.get('loop_count', 1))
+    if tool_name == 'stop_stream':
+        return analyze_stop_stream(params['task_id'])
+    if tool_name == 'start_auto_annotation':
+        return analyze_start_auto_annotation(params['video_db_id'], params['event_types'])
+    if tool_name == 'review_annotation':
+        return analyze_review_annotation(params['event_id'], params['action'])
     return {'error': f'未知工具: {tool_name}'}
 
 
@@ -1370,4 +1860,12 @@ def execute_write_tool(tool_name: str, params: dict) -> dict:
         return execute_extract_frames(params)
     if tool_name == 'manage_eval_set':
         return execute_manage_eval_set(params)
+    if tool_name == 'start_stream':
+        return execute_start_stream(params)
+    if tool_name == 'stop_stream':
+        return execute_stop_stream(params)
+    if tool_name == 'start_auto_annotation':
+        return execute_start_auto_annotation(params)
+    if tool_name == 'review_annotation':
+        return execute_review_annotation(params)
     raise ValueError(f'未知工具: {tool_name}')

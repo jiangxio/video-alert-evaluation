@@ -159,6 +159,9 @@ def add_watermark(video_path, output_dir, video_id=None,
     ocr_status = None
     if success and output_path.exists():
         try:
+            # _get_ocr_reader 定义在 verification_service（复用 EasyOCR Reader）；
+            # 此前未导入导致 NameError 被下方 except 吞掉，水印后 OCR 自检恒不执行。
+            from app.services.verification_service import _get_ocr_reader
             ocr_status, ocr_warning = _verify_ocr(output_path, video_id, reader=_get_ocr_reader())
             if ocr_status != 'passed' and ocr_warning:
                 stderr = (stderr + '\n[OCR验证警告] ' + ocr_warning) if stderr else '[OCR验证警告] ' + ocr_warning

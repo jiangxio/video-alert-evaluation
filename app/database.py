@@ -446,6 +446,8 @@ def init_db():
             analyzed_frames INTEGER DEFAULT 0,
             current_phase TEXT DEFAULT 'queued',
             phase_progress INTEGER DEFAULT 0,
+            confidence_threshold REAL DEFAULT 0.6,
+            event_descriptions TEXT,
             result_json_path TEXT,
             error_message TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -461,9 +463,63 @@ def init_db():
             timestamp_sec REAL NOT NULL,
             frame_path TEXT NOT NULL,
             detected_event_types TEXT,
+            confidence REAL,
+            review_status TEXT DEFAULT 'auto',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # 为 auto_annotation_tasks 追加 confidence_threshold 列（置信度阈值，兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE auto_annotation_tasks ADD COLUMN confidence_threshold REAL DEFAULT 0.6')
+    except Exception:
+        pass  # 列已存在
+
+    # 为 auto_annotation_tasks 追加 event_descriptions 列（动态注入的标注描述 JSON，兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE auto_annotation_tasks ADD COLUMN event_descriptions TEXT')
+    except Exception:
+        pass  # 列已存在
+
+    # 为 auto_annotation_frames 追加 confidence / review_status 列（兼容已有数据）
+    for col_def in ['confidence REAL', 'review_status TEXT DEFAULT "auto"']:
+        try:
+            cursor.execute(f'ALTER TABLE auto_annotation_frames ADD COLUMN {col_def}')
+        except Exception:
+            pass  # 列已存在
+
+    # 自动标注事件表（合并后的事件 + 置信度 + 复核状态）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS auto_annotation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES auto_annotation_tasks(id) ON DELETE CASCADE,
+            video_db_id INTEGER,
+            event_type TEXT NOT NULL,
+            start_sec REAL NOT NULL,
+            end_sec REAL NOT NULL,
+            confidence REAL,
+            review_status TEXT DEFAULT 'auto',
+            reviewed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_events_task ON auto_annotation_events(task_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_auto_anno_events_review ON auto_annotation_events(review_status)')
+
+    # Ground Truth 版本表（每次生成 GT 留历史快照，不静默覆盖）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gt_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT NOT NULL,
+            task_id INTEGER,
+            version_no INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            parent_version_no INTEGER,
+            review_status TEXT DEFAULT 'archived',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_gt_versions_video ON gt_versions(video_id)')
 
     # 测前分析记录表
     cursor.execute('''
@@ -515,6 +571,7 @@ def init_db():
             source_id INTEGER NOT NULL,
             stream_name TEXT NOT NULL,
             loop_count INTEGER DEFAULT 1,
+            transcode INTEGER DEFAULT 0,
             status TEXT DEFAULT 'created',
             total_duration REAL,
             suggested_algorithms TEXT,
@@ -636,6 +693,12 @@ def init_db():
             cursor.execute(f'ALTER TABLE stream_tasks ADD COLUMN {col} {col_type}')
         except Exception:
             pass  # 列已存在
+
+    # 为 stream_tasks 追加 transcode 字段（标记本次推流是否走转码路径，兼容已有数据）
+    try:
+        cursor.execute('ALTER TABLE stream_tasks ADD COLUMN transcode INTEGER DEFAULT 0')
+    except Exception:
+        pass  # 列已存在
 
     # 为 eval_tasks 追加 duration_hours 列（实时模式采集时长）
     try:

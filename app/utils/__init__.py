@@ -2,11 +2,31 @@
 
 项目中多处复用的纯工具函数，不依赖 Flask 上下文。
 """
+import os
 
 
 def allowed_file(filename, allowed_extensions):
     """检查文件扩展名是否在允许列表中"""
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_extensions
+
+
+def safe_filename(filename):
+    """净化文件名，阻止路径穿越，保留 Unicode 字符。
+
+    取最终路径组件（剥离任何目录部分），并拒绝 ``.`` / ``..`` 等特殊名。
+    用于上传/重命名场景，防止 ``../../evil.mp4`` 写出目标目录。相比
+    ``werkzeug.secure_filename``，本函数不会丢弃中文等非 ASCII 字符。
+
+    Returns:
+        净化后的纯文件名；若无法得到安全文件名则返回 None。
+    """
+    if not filename:
+        return None
+    # os.path.basename 在 Windows 上同时处理 / 与 \，仅取最后一段
+    name = os.path.basename(str(filename).replace("\x00", ""))
+    if name in ("", ".", ".."):
+        return None
+    return name
 
 
 def row_to_dict(row):

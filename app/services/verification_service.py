@@ -1,5 +1,6 @@
 """OCR和验证服务 - 调用现有脚本"""
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +33,35 @@ def run_ocr(image_path):
         }
     except Exception as e:
         return {'error': str(e)}
+
+
+def ocr_and_save(conn, image_id, image_path):
+    """对单张告警图执行 OCR 并写入 ocr_results 表。
+
+    复用 _get_ocr_reader；成功（无 error）才写表并 commit，失败返回 (ocr_result, None)。
+    conn 由调用方传入——请求上下文传 get_db()，后台线程传独立 sqlite3 连接，
+    故 helper 不绑死连接来源，兼容线程（不踩 get_db 跨线程坑）。
+
+    Returns: (ocr_result: dict, ocr_result_id: int|None)
+    """
+    ocr_result = run_ocr(image_path)
+    ocr_result_id = None
+    if 'error' not in ocr_result:
+        cur = conn.cursor()
+        cur.execute('''INSERT INTO ocr_results
+            (alert_image_id, raw_ocr_text, video_id, timestamp, timestamp_seconds, success, full_result)
+            VALUES (?, ?, ?, ?, ?, ?, ?)''', (
+            image_id,
+            ocr_result.get('raw_ocr_text'),
+            ocr_result.get('video_id'),
+            ocr_result.get('timestamp'),
+            ocr_result.get('timestamp_seconds'),
+            ocr_result.get('success', False),
+            json.dumps(ocr_result, ensure_ascii=False),
+        ))
+        conn.commit()
+        ocr_result_id = cur.lastrowid
+    return ocr_result, ocr_result_id
 
 
 def verify_alert(image_path, mock_ocr=None):

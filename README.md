@@ -59,7 +59,7 @@
 │   ├── batch_process.py     # 批量视频打水印
 │   ├── ocr_easy.py          # EasyOCR 水印识别
 │   └── verify_alert.py      # 告警验证脚本
-├── process.py            # 视频处理入口脚本（跨平台）
+├── process.py            # 统一命令行入口（水印/OCR/验证/推流/分析报告子命令）
 ├── run.py                # Flask 服务启动
 └── requirements.txt      # 所有 Python 依赖
 ```
@@ -175,16 +175,48 @@ python run.py
 访问 http://localhost:8080
 
 ### 命令行使用（Linux/macOS/Windows 通用）
+
+`process.py` 是统一命令行入口，把水印、OCR、验证、推流、分析报告等分散脚本收编为子命令。
+
 ```bash
+# 查看全部子命令
+python process.py
+
 # 安装依赖
-python process.py --install
+python process.py install
 
 # 处理单个视频（添加水印）
-python process.py --single video1/046-3.30-18:16.mp4
+python process.py watermark video1/046-3.30-18:16.mp4
 
 # 批量处理所有视频
-python process.py --batch
+python process.py watermark-batch
+
+# 查看某子命令的参数
+python process.py verify --help
 ```
+
+> 旧写法 `--single/--batch/--install` 仍可用，会自动映射到 `watermark`/`watermark-batch`/`install` 子命令并打印弃用提示。
+
+常用子命令速查：
+
+| 子命令 | 说明 |
+|---|---|
+| `install` | 安装 Python 依赖 |
+| `watermark <视频>` | 给单个视频添加水印 |
+| `watermark-batch` | 批量给所有视频添加水印 |
+| `ocr <图片>` | EasyOCR 识别截图水印 |
+| `ocr-paddle <图片>` | PaddleOCR 识别截图水印 |
+| `verify [图片] [--batch]` | 验证告警图片是否命中 ground truth |
+| `stream <视频...> --stream <名>` | 按顺序推流到 MediaMTX |
+| `stream-fight` | Fight/NonFight 拼接循环推流 |
+| `stream-merged` | 同源片段合并后推流 |
+| `db-fix-duplicates` | 清理 videos 表重复 video_id |
+| `recall` | 计算推流测试集召回率（告警命中/漏报，输出 CSV 与报告） |
+| `leakage` / `leakage-v2` | 泄漏审计 |
+| `detection-report` / `retest-report` | 生成检测/复测报告 |
+| `md2pdf` | Markdown 转 PDF |
+
+运行 `python process.py` 可查看按分组排列的完整命令列表；各子命令详细参数用 `python process.py <命令> --help` 查看（带 argparse 的命令透传原生帮助，无 argparse 的显示入口说明）。
 
 ---
 
@@ -226,7 +258,7 @@ ffprobe -version
 默认输出到项目根目录的 `output/` 文件夹。如需修改，可通过 `--output-dir` 参数指定：
 
 ```bash
-python scripts/process_single.py video.mp4 --output-dir /path/to/output
+python process.py watermark video.mp4 --output-dir /path/to/output
 ```
 
 ### 5. 视频 ID 规则

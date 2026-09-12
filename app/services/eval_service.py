@@ -1354,11 +1354,14 @@ def generate_detailed_report(task_id, db, config=None):
 def compute_overall_avg_fp(event_metrics):
     """从事件级指标聚合整体平均误检数/小时
 
-    用于从缓存的 event_metrics 中恢复 overall.avg_fp_per_hour，
-    避免整体指标与事件级数据不一致。
+    规约（见 CLAUDE.md）：avg_fp_per_hour = fp_count / total_duration_hours，
+    fp_count 为所有事件类型的误检总数。各事件类型的 avg_fp_per_hour 已是
+    fp_count_et / total_duration_hours，故整体值 = 各类型速率之【和】
+    （等价于 total_fp / total_duration_hours），而不是算术平均。
+    早期实现误用 sum/len，会把结果缩小 N 倍（N=事件类型数）。
     """
     avg_fp_values = [em.get('avg_fp_per_hour', 0) for em in event_metrics if em.get('avg_fp_per_hour') is not None]
-    return round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+    return round(sum(avg_fp_values), 2) if avg_fp_values else 0
 
 
 def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=None):
@@ -1436,8 +1439,9 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
                 'avg_fp_per_hour': avg_fp_et
             })
 
-        avg_fp_values = [em['avg_fp_per_hour'] for em in event_metrics if em['avg_fp_per_hour'] is not None]
-        avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
+        # 整体平均误检数/小时 = 全类型误检总数 / duration_hours（不是各类型速率的算术平均）
+        total_fp = sum(em.get('false_positive_count', 0) for em in event_metrics)
+        avg_fp_per_hour = round(total_fp / duration_hours, 2) if duration_hours else 0
 
         return accuracy, recall, avg_fp_per_hour, event_metrics, total_duration
 
@@ -1542,8 +1546,8 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
     recalls_with_gt = [em['recall'] for em in event_metrics if em['recall'] is not None and em['gt_count'] > 0]
     recall = sum(recalls_with_gt) / len(recalls_with_gt) if recalls_with_gt else None
 
-    # 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
-    avg_fp_per_hour = compute_overall_avg_fp(event_metrics)
+    # 整体平均误检数/小时 = fp_count / total_duration_hours（fp_count 为全类型误检总数，1471 行已计算）
+    # 注意：不可用各类型速率的算术平均，那会把结果缩小 N 倍（N=事件类型数）。
 
     return accuracy, recall, avg_fp_per_hour, event_metrics, total_duration
 

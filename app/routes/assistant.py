@@ -1,6 +1,5 @@
 """AI 助手路由"""
 import json
-
 from flask import Blueprint, request, jsonify, render_template, session
 
 from app.database import get_db
@@ -95,21 +94,23 @@ def api_clear():
 
 @bp.route('/api/history', methods=['GET'])
 def api_history():
-    """获取当前会话的对话历史（仅返回 user/assistant 可见消息）。"""
+    """获取当前会话的对话历史（仅返回 user/assistant 可见文本消息）。
+
+    不向前端返回 tool_calls：tool_calls 含工具函数名（如 add_watermark、start_stream），
+    暴露给用户违反规则7；且前端 appendToolResult 会把中间工具步骤渲染成「查看 xx 原始结果」
+    折叠块，既泄露内部名又是半成品 UI。故只返回 user/assistant 的文本内容，空内容（仅有
+    tool_calls 无文本的 assistant 中间步骤）直接跳过。内部工具步骤仍留在库里供下一轮 LLM
+    上下文（_get_history 返回完整带 tool_calls 的消息），仅显示层剥离。
+    """
     messages = []
     for msg in _get_history():
         role = msg.get('role')
         if role not in ('user', 'assistant'):
             continue
-        content = msg.get('content') or ''
-        tool_calls = msg.get('tool_calls')
-        # assistant 可能只有 tool_calls 而无文本内容，也要保留
-        if not content.strip() and not tool_calls:
+        content = (msg.get('content') or '').strip()
+        if not content:
             continue
-        item = {'role': role, 'content': content}
-        if tool_calls:
-            item['tool_calls'] = tool_calls
-        messages.append(item)
+        messages.append({'role': role, 'content': content})
     return jsonify({'messages': messages})
 
 

@@ -1,40 +1,40 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-泄露核查：召回率评测是否存在跨 run / 跨轮次的告警归因污染。
+泄露核查：fight 召回率评测是否存在跨 run / 跨轮次的告警归因污染。
 
 输入：
-  - 首次检测结果地址
-  - 二次检测结果地址
-  - 告警详细数据地址
+  - alarm_report_fight.csv     首轮 47 段推流区间（accumulate 模式，10:31:53~11:06:47）
+  - fight_retest_summary.csv   重测 14 段区间（repeat 60s，15:23~15:37）
+  - aibox_alarm_20260805/metadata/*.json  当日 fight 通道全部 100 条告警
 
 核查向量：
   A. 当日告警时间轴：多少落在首轮窗口 / 重测窗口 / 两者之外（测试前/后的污染）
-  B. 两套归因逻辑差异：stream_loop.py(推 DETECT_DELAY=8s) vs compute_recall.py(推 0s)
+  B. 两套归因逻辑差异：stream_fight_loop.py(推 DETECT_DELAY=8s) vs compute_fight_recall.py(推 0s)
      —— 同一条告警在两套逻辑下归到不同视频，导致 hit/miss 翻转
   C. 跨轮次 spillover：相邻段间隙告警被时移挪到邻段
-
+  D. 跨 run 污染：首轮 run 与重测 run 之间是否有告警串味
 """
 import csv, json, datetime as dt
 from pathlib import Path
-import argparse
-
 
 BASE = Path(__file__).resolve().parent
 FIRST_CSV = BASE / "alarm_report_fight.csv"
 RETEST_CSV = BASE / "fight_retest_summary.csv"
 META_DIR = BASE / "aibox_alarm_20260805" / "metadata"
-DETECT_DELAY = 8.0  # stream_loop.py 里的检测延迟估计
+DETECT_DELAY = 8.0  # stream_fight_loop.py 里的检测延迟估计
 
+def hms_to_sec(t):
+    """'10:31:53' or '2026-08-05 10:31:53' -> 当天0点起的秒数(float)"""
+    t = str(t).strip()
+    if " " in t:
+        t = t.split(" ")[1]
+    h, m, s = t.split(":")
+    return int(h)*3600 + int(m)*60 + float(s)
 
-def _existing_path(s):
-    p = Path(s)
-    if not p.exists():
-        raise argparse.ArgumentTypeError(f"路径不存在: {p}")
-    return p
-
-
-def load_alarms(meta_dir):
+def load_alarms():
     alarms = []
-    for p in sorted(meta_dir.glob("*.json")):
+    for p in sorted(META_DIR.glob("*.json")):
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
@@ -48,52 +48,39 @@ def load_alarms(meta_dir):
         alarms.append({"time": t, "sec": ts, "conf": conf, "id": d.get("id")})
     return alarms
 
-
-def hms_to_sec(t):
-    """'10:31:53' or '2026-08-05 10:31:53' -> 当天0点起的秒数(float)"""
-    t = str(t).strip()
-    # 用空格分割 年 时间
-    if " " in t:
-        t = t.split(" ")[1]
-    h, m, s = t.split(":")
-    return int(h)*3600 + int(m)*60 + float(s)
-
-
-def parse_interval(s):
-    """'15:23:01-15:24:00' -> (start_sec, end_sec)"""
-    a, b = str(s).split("-")
-    return hms_to_sec(a), hms_to_sec(b)
-
-
-def load_rounds(path):
-    """加载首轮(alarm_report_fight.csv)或重测(fight_retest_summary.csv)区间。
-    两者表头不同，按 'retest_interval' 是否存在自动识别，统一输出
-    {round, video, dur, s, e, csv_count, csv_alarmed, result, count}。"""
+def load_first_rounds():
+    """首轮 47 段。返回 [(round, video, dur, start_sec, end_sec), ...]"""
     rows = []
-    with open(path, encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        is_retest = "retest_interval" in (reader.fieldnames or [])
-        for r in reader:
-            if is_retest:
-                s, e = parse_interval(r["retest_interval"])
-                cnt = int(r["retest_count"]) if r["retest_count"].strip() else 0
-                rows.append({
-                    "round": int(r["retest_round"]), "video": r["video"],
-                    "dur": float(r["retest_dur"]), "s": s, "e": e,
-                    "csv_count": cnt, "csv_alarmed": cnt > 0,
-                    "result": r["retest_result"], "count": cnt,
-                })
-            else:
-                cnt = int(r["count"]) if r["count"].strip() else 0
-                rows.append({
-                    "round": int(r["round"]), "video": r["video"],
-                    "dur": float(r["duration"]),
-                    "s": hms_to_sec(r["start"]), "e": hms_to_sec(r["end"]),
-                    "csv_count": cnt,
-                    "csv_alarmed": r["alarmed"].strip().lower() == "true"
-                })
+    with open(FIRST_CSV, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            rows.append({
+                "round": int(r["round"]),
+                "video": r["video"],
+                "dur": float(r["duration"]),
+                "s": hms_to_sec(r["start"]),
+                "e": hms_to_sec(r["end"]),
+                "csv_count": int(r["count"]),
+                "csv_alarmed": r["alarmed"].strip().lower() == "true",
+            })
     return rows
 
+def load_retest_rounds():
+    rows = []
+    with open(RETEST_CSV, encoding="utf-8-sig", newline="") as f:
+        for r in csv.DictReader(f):
+            si = r["retest_interval"]
+            # 形如 '15:23:01-15:24:00'
+            s, e = si.split("-")
+            rows.append({
+                "round": int(r["retest_round"]),
+                "video": r["video"],
+                "dur": float(r["retest_dur"]),
+                "s": hms_to_sec(s),
+                "e": hms_to_sec(e),
+                "result": r["retest_result"],
+                "count": int(r["retest_count"]),
+            })
+    return rows
 
 def assign(alarms, rounds, delay):
     """把告警时间往前推 delay 秒后归到 [s,e) 区间。返回每轮命中告警列表 + 未归因告警列表。"""
@@ -109,7 +96,6 @@ def assign(alarms, rounds, delay):
     orphan = [a for a in alarms if a["id"] not in used]
     return assigned, orphan
 
-
 def fmt(sec):
     sec = int(round(sec))
     h = sec // 3600
@@ -117,11 +103,10 @@ def fmt(sec):
     s = sec % 60
     return f"{h:d}:{m:02d}:{s:02d}"
 
-
-def main(first_csv, retest_csv, meta_dir):
-    alarms = load_alarms(meta_dir)
-    first = load_rounds(first_csv)
-    retest = load_rounds(retest_csv)
+def main():
+    alarms = load_alarms()
+    first = load_first_rounds()
+    retest = load_retest_rounds()
 
     fs, fe = first[0]["s"], first[-1]["e"]
     rs, re_ = retest[0]["s"], retest[-1]["e"]
@@ -148,8 +133,7 @@ def main(first_csv, retest_csv, meta_dir):
     print("B. 两套归因逻辑对首轮的影响（同 100 条告警，仅首轮 47 段）")
     print("="*70)
     # 只用首轮窗口内的告警 + 可能 spillover 的（用全部告警，delay 会把窗口外的拉进来）
-    for delay, name in [(0, "compute_recall.py (delay=0)"),
-                        (DETECT_DELAY, f"stream_loop.py (delay={DETECT_DELAY}s)")]:
+    for delay, name in [(0, "compute_fight_recall.py (delay=0)"), (DETECT_DELAY, f"stream_fight_loop.py (delay={DETECT_DELAY}s)")]:
         assigned, orphan = assign(alarms, first, delay)
         hit = sum(1 for r in first if assigned[r["round"]])
         miss = len(first) - hit
@@ -160,7 +144,7 @@ def main(first_csv, retest_csv, meta_dir):
             if my_count != r["csv_count"]:
                 diff.append((r["round"], r["video"], r["csv_count"], my_count))
         print(f"\n  [{name}]")
-        print(f"    命中 {hit}/{len(first)}, 漏报 {miss}/{len(first)}, 召回率 {hit/len(first)*100:.1f}%")
+        print(f"    命中 {hit}/47, 漏报 {miss}/47, 召回率 {hit/47*100:.1f}%")
         print(f"    与脚本 CSV 告警数不一致的轮次: {len(diff)}")
         for rnd, vid, cc, mc in diff:
             tag = "← 翻转风险" if (cc==0) != (mc==0) else ""
@@ -183,7 +167,7 @@ def main(first_csv, retest_csv, meta_dir):
         sym = ids0.symmetric_difference(ids8)
         if sym:
             spillover.append((r["round"], r["video"], len(ids0), len(ids8), len(sym)))
-    print(f"  归因受 delay 影响的轮次: {len(spillover)}")
+    print(f"  归因受 delay 影响的轮次: {len(spillover)}/47")
     if spillover:
         print(f"  {'轮':>3} {'视频':<24} {'d=0':>4} {'d=8':>4} {'差':>4}")
         for rnd, vid, c0, c8, d in spillover:
@@ -205,6 +189,26 @@ def main(first_csv, retest_csv, meta_dir):
     print("="*70)
     print("D. 跨 run 污染：重测 14 段的告警是否也参与首轮归因")
     print("="*70)
+    # 重测窗口的告警，若用首轮 rounds 归因(delay=8)会不会被错误拉进首轮？
+    retest_alarms = [a for a in alarms if rs <= a["sec"] < re_]
+    pulled = []
+    for a in retest_alarms:
+        pt = a["sec"] - DETECT_DELAY
+        for r in first:
+            if r["s"] <= pt < r["e"]:
+                pulled.append((a, r))
+                break
+    print(f"  重测窗口告警 {len(retest_alarms)} 条，被首轮(delay=8)误归因: {len(pulled)} 条")
+    # 反向：首轮窗口告警被重测误归因
+    first_alarms = [a for a in alarms if fs <= a["sec"] < fe]
+    pulled2 = []
+    for a in first_alarms:
+        pt = a["sec"] - DETECT_DELAY
+        for r in retest:
+            if r["s"] <= pt < r["e"]:
+                pulled2.append((a, r))
+                break
+    print(f"  首轮窗口告警 {len(first_alarms)} 条，被重测(delay=8)误归因: {len(pulled2)} 条")
 
     # 段间隙
     print()
@@ -237,15 +241,5 @@ def main(first_csv, retest_csv, meta_dir):
                     break
             print(f"    {a['time']} conf={a['conf']} @ {loc}")
 
-
 if __name__ == "__main__":
-        ap = argparse.ArgumentParser(
-            description="泄露核查： 召回率评测是否存在跨 run/轮次告警归因污染")
-        ap.add_argument("--first", type=_existing_path, default=FIRST_CSV,
-                        help="首轮推流区间 CSV（默认 alarm_report_fight.csv）")
-        ap.add_argument("--retest", type=_existing_path, default=RETEST_CSV,
-                        help="重测区间 CSV（默认 fight_retest_summary.csv）")
-        ap.add_argument("--meta", type=_existing_path, default=META_DIR,
-                        help="告警 metadata 目录（默认 aibox_alarm_20260805/metadata）")
-        args = ap.parse_args()
-        main(args.first, args.retest, args.meta)
+    main()

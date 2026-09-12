@@ -48,15 +48,16 @@ _COMMANDS = [
     Command('verify', 'scripts/verify_alert.py', '验证', '验证告警图片是否命中 ground truth', True),
 
     Command('stream', 'scripts/stream_videos.py', '推流', '按顺序推流到 MediaMTX (RTSP)', True),
-    Command('stream-fight', 'scripts/stream_loop.py', '推流', 'Fight/NonFight 拼接循环推流', True),
+    Command('stream-fight', 'scripts/stream_fight_loop.py', '推流', 'Fight/NonFight 拼接循环推流', True),
     Command('stream-merged', 'scripts/stream_merged_sources.py', '推流', '同源片段合并后推流', True),
 
     Command('db-fix-duplicates', 'scripts/fix_duplicate_video_ids.py', '数据库', '清理 videos 表重复 video_id', False),
 
-    Command('recall', 'compute_recall.py', '分析报告', '计算推流测试集召回率（按视频统计告警命中/漏报，输出汇总 CSV 与 Markdown 报告）', False),
+    Command('recall', 'compute_fight_recall.py', '分析报告', '计算推流测试集召回率（按视频统计告警命中/漏报，输出汇总 CSV 与 Markdown 报告）', False),
     Command('recall-audit', 'independent_recall_audit.py', '分析报告', '独立召回审计', False),
     Command('leakage', 'leakage_audit.py', '分析报告', '泄漏审计', False),
     Command('leakage-v2', 'leakage_audit_v2.py', '分析报告', '泄漏审计 v2', False),
+    Command('detection-report', 'gen_detection_report.py', '分析报告', '生成检测报告', False),
     Command('retest-report', 'gen_retest_report.py', '分析报告', '生成复测报告', False),
     Command('algo-condition', 'check_algo_condition.py', '分析报告', '查看 AIBOX 算法 condition 参数', False),
     Command('annotate-alarms', 'annotate_alarm_images.py', '分析报告', '标注告警图片目标框', False),

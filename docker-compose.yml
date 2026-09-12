@@ -5,11 +5,14 @@ services:
     container_name: video-alert-eval
     ports:
       - "8080:8080"
+      - "5000:5000"
     env_file:
       - .env
     environment:
-      # 数据库落到持久化卷（database.py 通过 DATABASE_PATH 读取）
+      # 主平台数据库落到持久化卷（database.py 通过 DATABASE_PATH 读取）
       - DATABASE_PATH=/app/data/benchmark.db
+      # od 子服务数据库目录（od-dataset-manager/config.py 通过 OD_DB_DIR 读取）
+      - OD_DB_DIR=/app/od-dataset-manager/data
     volumes:
       # 数据库 + 各数据目录独立命名卷，重建容器数据不丢
       - db_data:/app/data
@@ -25,6 +28,9 @@ services:
       # config 可选挂载：覆盖镜像内默认告警类型配置
       # 取消注释后用宿主 ./config 覆盖
       # - ./config:/app/config:ro
+      # od 子服务数据卷
+      - od_data:/app/od-dataset-manager/data
+      - od_datasets:/app/od-dataset-manager/datasets
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/"]
@@ -32,21 +38,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 40s
-
-  # 目标检测评测服务（独立 Flask app，与 web 完全解耦）
-  od:
-    build: ./od-dataset-manager
-    image: od-dataset-manager:latest
-    container_name: video-alert-od
-    ports:
-      - "5000:5000"
-    environment:
-      # 数据库落到持久化卷（config.py 通过 OD_DB_DIR 读取）
-      - OD_DB_DIR=/app/data
-    volumes:
-      - od_db:/app/data
-      - od_datasets:/app/datasets
-    restart: unless-stopped
 
 volumes:
   db_data:
@@ -59,5 +50,5 @@ volumes:
   auto_annotation_frames_data:
   logs_data:
   report_data:
-  od_db:
+  od_data:
   od_datasets:

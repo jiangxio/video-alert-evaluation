@@ -96,32 +96,62 @@ def _merge_frame_results(
 ) -> list[dict]:
     """将逐帧检测结果按类型合并为事件区间
 
-    frames: [{"timestamp_sec": float, "detected_event_types": [str, ...]}, ...]
-    返回: [{"type": str, "start": float, "end": float}, ...]
+    frames: [{"timestamp_sec": float, "detected_event_types": [...]}, ...]
+      detected_event_types 每项可为 {"type": str, "confidence": float}（新）或
+      str（旧格式，按 confidence=1.0 处理，向后兼容）。
+    返回: [{"type": str, "start": float, "end": float, "confidence": float}, ...]
+      事件 confidence = 成员帧该类型检测的最高置信（max）。
     """
-    type_timestamps = {}
+    type_entries = {}  # etype -> list of (timestamp, confidence)
     for f in frames:
-        for etype in f.get("detected_event_types", []):
+        ts = f.get("timestamp_sec")
+        if ts is None:
+            continue
+        for entry in f.get("detected_event_types", []):
+            if isinstance(entry, dict):
+                etype = entry.get("type")
+                _raw_conf = entry.get("confidence", 1.0)
+                try:
+                    # 不能用 `or 1.0`：0.0（合法低置信）是 falsy 会被提升为 1.0（坑6 同款）
+                    conf = 1.0 if _raw_conf is None else float(_raw_conf)
+                except (TypeError, ValueError):
+                    conf = 1.0
+            else:
+                etype = entry
+                conf = 1.0
             if etype in selected_types and etype != "normal":
-                type_timestamps.setdefault(etype, []).append(f["timestamp_sec"])
+                type_entries.setdefault(etype, []).append((ts, conf))
 
     events = []
-    for etype, timestamps in type_timestamps.items():
-        timestamps = sorted(set(timestamps))
-        if not timestamps:
+    for etype, entries in type_entries.items():
+        entries = sorted(set(entries))  # (ts, conf) 去重后按 ts 排序
+        if not entries:
             continue
-        start = timestamps[0]
-        end = timestamps[0]
-        for ts in timestamps[1:]:
+        start = entries[0][0]
+        end = entries[0][0]
+        max_conf = entries[0][1]
+        for ts, conf in entries[1:]:
             if ts - end <= merge_interval_sec:
                 end = ts
+                max_conf = max(max_conf, conf)
             else:
-                events.append({"type": etype, "start": start, "end": end})
+                events.append({"type": etype, "start": start, "end": end,
+                               "confidence": round(max_conf, 4)})
                 start = ts
                 end = ts
-        events.append({"type": etype, "start": start, "end": end})
+                max_conf = conf
+        events.append({"type": etype, "start": start, "end": end,
+                       "confidence": round(max_conf, 4)})
 
     return sorted(events, key=lambda e: e["start"])
+
+
+def _event_review_status(confidence, threshold: float = 0.6) -> str:
+    """根据事件置信度判定复核状态：≥阈值 auto_approved，否则 pending（等人工复核）。
+    confidence 为 None 时按 1.0（向后兼容旧无置信度数据）。"""
+    conf = float(confidence) if confidence is not None else 1.0
+    thr = float(threshold) if threshold is not None else 0.6
+    return "auto_approved" if conf >= thr else "pending"
 
 
 def _update_task_in_db(task_id: int, conn: sqlite3.Connection, **kwargs):
@@ -151,6 +181,8 @@ def _do_auto_annotation(
     selected_types: list[str],
     project_root: str,
     api_config: dict,
+    confidence_threshold: float = 0.6,
+    event_descriptions: dict = None,
 ):
     """后台执行自动化标注"""
     global _current_task_id, _stop_requested
@@ -211,11 +243,11 @@ def _do_auto_annotation(
                     _auto_anno_tasks[task_id]["phase"] = "cancelled"
                     return
 
-            labels = ["normal"]
+            results = [{"label": "normal", "confidence": 1.0}]
             frame_failed = False
             for attempt in range(max_retries):
                 try:
-                    labels = analyze_frame(client, model_name, frame_path, selected_types)
+                    results = analyze_frame(client, model_name, frame_path, selected_types, event_descriptions)
                     break
                 except Exception as e:
                     err_str = str(e)
@@ -243,17 +275,21 @@ def _do_auto_annotation(
             if i < len(frames) - 1:
                 time.sleep(request_interval)
 
-            # 过滤掉 normal，只保留用户勾选的事件类型
-            detected = [l for l in labels if l in selected_types and l != "normal"]
+            # 过滤掉 normal，只保留用户勾选的事件类型（带置信度）
+            detected = [
+                {"type": r["label"], "confidence": r.get("confidence", 1.0)}
+                for r in results if r["label"] in selected_types and r["label"] != "normal"
+            ]
+            frame_confidence = max((d["confidence"] for d in detected), default=0.0)
 
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO auto_annotation_frames
-                (task_id, timestamp_sec, frame_path, detected_event_types)
-                VALUES (?, ?, ?, ?)
+                (task_id, timestamp_sec, frame_path, detected_event_types, confidence, review_status)
+                VALUES (?, ?, ?, ?, ?, 'auto')
                 """,
-                (task_id, ts, frame_path, json.dumps(detected, ensure_ascii=False)),
+                (task_id, ts, frame_path, json.dumps(detected, ensure_ascii=False), frame_confidence),
             )
             conn.commit()
 
@@ -286,22 +322,51 @@ def _do_auto_annotation(
         ]
         events = _merge_frame_results(frame_rows, merge_interval, selected_types)
 
+        # 按置信度分流：≥阈值 auto_approved，<阈值 pending（pending 事件等人工复核）
+        for ev in events:
+            ev["review_status"] = _event_review_status(ev.get("confidence", 1.0), confidence_threshold)
+
         # Phase: saving
         _update_task_in_db(task_id, conn, current_phase="saving", phase_progress=90)
         with _auto_anno_lock:
             _auto_anno_tasks[task_id]["phase"] = "saving"
             _auto_anno_tasks[task_id]["phase_progress"] = 90
 
+        # 写 auto_annotation_events（全量事件，带 confidence + review_status）
+        for ev in events:
+            cursor.execute(
+                "INSERT INTO auto_annotation_events "
+                "(task_id, video_db_id, event_type, start_sec, end_sec, confidence, review_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (task_id, video_db_id, ev["type"], ev["start"], ev["end"],
+                 ev.get("confidence", 1.0), ev["review_status"]),
+            )
+        conn.commit()
+
+        # GT JSON 仅写 auto_approved 事件（convert_to_events 据此只接入 approved；
+        # pending 事件留在 auto_annotation_events 表，经复核端点 approve 后单独入库）
+        from app.event_types import get_type_names
+        _gt_names = get_type_names()
+        approved_events = [
+            {"type": ev["type"], "name": _gt_names.get(ev["type"], ev["type"]),
+             "start": ev["start"], "end": ev["end"]}
+            for ev in events if ev["review_status"] == "auto_approved"
+        ]
         gt_data = {
             "file": video_filename,
             "id": video_id_str,
-            "events": events,
+            "events": approved_events,
         }
         gt_dir = Path(project_root) / "ground_truth"
         gt_dir.mkdir(parents=True, exist_ok=True)
         gt_path = gt_dir / f"{video_id_str}.json"
         with open(gt_path, "w", encoding="utf-8") as f:
             json.dump(gt_data, f, ensure_ascii=False, indent=2)
+
+        # 留历史版本（自动标注初始 GT，只含 auto_approved 事件；task_id 关联本任务）
+        from app.routes.videos import _snapshot_gt_version
+        _snapshot_gt_version(video_id_str, gt_data,
+                             Path(project_root) / "ground_truth_versions", task_id=task_id)
 
         _update_task_in_db(
             task_id, conn,
@@ -343,7 +408,7 @@ def _process_queue(project_root: str):
     conn.row_factory = sqlite3.Row
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types, total_frames, analyzed_frames, current_phase, phase_progress, result_json_path, error_message, created_at, updated_at FROM auto_annotation_tasks WHERE id = ?", (next_task_id,))
+        cursor.execute("SELECT id, video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types, total_frames, analyzed_frames, current_phase, phase_progress, confidence_threshold, event_descriptions, result_json_path, error_message, created_at, updated_at FROM auto_annotation_tasks WHERE id = ?", (next_task_id,))
         task = cursor.fetchone()
         if not task:
             return
@@ -393,6 +458,8 @@ def _process_queue(project_root: str):
                 json.loads(task["event_types"]),
                 project_root,
                 api_config,
+                task["confidence_threshold"] if task["confidence_threshold"] is not None else 0.6,
+                json.loads(task["event_descriptions"]) if task["event_descriptions"] else None,
             ),
             daemon=True,
         )
@@ -480,6 +547,10 @@ def start_task():
     base_url = data.get("base_url", "")
     model = data.get("model", "")
     request_interval_sec = data.get("request_interval_sec")
+    _ct = data.get("confidence_threshold")
+    confidence_threshold = 0.6 if _ct is None else float(_ct)
+    _ed = data.get("event_descriptions")
+    event_descriptions = _ed if isinstance(_ed, dict) else None
 
     if not video_db_id:
         return jsonify({"error": "未选择视频"}), 400
@@ -523,8 +594,8 @@ def start_task():
     cursor.execute(
         """
         INSERT INTO auto_annotation_tasks
-        (video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (video_db_id, video_id, status, frame_interval_sec, merge_interval_sec, event_types, confidence_threshold, event_descriptions)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             video_db_id,
@@ -533,6 +604,8 @@ def start_task():
             frame_interval,
             merge_interval,
             json.dumps(selected_types, ensure_ascii=False),
+            confidence_threshold,
+            json.dumps(event_descriptions, ensure_ascii=False) if event_descriptions else None,
         ),
     )
     db.commit()
@@ -576,6 +649,8 @@ def start_task():
             selected_types,
             project_root,
             api_config,
+            confidence_threshold,
+            event_descriptions,
         ),
         daemon=True,
     )

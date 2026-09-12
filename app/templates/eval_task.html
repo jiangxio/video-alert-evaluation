@@ -1639,14 +1639,14 @@ function recomputeMetrics() {
   }
   const accuracy = total > 0 ? correct / total : null;
 
-  // 平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+  // 平均误检数/小时 = 各事件类型速率之【和】（= 总误检数 / 总时长），非算术平均——与后端 compute_overall_avg_fp 一致
   let avgFp = 0;
   if (totalDurationHours > 0 && typesWithAlerts.size > 0) {
     const avgFpValues = [];
     for (const et of typesWithAlerts) {
       avgFpValues.push((fpByType[et] || 0) / totalDurationHours);
     }
-    avgFp = avgFpValues.reduce((a, b) => a + b, 0) / avgFpValues.length;
+    avgFp = avgFpValues.reduce((a, b) => a + b, 0);
   }
   window.evalAvgFpPerHour = avgFp;
   window.evalAccuracy = accuracy;
@@ -1780,10 +1780,10 @@ function renderEventMetricsTable(overall) {
     const recallsWithGt = eventMetricsData.filter(e => e.recall != null && e.gt_count > 0).map(e => e.recall);
     return recallsWithGt.length > 0 ? recallsWithGt.reduce((a, b) => a + b, 0) / recallsWithGt.length : null;
   })();
-  // 整体平均误检数/小时 = 各事件类型平均误检数/小时的算术平均
+  // 整体平均误检数/小时 = 各事件类型速率之【和】（= 总误检数 / 总时长），非算术平均——与后端一致
   const overallAvgFp = overall ? overall.avg_fp_per_hour : (() => {
     const avgFpValues = eventMetricsData.map(e => e.avg_fp_per_hour != null ? e.avg_fp_per_hour : computeAvgFp(getFpCount(e))).filter(v => v != null);
-    return avgFpValues.length > 0 ? avgFpValues.reduce((a, b) => a + b, 0) / avgFpValues.length : 0;
+    return avgFpValues.length > 0 ? avgFpValues.reduce((a, b) => a + b, 0) : 0;
   })();
 
   body.innerHTML = `

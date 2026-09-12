@@ -14,7 +14,7 @@ import random
 from app.database import get_db, DATABASE_PATH
 from app.services.watermark_service import add_watermark, cancel_task
 from app.routes import send_file_with_cache
-from app.utils import allowed_file
+from app.utils import allowed_file, safe_filename
 
 bp = Blueprint('videos', __name__, url_prefix='/videos')
 
@@ -95,11 +95,15 @@ def generate_ground_truth_json(video_db_id):
     )
     events = cursor.fetchall()
 
+    from app.event_types import get_type_names
+    _names = get_type_names()
     gt_data = {
         'file': video['filename'],
         'id': video['video_id'],
         'events': [
-            {'type': e['event_type'], 'start': e['start_seconds'], 'end': e['end_seconds']}
+            {'type': e['event_type'],
+             'name': _names.get(e['event_type'], e['event_type']),
+             'start': e['start_seconds'], 'end': e['end_seconds']}
             for e in events
         ]
     }
@@ -111,7 +115,43 @@ def generate_ground_truth_json(video_db_id):
     with open(str(gt_path), 'w', encoding='utf-8') as f:
         json.dump(gt_data, f, ensure_ascii=False, indent=2)
 
+    # 留历史版本快照（不静默覆盖）：ground_truth_versions/{video_id}/v{N}.json + gt_versions 记录
+    versions_dir = gt_dir.parent / 'ground_truth_versions'
+    _snapshot_gt_version(video['video_id'], gt_data, versions_dir)
+
     return gt_data
+
+
+def _snapshot_gt_version(video_id, gt_data, versions_dir, task_id=None):
+    """为新 GT 版本写历史快照 + 记录 gt_versions 表，返回 version_no。
+    自建 sqlite 连接（不干扰调用方事务），兼容请求上下文与后台线程。
+    versions_dir 为快照根目录（通常 = GROUND_TRUTH_DIR.parent / 'ground_truth_versions'）。"""
+    import sqlite3 as _sqlite3
+    from app.database import DATABASE_PATH
+    snap_dir = Path(versions_dir) / str(video_id)
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite3.connect(str(DATABASE_PATH))
+    conn.row_factory = _sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(MAX(version_no), 0) AS m FROM gt_versions WHERE video_id = ?",
+            (str(video_id),),
+        )
+        prev = cur.fetchone()['m']
+        new_no = prev + 1
+        snap_path = snap_dir / f"v{new_no}.json"
+        with open(snap_path, 'w', encoding='utf-8') as f:
+            json.dump(gt_data, f, ensure_ascii=False, indent=2)
+        cur.execute(
+            "INSERT INTO gt_versions (video_id, task_id, version_no, path, parent_version_no) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (str(video_id), task_id, new_no, str(snap_path), prev or None),
+        )
+        conn.commit()
+        return new_no
+    finally:
+        conn.close()
 
 
 # ── 页面路由 ──────────────────────────────────────────────────────────────────
@@ -301,7 +341,9 @@ def upload_video():
     if not allowed_file(file.filename, current_app.config['ALLOWED_VIDEO_EXTENSIONS']):
         return jsonify({'error': '不支持的文件格式'}), 400
 
-    filename = file.filename
+    filename = safe_filename(file.filename)
+    if not filename:
+        return jsonify({'error': '非法文件名'}), 400
 
     # 防止重复上传相同文件名
     db = get_db()
@@ -354,6 +396,9 @@ def rename_video(video_id):
     new_filename = (data or {}).get('filename', '').strip()
     if not new_filename:
         return jsonify({'error': '文件名不能为空'}), 400
+    new_filename = safe_filename(new_filename)
+    if not new_filename:
+        return jsonify({'error': '非法文件名'}), 400
 
     if not allowed_file(new_filename, current_app.config['ALLOWED_VIDEO_EXTENSIONS']):
         return jsonify({'error': '不支持的文件格式'}), 400

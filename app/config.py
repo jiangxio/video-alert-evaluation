@@ -1,5 +1,7 @@
 """Flask应用配置"""
 import os
+import secrets
+import logging
 from pathlib import Path
 
 # 自动加载 .env 文件中的环境变量（.env 优先于系统环境变量）
@@ -17,7 +19,14 @@ UPLOAD_ALERTS.mkdir(parents=True, exist_ok=True)
 
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+    # 优先从环境变量读取；未设置时生成随机密钥（不可预测，防 session 伪造），
+    # 但每次重启会令旧 session 失效——生产环境务必在 .env 中设置固定的 SECRET_KEY。
+    SECRET_KEY = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+    if not os.environ.get('SECRET_KEY'):
+        logging.getLogger(__name__).warning(
+            'SECRET_KEY 未在环境变量中设置，已生成随机临时密钥；重启后所有 session 将失效。'
+            '生产环境请在 .env 中配置固定的 SECRET_KEY。'
+        )
     UPLOAD_FOLDER = str(UPLOAD_FOLDER)
     UPLOAD_VIDEOS = str(UPLOAD_VIDEOS)
     UPLOAD_ALERTS = str(UPLOAD_ALERTS)

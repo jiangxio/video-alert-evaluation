@@ -9,13 +9,14 @@ easyocr>=1.7
 # 图像处理
 Pillow>=9.0
 
-# Claude API
-anthropic>=0.30.0
-
-# AI 助手
+# AI 助手 / 多模态调用（统一 OpenAI 兼容协议）
 openai>=1.30.0
 cryptography>=42.0.0
 python-dotenv>=1.0.0
+
+# PDF 报告渲染（Playwright）
+# 1.62 已不支持 Debian 11(bullseye)，固定 1.49 兼容镜像基础镜像
+playwright==1.49.1
 
 # Config file parsing
 PyYAML>=6.0

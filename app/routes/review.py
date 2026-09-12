@@ -134,7 +134,7 @@ def ai_check(task_id):
     if not cursor.fetchone():
         return jsonify({'error': '任务不存在'}), 404
 
-    creds = api_config_service.get_openai_creds()
+    creds = api_config_service.get_vision_creds()
     if not creds.get('api_key'):
         return jsonify({'error': '未配置 OpenAI 兼容 API，请在 /api-config/ 页面配置'}), 400
 

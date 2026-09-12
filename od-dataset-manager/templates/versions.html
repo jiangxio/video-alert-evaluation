@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>{{ project.name }} - 版本管理</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <header>
+        <a href="/" class="header-back">← 返回首页</a>
+        <h1>{{ project.name }} - 版本管理</h1>
+    </header>
+    <div class="container">
+        <main>
+            <div class="toolbar">
+                <div class="toolbar-stats" id="stats">版本数: <strong>{{ versions|length }}</strong></div>
+                <div class="toolbar-actions">
+                    <button id="btn-create-version">+ 创建新版本</button>
+                    <a href="/project/{{ project_id }}/cross-qc" class="btn-sm" style="padding:6px 12px; font-size:13px; text-decoration:none; border:1px solid #3098d8; color:#3098d8; border-radius:4px;">训练/测试集相似度</a>
+                </div>
+            </div>
+
+            <div id="version-table-wrap">
+                <table class="ov-table" id="version-table">
+                    <thead>
+                        <tr>
+                            <th>版本名称</th>
+                            <th>备注</th>
+                            <th>图片数</th>
+                            <th>标签数</th>
+                            <th>创建时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for version in versions %}
+                        <tr class="version-row" data-version-id="{{ version.id }}">
+                            <td class="v-name">{{ version.name }}</td>
+                            <td class="v-note">{{ version.note or '—' }}</td>
+                            <td>{{ version.image_count }}</td>
+                            <td>{{ version.label_count }}</td>
+                            <td class="v-time">{{ version.created_at[:19] }}</td>
+                            <td class="v-actions">
+                                <a href="/version/{{ version.id }}" class="btn-sm btn-open">进入</a>
+                                <button class="btn-sm btn-copy" data-version-id="{{ version.id }}">复制</button>
+                                <button class="btn-sm btn-edit" data-version-id="{{ version.id }}">编辑</button>
+                                <button class="btn-sm btn-danger btn-delete" data-version-id="{{ version.id }}">删除</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            {% if versions|length == 0 %}
+            <div class="qc-empty">暂无版本，点击「创建新版本」开始</div>
+            {% endif %}
+        </main>
+    </div>
+
+    <!-- Create/Edit Version Modal -->
+    <div id="version-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-box" style="width:520px;">
+            <div class="modal-header">
+                <strong id="version-modal-title">创建新版本</strong>
+                <button class="modal-close" id="version-modal-close">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>版本名称 <span class="req">*</span></label>
+                    <input type="text" id="version-name" placeholder="例如：v1.0 初始版本" />
+                </div>
+                <div class="form-row">
+                    <label>备注</label>
+                    <textarea id="version-note" rows="2" placeholder="版本说明…"></textarea>
+                </div>
+                <div class="form-row" id="source-version-group">
+                    <label>从现有版本复制（可选）</label>
+                    <select id="source-version">
+                        <option value="">不复制 - 创建空版本</option>
+                        {% for version in versions %}
+                        <option value="{{ version.id }}">{{ version.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>上传数据压缩包（.zip）</label>
+                    <div class="hint-text" style="color:#888;font-size:12px;margin-bottom:4px;">
+                        支持 images/ 和 labels/ 子目录，或直接打包图片和标注文件。
+                        标注格式自动识别：JSON / YOLO / COCO
+                    </div>
+                    <input type="file" id="version-zip" accept=".zip" />
+                    <div id="zip-file-info" style="font-size:12px;color:#3098d8;margin-top:4px;display:none;"></div>
+                </div>
+                <div class="form-row" id="has-labels-group">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                        <input type="checkbox" id="version-has-labels" checked />
+                        本版本包含标注文件
+                    </label>
+                    <div class="hint-text" style="color:#888;font-size:12px;margin-top:2px;">
+                        勾选后，压缩包内必须含标注（labels 目录或 .txt/.json），否则创建失败；
+                        不勾选则仅导入图片，忽略压缩包内的标注文件
+                    </div>
+                </div>
+                <!-- Progress bar (shown during zip upload processing) -->
+                <div id="version-progress" class="form-row" style="display:none;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+                        <span id="progress-status" style="font-size:12px;color:#555;">处理中…</span>
+                        <span id="progress-pct" style="font-size:12px;color:#3098d8;">0%</span>
+                    </div>
+                    <div style="background:#e0e0e0;border-radius:4px;height:8px;overflow:hidden;">
+                        <div id="progress-bar" style="background:#3098d8;height:100%;width:0%;transition:width 0.3s;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-edit" id="version-modal-cancel">取消</button>
+                <button class="btn-primary" id="btn-save-version">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const PROJECT_ID = {{ project_id | tojson }};
+    </script>
+    <script src="/static/versions.js?v=2"></script>
+</body>
+</html>

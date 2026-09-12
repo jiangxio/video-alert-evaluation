@@ -1,5 +1,5 @@
 {
-  "base_url": "https://openapi-ai.cmaiot.cn/v1",
-  "model": "Qwen3-VL-8B-Instruct",
+  "base_url": "https://onerouter.cmaiot.cn/v1",
+  "model": "Auto-Multi",
   "request_interval_sec": 1
 }

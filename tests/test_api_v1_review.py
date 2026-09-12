@@ -57,7 +57,7 @@ def _reset_review_state():
 def _creds(monkeypatch):
     """mock OpenAI creds，使 ai_check 通过旧视图 step3（未配置→400）走到起线程分支。"""
     monkeypatch.setattr(
-        "app.services.api_config_service.get_openai_creds",
+        "app.services.api_config_service.get_vision_creds",
         lambda: {"api_key": "fake-key", "base_url": "http://localhost/v1", "model": "m"},
     )
 
@@ -158,8 +158,8 @@ def test_ai_check_task_not_found(client, seed, _creds):
 def test_ai_check_no_creds(client, seed, monkeypatch):
     """显式 mock 无 creds→旧视图 step3 返 400 未配置 OpenAI→11402。
     （真实 get_openai_creds 可能读到 os.environ/api_config 表的值，故显式置空以确定性。）"""
-    monkeypatch.setattr("app.services.api_config_service.get_openai_creds",
-                        lambda: {"api_key": None, "base_url": "", "model": ""})
+    monkeypatch.setattr("app.services.api_config_service.get_vision_creds",
+                        lambda: {"api_key": "", "base_url": "", "model": ""})
     _err(client.post("/api/v1/review/tasks/1/ai-check", json={"merged_ids": [1]}), 400)
 
 

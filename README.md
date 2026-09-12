@@ -27,6 +27,19 @@
 
 ---
 
+## 文档导航
+
+完整文档见 `docs/` 目录：
+
+| 文档 | 内容 |
+|------|------|
+| [安装指南](docs/install.md) | Docker 部署与手动安装 |
+| [接入指南](docs/integration.md) | 算法版本注册、数据格式、评测闭环 |
+| [使用指南](docs/usage.md) | Web 平台与命令行操作手册 |
+| [故障排查](docs/troubleshooting.md) | 常见问题与解决方案 |
+
+---
+
 ## 目录说明
 
 ```
@@ -110,7 +123,41 @@ __pycache__/
 
 ## 快速开始
 
-### 安装依赖
+### 方式一：Docker 部署（推荐）
+
+仅需修改 `.env` 一个配置文件即可运行：
+
+```bash
+# 1. 复制配置文件并填入 API key（唯一需修改的配置）
+cp .env.example .env
+
+# 2. 一键构建并启动
+docker compose up -d
+
+# 3. 访问 http://localhost:8080（视频评测平台）
+#    目标检测评测服务：http://localhost:5000（或从导航「目标检测」跳转）
+```
+
+`docker compose up -d` 同时启动两个服务：
+- **web**（8080）：视频水印评测平台
+- **od**（5000）：目标检测评测服务（独立 Flask app，与 web 完全解耦）
+
+常用命令：
+
+```bash
+docker compose logs -f   # 查看实时日志
+docker compose down      # 停止（数据保留在命名卷中）
+docker compose up -d     # 重新启动（数据不丢失）
+docker compose stop od   # 仅停目标检测服务（不影响视频评测）
+```
+
+> 镜像已内置 FFmpeg、字体、EasyOCR 模型（离线可用）、Chromium（PDF 报告）。
+> 数据持久化：数据库与各数据目录通过 Docker 命名卷保存，重建容器不丢数据。
+> 可选：取消 `docker-compose.yml` 中 `./config:/app/config:ro` 注释，用宿主配置覆盖默认告警类型。
+
+### 方式二：手动安装
+
+#### 安装依赖
 ```bash
 pip install -r requirements.txt
 ```

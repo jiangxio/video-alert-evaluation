@@ -35,8 +35,8 @@ def api_test():
     """测试连接。"""
     data = request.get_json() or {}
     provider = data.get('provider')
-    if provider == 'openai':
-        return jsonify(api_config_service.test_openai())
-    if provider == 'claude':
-        return jsonify(api_config_service.test_claude())
+    if provider in ('text', 'openai'):  # openai 兼容旧前端
+        return jsonify(api_config_service.test_text_llm())
+    if provider == 'vision':
+        return jsonify(api_config_service.test_vision())
     return jsonify({'ok': False, 'msg': '未知的 provider'}), 400

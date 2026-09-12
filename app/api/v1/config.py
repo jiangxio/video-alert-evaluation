@@ -50,10 +50,10 @@ def v1_test_connection():
     """
     data = request.get_json() or {}
     provider = data.get("provider")
-    if provider == "openai":
-        result = api_config_service.test_openai()
-    elif provider == "claude":
-        result = api_config_service.test_claude()
+    if provider in ("text", "openai"):  # openai 兼容旧前端
+        result = api_config_service.test_text_llm()
+    elif provider == "vision":
+        result = api_config_service.test_vision()
     else:
         return err(400, "未知的 provider", error_code="UNKNOWN_PROVIDER")
     return ok(result)

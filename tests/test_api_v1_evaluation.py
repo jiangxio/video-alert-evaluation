@@ -129,11 +129,11 @@ def _stub_metrics(monkeypatch):
 
 @pytest.fixture
 def _stub_claude(monkeypatch):
-    """_call_claude/_call_claude_chat→canned + get_claude_creds→fake，避开真 LLM（#20 无 timeout 盲区）。
+    """_call_claude/_call_claude_chat→canned + get_text_creds→fake，避开真 LLM（#20 无 timeout 盲区）。
     注：detailed_report_preview/chat 在函数内 `from app.services import api_config_service`，
-    故 patch 真模块的 get_claude_creds（函数内 import 读 patched 模块属性）。"""
-    monkeypatch.setattr("app.services.api_config_service.get_claude_creds",
-                        lambda: {"auth_token": "fake", "base_url": "http://x"})
+    故 patch 真模块的 get_text_creds（函数内 import 读 patched 模块属性）。"""
+    monkeypatch.setattr("app.services.api_config_service.get_text_creds",
+                        lambda: {"api_key": "fake", "base_url": "http://x"})
     monkeypatch.setattr("app.services.eval_service._call_claude", lambda *a, **k: "canned summary")
     monkeypatch.setattr("app.services.eval_service._call_claude_chat",
                         lambda *a, **k: {"summary": "s", "conclusion": "c"})
@@ -438,8 +438,8 @@ def test_report_preview_success(app, client, seed, _stub_claude, _stub_metrics):
 
 def test_report_preview_no_api_key(app, client, seed, monkeypatch):
     """无 creds 且 body 无 api_key→400(11310)。"""
-    monkeypatch.setattr("app.services.api_config_service.get_claude_creds",
-                        lambda: {"auth_token": None, "base_url": None})
+    monkeypatch.setattr("app.services.api_config_service.get_text_creds",
+                        lambda: {"api_key": "", "base_url": ""})
     _err(client.post("/api/v1/evaluation/tasks/1/report:preview", json={}), 400)
 
 

@@ -378,12 +378,18 @@ def import_zip(dataset_id):
     try:
         archive_path = os.path.join(tmp_dir, 'upload')
         f.save(archive_path)
-        _extract_archive(archive_path, tmp_dir, f.filename)
+        try:
+            _extract_archive(archive_path, tmp_dir, f.filename)
+        except (zipfile.BadZipFile, tarfile.TarError, ValueError) as e:
+            # 损坏或不支持的压缩包：明确 400 拒绝，不让异常逃逸成 500
+            return jsonify({'error': f'压缩包解析失败：{type(e).__name__}'}), 400
+        except Exception as e:
+            return jsonify({'error': f'解压失败：{type(e).__name__}'}), 400
 
         # 定位图片搜索根目录（处理压缩包内套单层文件夹的情况）
         search_root = _find_image_root(tmp_dir)
 
-        imported, skipped = [], []
+        imported, skipped, invalid_type_ids = [], [], set()
 
         for src in sorted(search_root.rglob('*')):
             if not src.is_file():
@@ -414,6 +420,9 @@ def import_zip(dataset_id):
             width, height = _get_image_size(str(dest))
             alert_type_id = extract_alert_type_id(filename)
             alert_type = config.get(alert_type_id) if alert_type_id else None
+            # 提取到 ID 但未在 alert_types.json 登记 → 记录为无效类型（不阻断导入）
+            if alert_type_id and alert_type is None:
+                invalid_type_ids.add(alert_type_id)
             file_size = dest.stat().st_size
 
             cursor.execute('''
@@ -437,6 +446,7 @@ def import_zip(dataset_id):
         'imported': len(imported),
         'skipped': len(skipped),
         'skipped_files': skipped,
+        'invalid_type_ids': sorted(invalid_type_ids),
     })
 
 
@@ -470,10 +480,55 @@ def list_dataset_images(dataset_id):
     if not cursor.fetchone():
         return jsonify({'error': '数据集不存在'}), 404
 
-    cursor.execute(
-        'SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label FROM alert_images WHERE dataset_id = ? ORDER BY uploaded_at ASC',
-        (dataset_id,)
-    )
+    # 分页与筛选参数（每页 10 行 × 每行 8 张 = 80 张）
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 80, type=int)
+    if page < 1:
+        page = 1
+    if per_page < 1:
+        per_page = 80
+    if per_page > 200:
+        per_page = 200
+
+    event_type = request.args.get('event_type', '').strip()
+    video_id = request.args.get('video_id', '').strip()
+    label_status = request.args.get('label_status', 'all').strip()
+
+    conditions = ['dataset_id = ?']
+    params = [dataset_id]
+
+    if event_type:
+        conditions.append('(alert_type = ? OR event_label = ?)')
+        params.extend([event_type, event_type])
+
+    if video_id:
+        conditions.append('id IN (SELECT alert_image_id FROM ocr_results WHERE video_id LIKE ?)')
+        params.append(f'%{video_id}%')
+
+    if label_status == 'unlabeled':
+        conditions.append('event_label IS NULL AND alert_type IS NULL')
+    elif label_status == 'labeled':
+        conditions.append('(event_label IS NOT NULL OR alert_type IS NOT NULL)')
+
+    where_clause = ' AND '.join(conditions)
+
+    # 计算筛选后总数
+    cursor.execute(f'SELECT COUNT(*) FROM alert_images WHERE {where_clause}', params)
+    total = cursor.fetchone()[0]
+
+    # 分页查询（page 超出范围时回到最后一页）
+    max_page = max(1, (total + per_page - 1) // per_page)
+    if page > max_page:
+        page = max_page
+    offset = (page - 1) * per_page
+    cursor.execute(f'''
+        SELECT id, filename, file_path, alert_type_id, alert_type, file_size, uploaded_at, dataset_id, image_width, image_height, event_label
+        FROM alert_images
+        WHERE {where_clause}
+        ORDER BY uploaded_at ASC
+        LIMIT ? OFFSET ?
+    ''', params + [per_page, offset])
+
     images = []
     for row in cursor.fetchall():
         img = dict(row)
@@ -486,7 +541,13 @@ def list_dataset_images(dataset_id):
         ocr = cursor.fetchone()
         img['ocr'] = dict(ocr) if ocr else None
         images.append(img)
-    return jsonify(images)
+
+    return jsonify({
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'images': images,
+    })
 
 
 # ── 告警评测集管理 ───────────────────────────────────────────────────────────

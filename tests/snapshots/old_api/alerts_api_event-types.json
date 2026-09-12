@@ -1,0 +1,79 @@
+{
+  "body": [
+    {
+      "id": "100",
+      "name": "rat"
+    },
+    {
+      "id": "101",
+      "name": "smoke"
+    },
+    {
+      "id": "102",
+      "name": "use_phone"
+    },
+    {
+      "id": "103",
+      "name": "call_phone"
+    },
+    {
+      "id": "104",
+      "name": "chef"
+    },
+    {
+      "id": "105",
+      "name": "trash"
+    },
+    {
+      "id": "106",
+      "name": "mask"
+    },
+    {
+      "id": "107",
+      "name": "flame"
+    },
+    {
+      "id": "108",
+      "name": "fireEscapeOccupy"
+    },
+    {
+      "id": "109",
+      "name": "safetyOfficerOnDuty"
+    },
+    {
+      "id": "110",
+      "name": "personSleep"
+    },
+    {
+      "id": "111",
+      "name": "personLadderHigh"
+    },
+    {
+      "id": "112",
+      "name": "withoutHelmetOnSite"
+    },
+    {
+      "id": "113",
+      "name": "withoutRefClothes"
+    },
+    {
+      "id": "114",
+      "name": "personFallDown"
+    },
+    {
+      "id": "115",
+      "name": "personAction"
+    },
+    {
+      "id": "116",
+      "name": "inHandDangerTool"
+    },
+    {
+      "id": "117",
+      "name": "fight"
+    }
+  ],
+  "body_kind": "json",
+  "content_type": "application/json",
+  "status": 200
+}

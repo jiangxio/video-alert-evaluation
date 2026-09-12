@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <title>{{ project_name }} - 数据质检</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <header>
+        <a href="/project/{{ project_id }}" class="header-back">← 返回项目</a>
+        <h1>{{ project_name }} - 数据质检</h1>
+    </header>
+    <div class="container">
+        <main>
+            <!-- 模糊阈值控制 -->
+            <div class="chart-card qc-toolbar">
+                <div class="qc-toolbar-row">
+                    <button id="btn-run-qc" class="btn-primary">开始质检</button>
+                    <span class="qc-hint" id="qc-status">点击「开始质检」分析数据集</span>
+                </div>
+                <div class="qc-toolbar-row">
+                    <label class="qc-threshold-label">
+                        模糊阈值：<strong id="blur-threshold-val">100</strong>
+                        <span class="qc-threshold-tip">（得分 &lt; 阈值的图片判定为模糊，分数越低越模糊）</span>
+                    </label>
+                    <input type="range" id="blur-threshold" min="10" max="500" step="10" value="100" class="qc-slider" />
+                </div>
+            </div>
+
+            <!-- 相似图片组 -->
+            <div class="chart-card" style="margin-top:12px;">
+                <div class="chart-title">
+                    相似图片组
+                    <span class="qc-section-count" id="similar-count"></span>
+                </div>
+                <div id="similar-groups-toolbar" style="margin-bottom:8px; display:none;">
+                    <button id="btn-optimize-all" class="btn-primary">一键优化（保留每组第一张）</button>
+                    <span class="qc-hint">点击图片卡片可切换该组保留的图片</span>
+                </div>
+                <div id="similar-groups" class="qc-groups">
+                    <div class="qc-empty">点击「开始质检」后显示结果</div>
+                </div>
+            </div>
+
+            <!-- 模糊图片 -->
+            <div class="chart-card" style="margin-top:12px;">
+                <div class="chart-title">
+                    疑似模糊图片
+                    <span class="qc-section-count" id="blurry-count"></span>
+                </div>
+                <div id="blurry-images" class="qc-grid">
+                    <div class="qc-empty">点击「开始质检」后显示结果</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 大图预览 -->
+    <div id="qc-lightbox" class="modal-overlay" style="display:none;">
+        <div id="lightbox-box">
+            <div id="lightbox-header">
+                <span id="lightbox-title"></span>
+                <button class="modal-close" id="lightbox-close">×</button>
+            </div>
+            <div id="lightbox-body">
+                <img id="lightbox-image" src="" alt="" />
+            </div>
+            <div id="lightbox-footer">
+                <button id="lightbox-close2">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const PROJECT_ID = {{ project_id | tojson | safe }};
+    const VERSION_ID = {{ version_id | tojson | safe }};
+    let qcData = null;
+    // selections[gi] = image_name to keep in that group; default = first
+    let selections = {};
+
+    function qp(path) {
+        const sep = path.includes('?') ? '&' : '?';
+        return path + sep + 'version_id=' + encodeURIComponent(VERSION_ID);
+    }
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function runQC() {
+        document.getElementById('btn-run-qc').disabled = true;
+        document.getElementById('qc-status').textContent = '正在分析，请稍候...';
+        fetch(`/api/qc/${VERSION_ID}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) { alert(data.error); return; }
+                qcData = data;
+                // Default: keep first image of each group
+                selections = {};
+                data.similar_groups.forEach((g, i) => {
+                    selections[i] = g.images[0];
+                });
+                renderResults();
+                document.getElementById('qc-status').textContent =
+                    `分析完成：共 ${data.analyzed_images} 张，相似组 ${data.similar_groups.length}，疑似模糊 ${countBlurry()} 张`;
+            })
+            .catch(err => { console.error(err); alert('质检失败'); })
+            .finally(() => { document.getElementById('btn-run-qc').disabled = false; });
+    }
+
+    function getBlurThreshold() {
+        return parseFloat(document.getElementById('blur-threshold').value);
+    }
+
+    function countBlurry() {
+        if (!qcData) return 0;
+        const th = getBlurThreshold();
+        return qcData.blurry_images.filter(b => b.blur_score < th).length;
+    }
+
+    function renderResults() {
+        renderSimilarGroups();
+        renderBlurryImages();
+    }
+
+    function renderSimilarGroups() {
+        const container = document.getElementById('similar-groups');
+        container.innerHTML = '';
+        const countEl = document.getElementById('similar-count');
+        const groups = qcData.similar_groups;
+        const toolbar = document.getElementById('similar-groups-toolbar');
+        countEl.textContent = `(${groups.length} 组)`;
+
+        if (groups.length === 0) {
+            toolbar.style.display = 'none';
+            container.innerHTML = '<div class="qc-empty">未发现相似图片组</div>';
+            return;
+        }
+        toolbar.style.display = 'block';
+
+        groups.forEach((group, gi) => {
+            const keepName = selections[gi];
+            const groupDiv = document.createElement('div');
+            groupDiv.className = 'qc-group';
+            const header = document.createElement('div');
+            header.className = 'qc-group-header';
+            const willDel = group.images.length - 1;
+            header.innerHTML = `<strong>第 ${gi + 1} 组</strong>（${group.images.length} 张相似，保留 <span class="qc-keep-name">${escHtml(keepName)}</span>，将删 ${willDel} 张）
+                <button class="btn-sm qc-btn-apply-group" data-gi="${gi}" style="margin-left:8px;">采纳此组</button>`;
+            groupDiv.appendChild(header);
+
+            const grid = document.createElement('div');
+            grid.className = 'qc-group-grid';
+            group.images.forEach((name, idx) => {
+                const card = document.createElement('div');
+                const isSelected = name === keepName;
+                card.className = 'qc-img-card qc-selectable' + (isSelected ? ' selected' : '');
+                card.dataset.name = name;
+                card.dataset.gi = gi;
+                card.innerHTML = `
+                    <img src="${qp('/image/' + name)}" alt="${escHtml(name)}" loading="lazy" />
+                    <div class="qc-img-name" title="${escHtml(name)}">${escHtml(name)}</div>
+                    ${isSelected ? '<div class="qc-keep-tag">✓ 保留</div>' : '<div class="qc-drop-tag">将删除</div>'}
+                    <div class="qc-img-actions">
+                        <button class="qc-btn-view" data-name="${escHtml(name)}">大图</button>
+                        <button class="qc-btn-del" data-name="${escHtml(name)}">删除</button>
+                    </div>`;
+                grid.appendChild(card);
+            });
+            groupDiv.appendChild(grid);
+            container.appendChild(groupDiv);
+        });
+
+        bindCardActions(container);
+        bindSelectionActions(container);
+        bindGroupApplyActions();
+    }
+
+    function bindSelectionActions(container) {
+        container.querySelectorAll('.qc-img-card.qc-selectable').forEach(card => {
+            card.addEventListener('click', (e) => {
+                // Don't toggle when clicking action buttons
+                if (e.target.closest('.qc-img-actions')) return;
+                const gi = parseInt(card.dataset.gi, 10);
+                const name = card.dataset.name;
+                selections[gi] = name;
+                renderSimilarGroups();
+            });
+        });
+    }
+
+    function bindGroupApplyActions() {
+        document.querySelectorAll('.qc-btn-apply-group').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const gi = parseInt(btn.dataset.gi, 10);
+                applyGroup(gi);
+            });
+        });
+    }
+
+    function applyGroup(gi) {
+        const group = qcData.similar_groups[gi];
+        const keepName = selections[gi];
+        const toDelete = group.images.filter(n => n !== keepName);
+        if (toDelete.length === 0) {
+            alert('该组无需删除');
+            return;
+        }
+        if (!confirm(`确认第 ${gi+1} 组：保留「${keepName}」，删除 ${toDelete.length} 张相似图片？`)) return;
+
+        const btn = document.querySelector(`.qc-btn-apply-group[data-gi="${gi}"]`);
+        if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+
+        Promise.all(toDelete.map(name =>
+            fetch(qp(`/api/delete_image/${name}`), {method: 'DELETE'})
+                .then(r => r.json()).then(d => ({name, ok: d.success}))
+        )).then(results => {
+            const failed = results.filter(r => !r.ok).map(r => r.name);
+            // Mark deleted cards
+            results.filter(r => r.ok).forEach(r => {
+                const card = document.querySelector(`.qc-img-card[data-name="${r.name}"]`);
+                if (card) {
+                    card.style.opacity = '0.3';
+                    card.style.pointerEvents = 'none';
+                    card.classList.remove('qc-selectable');
+                }
+            });
+            if (btn) { btn.textContent = '✓ 已采纳'; }
+            if (failed.length) {
+                alert(`部分删除失败：${failed.join(', ')}`);
+            }
+        }).catch(err => {
+            console.error(err);
+            alert('采纳失败');
+            if (btn) { btn.disabled = false; btn.textContent = '采纳此组'; }
+        });
+    }
+
+    function optimizeAll() {
+        if (!qcData || !qcData.similar_groups.length) {
+            alert('没有相似图片组需要优化');
+            return;
+        }
+        const groups = qcData.similar_groups;
+        let totalDelete = 0;
+        const deleteList = [];
+        groups.forEach((g, gi) => {
+            const keep = selections[gi];
+            g.images.filter(n => n !== keep).forEach(n => { deleteList.push(n); totalDelete++; });
+        });
+        if (totalDelete === 0) { alert('没有需要删除的相似图片'); return; }
+        if (!confirm(`一键优化：将保留每组当前选中的图片，共删除 ${totalDelete} 张相似图片。确认执行？`)) return;
+
+        const btn = document.getElementById('btn-optimize-all');
+        btn.disabled = true;
+        btn.textContent = '正在优化…';
+
+        Promise.all(deleteList.map(name =>
+            fetch(qp(`/api/delete_image/${name}`), {method: 'DELETE'})
+                .then(r => r.json()).then(d => ({name, ok: d.success}))
+        )).then(results => {
+            const failed = results.filter(r => !r.ok).map(r => r.name);
+            results.filter(r => r.ok).forEach(r => {
+                const card = document.querySelector(`.qc-img-card[data-name="${r.name}"]`);
+                if (card) {
+                    card.style.opacity = '0.3';
+                    card.style.pointerEvents = 'none';
+                    card.classList.remove('qc-selectable');
+                }
+            });
+            // Mark groups as applied
+            document.querySelectorAll('.qc-btn-apply-group').forEach(b => {
+                b.disabled = true; b.textContent = '✓ 已采纳';
+            });
+            const deletedCount = results.filter(r => r.ok).length;
+            btn.textContent = `✓ 已删除 ${deletedCount} 张`;
+            if (failed.length) {
+                alert(`部分删除失败：\n${failed.join('\n')}`);
+            }
+        }).catch(err => {
+            console.error(err);
+            alert('优化失败');
+            btn.disabled = false;
+            btn.textContent = '一键优化（保留每组第一张）';
+        });
+    }
+
+    function renderBlurryImages() {
+        const container = document.getElementById('blurry-images');
+        container.innerHTML = '';
+        const countEl = document.getElementById('blurry-count');
+        const th = getBlurThreshold();
+        const blurry = qcData.blurry_images.filter(b => b.blur_score < th);
+        countEl.textContent = `(${blurry.length} 张)`;
+
+        if (blurry.length === 0) {
+            container.innerHTML = '<div class="qc-empty">当前阈值下无模糊图片</div>';
+            return;
+        }
+
+        blurry.forEach(b => {
+            const card = document.createElement('div');
+            card.className = 'qc-img-card blurry';
+            const scoreColor = b.blur_score < 50 ? '#e04838' : '#ff9800';
+            card.innerHTML = `
+                <img src="${qp('/image/' + b.name)}" alt="${escHtml(b.filename)}" loading="lazy" />
+                <div class="qc-img-name" title="${escHtml(b.filename)}">${escHtml(b.filename)}</div>
+                <div class="qc-blur-score" style="color:${scoreColor}">模糊度: ${b.blur_score.toFixed(1)}</div>
+                <div class="qc-img-actions">
+                    <button class="qc-btn-view" data-name="${escHtml(b.name)}">大图</button>
+                    <button class="qc-btn-del" data-name="${escHtml(b.name)}">删除</button>
+                </div>`;
+            container.appendChild(card);
+        });
+
+        bindCardActions(container);
+    }
+
+    function bindCardActions(container) {
+        container.querySelectorAll('.qc-btn-view').forEach(btn => {
+            btn.addEventListener('click', () => openLightbox(btn.dataset.name));
+        });
+        container.querySelectorAll('.qc-btn-del').forEach(btn => {
+            btn.addEventListener('click', () => deleteImage(btn.dataset.name, btn));
+        });
+    }
+
+    function deleteImage(name, btn) {
+        if (!confirm(`确认删除图片 ${name}？图片文件和标注将被删除。`)) return;
+        fetch(qp(`/api/delete_image/${name}`), {method: 'DELETE'})
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    const card = btn.closest('.qc-img-card');
+                    card.style.opacity = '0.4';
+                    card.style.pointerEvents = 'none';
+                    card.insertAdjacentHTML('afterbegin', '<div class="qc-deleted-tag">已删除</div>');
+                } else {
+                    alert('删除失败');
+                }
+            })
+            .catch(err => { console.error(err); alert('删除接口出错'); });
+    }
+
+    // Lightbox
+    function openLightbox(name) {
+        document.getElementById('lightbox-image').src = qp('/image/' + name);
+        document.getElementById('lightbox-title').textContent = name;
+        document.getElementById('qc-lightbox').style.display = 'flex';
+    }
+    function closeLightbox() { document.getElementById('qc-lightbox').style.display = 'none'; }
+    document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+    document.getElementById('lightbox-close2').addEventListener('click', closeLightbox);
+    document.getElementById('qc-lightbox').addEventListener('click', e => {
+        if (e.target.id === 'qc-lightbox') closeLightbox();
+    });
+
+    // Blur threshold slider
+    const slider = document.getElementById('blur-threshold');
+    const sliderVal = document.getElementById('blur-threshold-val');
+    slider.addEventListener('input', () => {
+        sliderVal.textContent = slider.value;
+        if (qcData) {
+            renderBlurryImages();
+            document.getElementById('qc-status').textContent =
+                `相似组 ${qcData.similar_groups.length}，疑似模糊 ${countBlurry()} 张（阈值 ${slider.value}）`;
+        }
+    });
+
+    document.getElementById('btn-run-qc').addEventListener('click', runQC);
+    document.getElementById('btn-optimize-all').addEventListener('click', optimizeAll);
+    </script>
+</body>
+</html>

@@ -1,0 +1,113 @@
+本轮对 alerts 的改动总结（修正版）
+
+  文件改动
+
+  ┌─────────────────────────────┬─────────────────────────┐
+  │            文件             │          改动           │
+  ├─────────────────────────────┼─────────────────────────┤
+  │ app/api/v1/alerts.py        │ 新增，24 个端点         │
+  ├─────────────────────────────┼─────────────────────────┤
+  │ app/api/v1/__init__.py      │ 注册 alerts.bp（+1 行） │
+  ├─────────────────────────────┼─────────────────────────┤
+  │ tests/test_api_v1_alerts.py │ 新增，10 个测试，全绿   │
+  ├─────────────────────────────┼─────────────────────────┤
+  │ app/routes/alerts.py        │ 未动，旧端点原样保留    │
+  └─────────────────────────────┴─────────────────────────┘
+
+  新增端点（旧 /alerts/api/* 并行保留，自动加弃用头）
+
+  数据集 datasets（6 个）
+  - GET /api/v1/alerts/datasets — 列表（带分页）
+  - POST /api/v1/alerts/datasets — 创建
+  - GET /api/v1/alerts/datasets/<id> — 详情（新增，REST 补全）
+  - DELETE /api/v1/alerts/datasets/<id> — 删除
+  - PATCH /api/v1/alerts/datasets/<id> — 只改 mode
+
+  算法版本 algorithm-versions（2 个）
+  - GET /api/v1/alerts/datasets/<id>/algorithm-versions
+  - POST /api/v1/alerts/datasets/<id>/algorithm-versions — 保持 POST（不改 PUT）
+
+  数据集图片 images 集合（6 个）
+  - GET /api/v1/alerts/datasets/<id>/images — 列表（带分页）
+  - POST /api/v1/alerts/datasets/<id>/images — 多文件上传
+  - POST .../images:import — zip/tar 导入
+  - POST .../images:batch-delete — 批量删（带筛选）
+  - GET .../images/logs — 操作日志
+  - GET .../download — 打包下载 zip（POST→GET）
+
+  单张图片 images（4 个）
+  - GET /api/v1/alerts/images/<id> — 详情（含最新 OCR）
+  - GET /api/v1/alerts/images/<id>/file — 图片文件/缩略图
+  - PATCH /api/v1/alerts/images/<id> — 只改 event_label
+  - DELETE /api/v1/alerts/images/<id>
+
+  告警评测集 eval-alert-sets（6 个）
+  - GET /api/v1/alerts/eval-sets — 列表
+  - POST /api/v1/alerts/eval-sets — 创建
+  - GET /api/v1/alerts/eval-sets/<id> — 详情（新增）
+  - PATCH /api/v1/alerts/eval-sets/<id> — 只改 name
+  - DELETE /api/v1/alerts/eval-sets/<id>
+  - POST .../datasets:batch-add / :batch-remove — 成员增量管理
+
+  关键设计决策
+
+  1. 风格原则：只改 URL + 信封 + 明显错误动词，不改交互语义。
+  2. 单字段更新用 PATCH 不用 PUT（旧版 PUT 改单字段不严谨）：datasets 只 mode、images 只
+  event_label、eval-sets 只 name。严格对齐旧版字段，不擅自加 name/notes 更新。
+  3. algorithm-versions 保持 POST：服务端有校验+历史 is_active 逻辑，是"提交选择让服务端处理"。
+  4. eval-sets 成员管理保留增量语义：用 :batch-add/:batch-remove，不用 PUT 全量替换。
+  5. download POST→GET：读操作该用 GET。
+  6. 复用旧 helper 不重写：import 旧 alerts.py 的 9 个私有函数 +
+  verification_service.extract_alert_type_id。
+
+  响应格式
+
+  - 成功：{"code":0,"message":"ok","data":{...}}
+  - 列表：data:{items,total,page,page_size,has_next}
+  - 错误：{"code":<int>,"message":"..."}（datasets 不存在 2100、images 2200、eval-sets 2300、参数
+  12xx/13xx）
+  - 二进制（图片文件、zip 下载）不走信封
+  - 创建返 201 + Location；删除返 204 无 body
+
+  旧端点
+
+  /alerts/api/* 全部原样保留，自动加 Deprecation: true + Link: </api/v1/alerts>;
+  rel="successor-version"。前端不受影响。
+
+  ---
+  验证情况（区分自动化 / 手动）
+
+  自动化测试覆盖（test_api_v1_alerts.py，10 项全绿）
+  - datasets CRUD + PATCH(mode)、不支持字段返回 1299
+  - algorithm-versions GET/POST
+  - images 上传/列表/label PATCH/不支持字段返回 1298/file/缩略图/删除
+  - :batch-delete（含已空时 404）
+  - images/logs
+  - datasets/download（zip 魔数校验、空数据集 404）
+  - eval-sets CRUD + 成员 :batch-add/:batch-remove（去重、空数组 400、不支持字段返回 1399）
+  - 分页（has_next）
+  - 旧端点 Deprecation header
+
+  你手动验证过的
+  1. ✅  GET /api/v1/alerts/datasets → 空列表信封（total:0）
+  2. ✅  GET /api/v1/alerts/eval-sets → 空列表
+  3. ✅  PATCH /alerts/images/1 设 event_label:"fight" → code:0 成功
+  4. ✅  PATCH /alerts/images/1 传 {"filename":...} → code:1298（字段限制）
+  5. ✅  POST /alerts/datasets 不带 body → code:1200（空 name 校验）
+  6. ✅  POST /alerts/eval-sets/1/datasets:batch-add 传 [1,2,3] → added_count:2（去重）
+  7. ✅  POST /alerts/datasets/3/images 同名文件 → 第二张被去重拒（已存在于该数据集）
+
+  回归：连同 videos/errors/deprecation/utils/assistant 共 45 测试全绿。test_eval_service 12
+  个既有失败未触碰（git 确认 eval_service.py 零改动）。
+
+  尚未手动测、但已由自动化覆盖的点
+
+  - :batch-remove、分页 has_next、download zip 下载、images:import、algorithm-versions、旧端点
+  Deprecation header
+  - 各端点的 404（资源不存在）路径
+
+
+  不在本轮范围
+
+  OCR 系列 5 个端点（/ocr、/ocr/manual、/ocr/batch、/ocr/cancel、/ocr/status）——依赖 _ocr_progress
+  内存态进度 + 后台线程，属高风险异步，留待下个模块用「委托旧视图 + compat.py」实现。

@@ -863,8 +863,11 @@ def get_results(task_id):
 
         total_count = sum(total_count_by_type.values())
         fp_count = sum(fp_by_type.values())
-        # 整体平均误检数/小时 = 全类型误检总数 / duration_hours（不是各类型速率的算术平均）
-        avg_fp_per_hour = round(fp_count / duration_hours, 2) if duration_hours else 0
+        # 整体平均误检数/小时 = 各类型误检/小时速率的算术平均（宏平均），与召回率口径一致
+        # （CLAUDE.md 不变量）；勿用 fp_count/duration_hours 合计口径，否则与宏平均口径冲突。
+        all_alert_types = set(list(fp_by_type.keys()) + list(total_count_by_type.keys()))
+        avg_fp_values = [round(fp_by_type.get(et, 0) / duration_hours, 2) for et in all_alert_types] if duration_hours else []
+        avg_fp_per_hour = round(sum(avg_fp_values) / len(avg_fp_values), 2) if avg_fp_values else 0
         accuracy = (total_count - fp_count) / total_count if total_count > 0 else None
         recall = None
 

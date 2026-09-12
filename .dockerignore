@@ -41,17 +41,31 @@ benchmark.db
 
 # 文档与截图（不进镜像）
 yanshou/
+参赛材料/
+demo/
 streaming_page.png
 平台功能优化建议.md
 参赛优化分析.md
 WEB_PLATFORM_README.md
+sxs*.txt
+sxs*.md
+jianyi.png
+avg_fp-consistency-report.md
 
 # 系统/编辑器
 .DS_Store
 .vscode/
 .idea/
 
+# 构建产物（防止导出的 bundle 重新进入下次构建上下文）
+*.tar
+*.tar.gz
+
 # od-dataset-manager 运行时数据（合并进主镜像后由 volume 持久化，不拷入）
 od-dataset-manager/datasets/
 od-dataset-manager/projects/
+od-dataset-manager/sample-pack/
+od-dataset-manager/annotations.db
 od-dataset-manager/annotations.db.bak.sync
+od-dataset-manager/*.db
+od-dataset-manager/*.db.bak.sync

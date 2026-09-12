@@ -1364,13 +1364,23 @@ def compute_overall_avg_fp(event_metrics):
     return round(sum(avg_fp_values), 2) if avg_fp_values else 0
 
 
-def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=None):
+def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=None, selected_event_types=None):
     """计算评测任务的完整指标，返回 (accuracy, recall, avg_fp_per_hour, event_metrics_list, total_duration)。
 
     cursor: sqlite3.Cursor（兼容 Flask get_db() 和独立 connection）
     get_all_event_types_fn: 可选，用于获取配置文件中的事件类型列表的函数
+    selected_event_types: 可选，JSON 数组字符串，指定只参与计算的事件类型集合
+        （NULL/None=全量，兼容旧任务）；非空则只计算数组内类型，未勾选类型不计入指标。
     """
     import json
+
+    # 解析勾选的事件类型集合（None=全量，兼容旧任务 selected_event_types=NULL）
+    selected = None
+    if selected_event_types:
+        try:
+            selected = set(json.loads(selected_event_types))
+        except (json.JSONDecodeError, TypeError):
+            selected = None
 
     # ── 检查是否为实时采集模式 ──────────────────────────────────────────────────
     cursor.execute('SELECT t.dataset_id, d.mode, t.duration_hours FROM eval_tasks t LEFT JOIN datasets d ON d.id = t.dataset_id WHERE t.id = ?', (task_id,))
@@ -1378,12 +1388,14 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
     is_realtime = task_info and task_info['mode'] == 'realtime'
     duration_hours = task_info['duration_hours'] if task_info else None
 
-    # 整体精确率
-    cursor.execute('SELECT is_false_positive, manual_status FROM eval_merged_events WHERE task_id=?', (task_id,))
+    # 整体精确率（按 selected 过滤：未勾选类型不计入）
+    cursor.execute('SELECT is_false_positive, manual_status, event_type FROM eval_merged_events WHERE task_id=?', (task_id,))
     total = 0
     correct = 0
     fp_count = 0
     for row in cursor.fetchall():
+        if selected is not None and row['event_type'] not in selected:
+            continue
         status = get_effective_status(row)
         if status == 'ignored':
             continue
@@ -1406,6 +1418,8 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
                 SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?
             ''', (task_id,))
             all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+        if selected is not None:
+            all_event_types = [et for et in all_event_types if et in selected]
 
         event_metrics = []
         for etype in all_event_types:
@@ -1447,11 +1461,13 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
 
     # ── 以下为原有普通模式逻辑 ──────────────────────────────────────────────────
 
-    # 整体召回率
-    cursor.execute('SELECT confirmed_count, actual_count FROM eval_gt_events WHERE task_id=?', (task_id,))
+    # 整体召回率（按 selected 过滤：未勾选类型不计入）
+    cursor.execute('SELECT confirmed_count, actual_count, event_type FROM eval_gt_events WHERE task_id=?', (task_id,))
     total_expected = 0
     total_actual = 0
     for ev in cursor.fetchall():
+        if selected is not None and ev['event_type'] not in selected:
+            continue
         confirmed = ev['confirmed_count'] or 0
         actual = ev['actual_count'] or 0
         if confirmed == 0:
@@ -1491,6 +1507,8 @@ def compute_task_metrics(task_id, cursor, eval_set_id, get_all_event_types_fn=No
             SELECT DISTINCT event_type FROM eval_gt_events WHERE task_id=?
         ''', (task_id, task_id))
         all_event_types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+    if selected is not None:
+        all_event_types = [et for et in all_event_types if et in selected]
 
     event_metrics = []
     for etype in all_event_types:

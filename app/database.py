@@ -706,6 +706,12 @@ def init_db():
     except Exception:
         pass  # 列已存在
 
+    # 为 eval_tasks 追加 selected_event_types 列（勾选要评测的事件类型，NULL=全量兼容旧任务）
+    try:
+        cursor.execute('ALTER TABLE eval_tasks ADD COLUMN selected_event_types TEXT')
+    except Exception:
+        pass  # 列已存在
+
     # 为 datasets 追加 mode 列（数据集模式）
     try:
         cursor.execute("ALTER TABLE datasets ADD COLUMN mode TEXT DEFAULT 'normal'")

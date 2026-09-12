@@ -255,6 +255,11 @@
       </div>
       {% endif %}
     </div>
+    <div class="param-item" style="grid-column: 1 / -1; margin-top: 0.5rem;">
+      <label>评测事件类型（算法类型）</label>
+      <div style="font-size:0.8rem;color:#888;margin-bottom:0.3rem;">勾选要参与评测的事件类型，未勾选类型不显示也不计入指标；告警里已有的类型为必选项。默认按数据集关联算法版本预选。</div>
+      <div id="event-type-select" style="display:flex;flex-wrap:wrap;gap:0.4rem 0.8rem;max-height:160px;overflow:auto;border:1px solid #eee;border-radius:4px;padding:0.5rem;"></div>
+    </div>
     <p style="color:#888;font-size:0.88rem;">
       预期触发次数 = (结束 - 开始 - 1) / 事件间隔 × 触发率，一般最小为 1；若事件范围小于最小事件时长则默认为 0，可在二次确认时修改。事件范围来自视频标注。
     </p>
@@ -747,6 +752,30 @@ function renderAlgoVersions() {
   container.style.display = 'block';
 }
 
+// ── 事件类型勾选（评测范围） ───────────────────────────────────────────────────
+function renderEventTypeSelect() {
+  const algoVersions = {{ task.algorithm_versions | tojson | safe }};
+  const selectedTypes = {{ task.selected_event_types | tojson }};
+  const alertEventTypes = {{ task.alert_event_types | tojson }};
+  const container = document.getElementById('event-type-select');
+  if (!container) return;
+  const algoTypes = new Set((algoVersions || []).map(v => v.algorithm_type));
+  const alertSet = new Set(alertEventTypes || []);
+  // 已存 selected 回显；否则默认预选数据集关联算法版本类型（"建议"）
+  const selectedSet = new Set(selectedTypes || algoTypes);
+  // 告警已有类型必选锁定
+  alertSet.forEach(t => selectedSet.add(t));
+  container.innerHTML = Object.keys(TYPE_NAMES).sort().map(et => {
+    const isLocked = alertSet.has(et);
+    const isChecked = selectedSet.has(et);
+    const lockTag = isLocked ? ' <span style="color:#bbb;font-size:0.7rem">必选</span>' : '';
+    return `<label style="display:inline-flex;align-items:center;gap:0.25rem;padding:0.2rem 0.5rem;border:1px solid #e0e0e0;border-radius:4px;font-size:0.88rem;${isLocked ? 'background:#f5f5f5;' : ''}">
+      <input type="checkbox" value="${escHtml(et)}" ${isChecked ? 'checked' : ''} ${isLocked ? 'disabled' : ''}>
+      <span>${escHtml(TYPE_NAMES[et] || et)} <span style="color:#999;font-size:0.78rem">(${escHtml(et)})</span></span>${lockTag}
+    </label>`;
+  }).join('');
+}
+
 // ── 阶段切换 ──────────────────────────────────────────────────────────────────
 function goToStage(stage) {
   currentStage = stage;
@@ -772,7 +801,8 @@ async function saveParams() {
       merge_interval_sec: parseFloat(document.getElementById('param-merge-interval').value),
       event_interval_sec: parseFloat(document.getElementById('param-event-interval').value),
       trigger_rate: parseFloat(document.getElementById('param-trigger-rate').value),
-      min_event_duration_sec: parseFloat(document.getElementById('param-min-duration').value)
+      min_event_duration_sec: parseFloat(document.getElementById('param-min-duration').value),
+      selected_event_types: Array.from(document.querySelectorAll('#event-type-select input[type=checkbox]:checked')).map(cb => cb.value)
     };
 
     // 实时模式额外参数
@@ -997,6 +1027,8 @@ function pollExecProgress() {
       await loadResults();
       if (alertResults.length || gtResults.length) {
         goToStage('result');
+        renderMetrics(window.evalAccuracy, window.evalRecall, window.evalAvgFpPerHour);
+        document.getElementById('finalize-bar').style.display = '';
       } else {
         alert('评测状态丢失，请刷新页面重试');
       }
@@ -1011,6 +1043,8 @@ function pollExecProgress() {
       clearInterval(pollTimer);
       await loadResults();
       goToStage('result');
+      renderMetrics(window.evalAccuracy, window.evalRecall, window.evalAvgFpPerHour);
+      document.getElementById('finalize-bar').style.display = '';
     }
   }, 1500);
 }
@@ -2255,6 +2289,7 @@ async function realtimeAutoStart() {
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 updateStatusBadge();
 renderAlgoVersions();
+renderEventTypeSelect();
 const isFinalized = {{ 'true' if task.finalized else 'false' }};
 const initStatus = '{{ task.status }}';
 

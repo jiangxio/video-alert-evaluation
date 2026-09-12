@@ -79,7 +79,7 @@ def eval_task_page(task_id):
                t.merge_interval_sec, t.event_start_sec, t.event_end_sec, t.event_interval_sec,
                t.trigger_rate, t.min_event_duration_sec, t.status, t.created_at,
                t.finalized, t.accuracy, t.recall, t.avg_fp_per_hour, t.event_metrics,
-               t.confirmed_at, t.duration_hours,
+               t.confirmed_at, t.duration_hours, t.selected_event_types,
                d.mode as dataset_mode
         FROM eval_tasks t
         LEFT JOIN datasets d ON d.id = t.dataset_id
@@ -90,6 +90,7 @@ def eval_task_page(task_id):
         return '任务不存在', 404
     task_dict = dict(task)
     _enrich_task_algo_versions(task_dict, db)
+    task_dict['alert_event_types'] = _get_task_alert_event_types(db, task_id)
     return render_template('eval_task.html', task=task_dict)
 
 
@@ -371,6 +372,14 @@ def update_task(task_id):
     if 'duration_hours' in data:
         update_fields.append('duration_hours = ?')
         update_values.append(data['duration_hours'])
+    if 'selected_event_types' in data:
+        selected = data['selected_event_types']
+        # 兜底：并集告警已有 event_type（必选锁定，前端不能取消告警里已有的类型）
+        existing = set(_get_task_alert_event_types(db, task_id))
+        selected_set = set(selected) if isinstance(selected, list) else set()
+        selected_set |= existing
+        update_fields.append('selected_event_types = ?')
+        update_values.append(json.dumps(sorted(selected_set), ensure_ascii=False) if selected_set else None)
 
     if update_fields:
         update_values.append(task_id)
@@ -380,7 +389,7 @@ def update_task(task_id):
         )
         db.commit()
 
-    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at, selected_event_types FROM eval_tasks WHERE id = ?', (task_id,))
     return jsonify({'success': True, 'task': dict(cursor.fetchone())})
 
 
@@ -535,12 +544,56 @@ def _enrich_task_algo_versions(task_dict, db):
     return task_dict
 
 
+def _parse_selected_event_types(raw):
+    """解析 selected_event_types，返回 list 或 None（None=全量，兼容旧任务 NULL）"""
+    if not raw:
+        return None
+    try:
+        types = json.loads(raw) if isinstance(raw, str) else raw
+        return types if isinstance(types, list) else None
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _get_task_alert_event_types(db, task_id):
+    """获取任务告警里已有的 event_type 集合（用于锁定必选 + 保存兜底并集）。
+    优先 eval_merged_events（分析后），fallback 到 alert_eval_set/dataset 关联的 alert_images.alert_type。"""
+    cursor = db.cursor()
+    cursor.execute('SELECT DISTINCT event_type FROM eval_merged_events WHERE task_id=?', (task_id,))
+    types = [r['event_type'] for r in cursor.fetchall() if r['event_type']]
+    if types:
+        return types
+    cursor.execute('SELECT alert_eval_set_id, dataset_id FROM eval_tasks WHERE id=?', (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        return []
+    dataset_ids = []
+    if task['alert_eval_set_id']:
+        cursor.execute('SELECT dataset_ids FROM eval_alert_sets WHERE id=?', (task['alert_eval_set_id'],))
+        row = cursor.fetchone()
+        if row and row['dataset_ids']:
+            try:
+                dataset_ids = json.loads(row['dataset_ids'])
+            except Exception:
+                dataset_ids = []
+    if task['dataset_id'] and task['dataset_id'] not in dataset_ids:
+        dataset_ids.append(task['dataset_id'])
+    if not dataset_ids:
+        return []
+    placeholders = ','.join('?' for _ in dataset_ids)
+    cursor.execute(
+        f'SELECT DISTINCT alert_type FROM alert_images WHERE dataset_id IN ({placeholders}) AND alert_type IS NOT NULL',
+        dataset_ids
+    )
+    return [r['alert_type'] for r in cursor.fetchall() if r['alert_type']]
+
+
 @bp.route('/api/tasks/<int:task_id>/execute', methods=['POST'])
 def execute_task(task_id):
     """执行评测（后台线程）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at, selected_event_types FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -703,11 +756,12 @@ def execute_task(task_id):
 
         # ── 计算并保存评测指标 ──────────────────────────────────────────────────
         # 获取 eval_set_id
-        cur.execute('SELECT eval_set_id FROM eval_tasks WHERE id = ?', (task_id,))
-        eval_set_id = cur.fetchone()['eval_set_id']
+        cur.execute('SELECT eval_set_id, selected_event_types FROM eval_tasks WHERE id = ?', (task_id,))
+        _row = cur.fetchone()
+        eval_set_id = _row['eval_set_id']
 
         accuracy, recall, avg_fp_per_hour, event_metrics, total_duration = compute_task_metrics(
-            task_id, cur, eval_set_id
+            task_id, cur, eval_set_id, None, _row['selected_event_types']
         )
         event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
 
@@ -794,7 +848,7 @@ def get_results(task_id):
     """获取评测结果（告警检测结果 + GT 事件得分）"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at, selected_event_types FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -824,6 +878,12 @@ def get_results(task_id):
         ORDER BY m.video_id, m.event_type, m.ts_start
     ''', (task_id,))
     alert_results = [dict(r) for r in cursor.fetchall()]
+
+    # 按勾选事件类型过滤（未勾选类型不返回告警；NULL=全量兼容旧任务）
+    selected_types = _parse_selected_event_types(task['selected_event_types'])
+    if selected_types is not None:
+        _alert_selected_set = set(selected_types)
+        alert_results = [r for r in alert_results if r.get('event_type') in _alert_selected_set]
 
     for r in alert_results:
         r['image_ids'] = json.loads(r.get('image_ids') or '[]')
@@ -886,6 +946,8 @@ def get_results(task_id):
             'gt_coverage_rate': 0,
             'expected_alert_total': 0,
             'is_realtime': True,
+            'selected_event_types': selected_types,
+            'alert_event_types': _get_task_alert_event_types(db, task_id),
         })
 
     # ── GT 事件得分 ────────────────────────────────────────────────────────────
@@ -901,6 +963,11 @@ def get_results(task_id):
         ORDER BY g.video_id, g.event_type, g.start_sec
     ''', (task_id,))
     gt_results = [dict(r) for r in cursor.fetchall()]
+
+    # 按勾选事件类型过滤 GT（未勾选类型不返回）
+    if selected_types is not None:
+        _gt_selected_set = set(selected_types)
+        gt_results = [g for g in gt_results if g.get('event_type') in _gt_selected_set]
 
     # ── 统计评测视频集总时长 ────────────────────────────────────────────────────
     total_duration = 0
@@ -930,7 +997,7 @@ def get_results(task_id):
 
     # 使用统一的指标计算函数
     accuracy, recall, avg_fp_per_hour, _, _ = compute_task_metrics(
-        task_id, cursor, task['eval_set_id'], _get_all_event_types
+        task_id, cursor, task['eval_set_id'], _get_all_event_types, task['selected_event_types']
     )
 
     try:
@@ -952,6 +1019,8 @@ def get_results(task_id):
         'gt_coverage_rate': round(gt_coverage_rate, 4),
         'expected_alert_total': expected_alert_total,
         'is_realtime': False,
+        'selected_event_types': selected_types,
+        'alert_event_types': _get_task_alert_event_types(db, task_id),
     })
 
 
@@ -1115,7 +1184,7 @@ def finalize_task(task_id):
     """确认评测结果，计算并保存准确率/召回率，锁定任务"""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at FROM eval_tasks WHERE id = ?', (task_id,))
+    cursor.execute('SELECT id, name, notes, dataset_id, alert_eval_set_id, eval_set_id, merge_interval_sec, event_start_sec, event_end_sec, event_interval_sec, trigger_rate, min_event_duration_sec, status, created_at, finalized, accuracy, recall, avg_fp_per_hour, event_metrics, confirmed_at, selected_event_types FROM eval_tasks WHERE id = ?', (task_id,))
     task = cursor.fetchone()
     if not task:
         return jsonify({'error': '任务不存在'}), 404
@@ -1124,7 +1193,7 @@ def finalize_task(task_id):
 
     # 使用统一的指标计算函数
     accuracy, recall, avg_fp_per_hour, event_metrics, _ = compute_task_metrics(
-        task_id, cursor, task['eval_set_id'], _get_all_event_types
+        task_id, cursor, task['eval_set_id'], _get_all_event_types, task['selected_event_types']
     )
     event_metrics_json = json.dumps(event_metrics, ensure_ascii=False)
 

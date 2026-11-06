@@ -548,7 +548,7 @@ async function openDetail(imageId) {
   const img = await res.json();
 
   document.getElementById('detail-filename').textContent = img.filename;
-  document.getElementById('detail-img').src = `/alerts/api/images/${imageId}/file?t=${Date.now()}`;
+  document.getElementById('detail-img').src = `/alerts/api/images/${imageId}/file?w=1280`;
   document.getElementById('detail-label').value = img.event_label || '';
 
   // 填充OCR字段（仅在非实时模式下存在对应 DOM）

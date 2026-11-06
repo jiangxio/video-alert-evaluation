@@ -845,8 +845,9 @@ async function viewGtFrames(eventId, eventType) {
 
     grid.innerHTML = data.frames.map(f => `
       <div class="gt-frame-item">
-        <img src="/evaluation/api/gt-frames/${f.id}/file"
+        <img src="/evaluation/api/gt-frames/${f.id}/file?w=320"
              alt="${f.timestamp_sec}s"
+             loading="lazy" decoding="async"
              onclick="window.open('/evaluation/api/gt-frames/${f.id}/file', '_blank')">
         <div class="timestamp">${f.timestamp_sec.toFixed(1)}s</div>
       </div>

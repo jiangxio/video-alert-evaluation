@@ -51,11 +51,11 @@ def get_alerts(task_id):
                m.ai_suggestion,
                o.timestamp_seconds
         FROM eval_merged_events m
-        LEFT JOIN (
-            SELECT alert_image_id, timestamp_seconds
-            FROM ocr_results
-            WHERE id IN (SELECT MAX(id) FROM ocr_results GROUP BY alert_image_id)
-        ) o ON o.alert_image_id = m.representative_image_id
+        LEFT JOIN ocr_results o
+            ON o.id = (
+                SELECT MAX(o2.id) FROM ocr_results o2
+                WHERE o2.alert_image_id = m.representative_image_id
+            )
         WHERE m.task_id = ?
         ORDER BY m.video_id, m.event_type, m.ts_start
     ''', (task_id,))

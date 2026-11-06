@@ -223,7 +223,7 @@
 
         const imgs = a.image_ids || [a.representative_image_id];
         const curImg = imgs[currentImgIdx] || a.representative_image_id;
-        document.getElementById('big-image').src = imgUrl(curImg);
+        document.getElementById('big-image').src = curImg ? `${imgUrl(curImg)}?w=1280` : '';
 
         // 缩略图条（多图时）
         const strip = document.getElementById('thumb-strip');

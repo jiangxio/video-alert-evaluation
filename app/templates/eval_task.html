@@ -893,7 +893,7 @@ function renderConfirmCols() {
         ? `onclick="showMergedGroupImages(${idx})"`
         : '';
       const imgTag = repId
-        ? `<img class="alert-card-thumb" src="${thumbUrl('/alerts/api/images/' + repId + '/file', 240)}" alt="" ${imgClick}>`
+        ? `<img class="alert-card-thumb" src="${thumbUrl('/alerts/api/images/' + repId + '/file', 240)}" alt="" loading="lazy" decoding="async" ${imgClick}>`
         : `<div class="alert-card-thumb" style="background:#eee;display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#aaa;">无图</div>`;
       const isConfirmed = confirmedAlertIndices.has(idx);
       return `
@@ -929,7 +929,7 @@ function renderConfirmCols() {
         ? `onclick="showImageView('gt', ${frameId}, '${escHtml(g.video_id)} · ${escHtml(g.event_type)}', '${tsRange}')"`
         : '';
       const imgTag = frameId
-        ? `<img class="gt-card-thumb" src="${thumbUrl('/evaluation/api/gt-frames/' + frameId + '/file', 240)}" alt="" ${imgClick}>`
+        ? `<img class="gt-card-thumb" src="${thumbUrl('/evaluation/api/gt-frames/' + frameId + '/file', 240)}" alt="" loading="lazy" decoding="async" ${imgClick}>`
         : `<div class="gt-card-thumb" style="background:#eee;display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#aaa;">无帧</div>`;
       return `
         <div class="gt-card">
@@ -1244,7 +1244,7 @@ function renderAlertGrid() {
 
     cell.innerHTML = `
       ${checkbox}
-      <img src="${thumbUrl(imgSrc, 240)}" alt="" onclick="showAlertImageInModalById(${r.id})">
+      <img src="${thumbUrl(imgSrc, 240)}" alt="" loading="lazy" decoding="async" onclick="showAlertImageInModalById(${r.id})">
       <span id="alert-badge-${r.id}" class="img-badge badge-${badgeCls}">${badgeText}</span>
       <div class="img-label" style="flex-direction:column;align-items:flex-start;gap:2px;">
         <div>${escHtml(r.video_id||'')} ${escHtml(tsLabel)} ${escHtml(r.event_type||'')}</div>
@@ -1334,7 +1334,7 @@ function renderGtGrid() {
     cell.className = 'img-cell';
     const timeLabel = formatTime(r.start_sec) + ' – ' + formatTime(r.end_sec);
     const imgTag = r.mid_frame_id
-      ? `<img src="${thumbUrl('/evaluation/api/gt-frames/' + r.mid_frame_id + '/file', 240)}" alt="" onclick="showGtImageInModal(${r._rowIdx})">`
+      ? `<img src="${thumbUrl('/evaluation/api/gt-frames/' + r.mid_frame_id + '/file', 240)}" alt="" loading="lazy" decoding="async" onclick="showGtImageInModal(${r._rowIdx})">`
       : `<div style="width:100%;aspect-ratio:4/3;background:#eee;display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#aaa;cursor:default;" onclick="showGtImageInModal(${r._rowIdx})">无中间帧</div>`;
     cell.innerHTML = `
       ${imgTag}
@@ -1896,12 +1896,12 @@ function showImageView(type, id, title, info) {
 
   if (type === 'alert') {
     body.innerHTML = `
-      <img class="image-modal-img" src="/alerts/api/images/${id}/file" alt="">
+      <img class="image-modal-img" src="/alerts/api/images/${id}/file?w=1280" alt="">
       <div class="image-modal-info">${escHtml(info)}</div>
     `;
   } else if (type === 'gt') {
     body.innerHTML = `
-      <img class="image-modal-img" src="/evaluation/api/gt-frames/${id}/file" alt="">
+      <img class="image-modal-img" src="/evaluation/api/gt-frames/${id}/file?w=1280" alt="">
       <div class="image-modal-info">${escHtml(info)}</div>
     `;
   }
@@ -1954,7 +1954,7 @@ function showSingleImage(groupIndex, imageIndex) {
   titleEl.textContent = `${group.video_id} · ${group.event_type} (#${imageIndex + 1})`;
 
   body.innerHTML = `
-    <img class="image-modal-img" src="/alerts/api/images/${img.id}/file" alt="">
+    <img class="image-modal-img" src="/alerts/api/images/${img.id}/file?w=1280" alt="">
     <div class="image-modal-info" style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
       <button class="btn btn-sm btn-secondary" onclick="showMergedGroupImages(${groupIndex})">返回组列表</button>
       <span>时间戳: ${(img.timestamp_seconds != null ? formatTime(img.timestamp_seconds) : '—')}</span>
@@ -2031,7 +2031,7 @@ function renderImageModal() {
   let alertEditHtml = '';
   if (currentImageType === 'alert') {
     imgSrc = item.representative_image_id
-      ? '/alerts/api/images/' + item.representative_image_id + '/file'
+      ? '/alerts/api/images/' + item.representative_image_id + '/file?w=1280'
       : '';
     timeText = formatTime(item.timestamp_seconds) + ' (' + (item.timestamp_seconds != null ? item.timestamp_seconds + 's' : '-') + ')';
     const effStatus = item.effective_status || (item.is_false_positive ? 'false_positive' : 'correct');
@@ -2052,7 +2052,7 @@ function renderImageModal() {
     `;
   } else {
     imgSrc = item.mid_frame_id
-      ? '/evaluation/api/gt-frames/' + item.mid_frame_id + '/file'
+      ? '/evaluation/api/gt-frames/' + item.mid_frame_id + '/file?w=1280'
       : '';
     timeText = formatTime(item.start_sec) + ' – ' + formatTime(item.end_sec) +
       ' (' + (item.start_sec != null ? item.start_sec + 's' : '-') + ' – ' + (item.end_sec != null ? item.end_sec + 's' : '-') + ')';

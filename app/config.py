@@ -31,6 +31,8 @@ class Config:
     UPLOAD_VIDEOS = str(UPLOAD_VIDEOS)
     UPLOAD_ALERTS = str(UPLOAD_ALERTS)
     MAX_CONTENT_LENGTH = int(1.3 * 1024 * 1024 * 1024)  # 1.3GB max upload
+    # 静态资源（/static）浏览器缓存 1 小时，避免每次导航回源校验
+    SEND_FILE_MAX_AGE_DEFAULT = 3600
 
     # 项目路径
     PROJECT_ROOT = str(BASE_DIR)
